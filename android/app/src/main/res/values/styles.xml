@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纸色底，和网页端一致；不引 AppCompat，所以继承系统主题 -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F5EFE6</item>
+        <item name="android:statusBarColor">#F5EFE6</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

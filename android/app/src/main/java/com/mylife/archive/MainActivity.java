@@ -1,0 +1,296 @@
+package com.mylife.archive;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 壳：起本地服务 → WebView 加载 http://127.0.0.1:port/ → 只补三件原生能力
+ *   ① 原生 TTS（WebView 里的 speechSynthesis 在国产机上经常没有中文音色）
+ *   ② 相册选图（<input type=file> 在 WebView 里默认没反应）
+ *   ③ 返回键交给网页处理
+ */
+public class MainActivity extends Activity {
+
+    private static final String TAG = "MainActivity";
+    private static final int REQ_PERM = 1001;
+    private static final int REQ_FILE = 1002;
+
+    private WebView web;
+    private Db db;
+    private LocalServer server;
+    private android.speech.tts.TextToSpeech tts;
+    private volatile boolean ttsReady = false;
+
+    private ValueCallback<Uri[]> fileCallback;
+    private View splash;
+    private TextView status;
+    private ProgressBar bar;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        web = findViewById(R.id.web);
+        splash = findViewById(R.id.splash);
+        status = findViewById(R.id.status);
+        bar = findViewById(R.id.bar);
+
+        setupWeb();
+        initTts();
+        requestPerms();
+        boot();
+    }
+
+    /* ---------------- 启动链：开库 → 起服务 → 加载 ---------------- */
+
+    private void boot() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    say("正在打开档案库", 20);
+                    db = new Db(getApplicationContext());
+                    db.open();
+
+                    say("正在启动本地服务", 60);
+                    server = new LocalServer(getApplicationContext(), db);
+                    final int port = server.start();
+
+                    say("正在载入界面", 90);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            web.loadUrl("http://127.0.0.1:" + port + "/");
+                        }
+                    });
+                } catch (final Exception e) {
+                    Log.e(TAG, "启动失败", e);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            say("启动失败：" + e.getMessage(), 0);
+                        }
+                    });
+                }
+            }
+        }, "boot").start();
+    }
+
+    private void say(String text, int progress) {
+        if (status != null) status.setText(text);
+        if (bar != null) bar.setProgress(progress);
+    }
+
+    /* ---------------- WebView ---------------- */
+
+    private void setupWeb() {
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
+        s.setDefaultTextEncodingName("UTF-8");
+        s.setTextZoom(100);
+        // 不让 WebView 缓存旧前端：每次启动都取 assets 里的最新版
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (splash != null && splash.getVisibility() == View.VISIBLE) {
+                    splash.setVisibility(View.GONE);
+                }
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> cb,
+                                             FileChooserParams params) {
+                fileCallback = cb;
+                try {
+                    Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    String[] accept = params.getAcceptTypes();
+                    String type = "*/*";
+                    if (accept != null) {
+                        for (String a : accept) {
+                            if (a == null) continue;
+                            if (a.contains("image")) { type = "image/*"; break; }
+                            if (a.contains("video")) { type = "video/*"; break; }
+                            if (a.contains("audio")) { type = "audio/*"; break; }
+                        }
+                    }
+                    i.setType(type);
+                    startActivityForResult(Intent.createChooser(i, "选择文件"), REQ_FILE);
+                    return true;
+                } catch (Exception e) {
+                    fileCallback = null;
+                    return false;
+                }
+            }
+        });
+
+        web.addJavascriptInterface(new TtsBridge(), "NativeTTS");
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQ_FILE) {
+            Uri[] uris = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                uris = new Uri[]{data.getData()};
+            }
+            if (fileCallback != null) {
+                fileCallback.onReceiveValue(uris);
+                fileCallback = null;
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK && web != null && web.canGoBack()) {
+            web.goBack();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    /* ---------------- 权限 ---------------- */
+
+    private void requestPerms() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        List<String> need = new ArrayList<String>();
+        addPerm(need, Manifest.permission.RECORD_AUDIO);
+        if (Build.VERSION.SDK_INT >= 33) {
+            addPerm(need, Manifest.permission.READ_MEDIA_IMAGES);
+            addPerm(need, Manifest.permission.READ_MEDIA_VIDEO);
+            addPerm(need, Manifest.permission.READ_MEDIA_AUDIO);
+        } else {
+            addPerm(need, Manifest.permission.READ_EXTERNAL_STORAGE);
+            addPerm(need, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+        if (!need.isEmpty()) {
+            requestPermissions(need.toArray(new String[0]), REQ_PERM);
+        }
+    }
+
+    private void addPerm(List<String> list, String p) {
+        if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) list.add(p);
+    }
+
+    /* ---------------- 原生 TTS ---------------- */
+
+    private void initTts() {
+        tts = new android.speech.tts.TextToSpeech(this, new android.speech.tts.TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if (status != android.speech.tts.TextToSpeech.SUCCESS) {
+                    Log.w(TAG, "TTS 初始化失败");
+                    return;
+                }
+                try {
+                    tts.setLanguage(java.util.Locale.CHINA);
+                    ttsReady = true;
+                } catch (Exception e) {
+                    Log.w(TAG, "设置中文失败", e);
+                }
+            }
+        });
+    }
+
+    /** 只暴露朗读能力，别的系统能力以后再加 */
+    public class TtsBridge {
+        @JavascriptInterface
+        public boolean ready() {
+            return ttsReady;
+        }
+
+        @JavascriptInterface
+        public void speak(final String text, final float rate) {
+            if (!ttsReady || text == null || text.trim().length() == 0) return;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        tts.setSpeechRate(rate <= 0 ? 1.0f : rate);
+                        tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "ms");
+                    } catch (Exception e) {
+                        Log.w(TAG, "朗读失败", e);
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void stop() {
+            if (!ttsReady) return;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try { tts.stop(); } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean speaking() {
+            try { return ttsReady && tts.isSpeaking(); } catch (Exception e) { return false; }
+        }
+    }
+
+    /* ---------------- 生命周期 ---------------- */
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (web != null) web.onResume();
+    }
+
+    @Override
+    protected void onPause() {
+        if (web != null) web.onPause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        try {
+            if (server != null) server.stop();
+            if (db != null) db.close();
+            if (tts != null) { tts.stop(); tts.shutdown(); }
+        } catch (Exception ignored) {
+        }
+        super.onDestroy();
+    }
+}

@@ -1,0 +1,20 @@
+# 运行时数据（绝不入库）
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/web/
+android/app/src/main/assets/schema.sql
+
+# 系统
+Thumbs.db
+.DS_Store
+*.log
+
+dist/

@@ -1,0 +1,41 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.mylife.archive"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.mylife.archive"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // 数据库和前端资源不压缩：启动快，且可以直接从 assets 读文本
+    aaptOptions {
+        noCompress "db"
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// 零第三方依赖：只用 Android SDK 自带的 WebView、SQLite、org.json
+dependencies {
+}
