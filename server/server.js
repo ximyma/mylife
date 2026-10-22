@@ -18,9 +18,25 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const ROOT = path.join(__dirname, '..');
+/*
+ * 两种跑法：
+ *   开发：node server/server.js        —— web/ 在上一级，数据在 ROOT/data
+ *   打包：双击 MyLife.exe              —— 单文件 SEA，__dirname 不可靠，
+ *                                        一律以 exe 所在目录为基准
+ *
+ * exe 旁边放 resources/（web 前端 + schema.sql），运行时生成 data/。
+ * 这样整个程序可以整个文件夹拷走，数据随身。
+ */
+let sea = false;
+try { sea = require('node:sea').isSea(); } catch (e) { sea = false; }
+
+const EXE_DIR = path.dirname(process.execPath);        // 打包后的基准目录
+const BASE = sea ? path.join(EXE_DIR, 'resources') : path.join(__dirname, '..');
+
+const ROOT = BASE;
 const WEB = path.join(ROOT, 'web');
-const DATA = process.env.DATA_DIR || path.join(ROOT, 'data');
+const SCHEMA_FILE = path.join(BASE, 'schema.sql');
+const DATA = process.env.DATA_DIR || (sea ? path.join(EXE_DIR, 'data') : path.join(ROOT, 'data'));
 const FILES = path.join(DATA, 'files');
 const PORT = Number(process.env.PORT || 4321);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -39,7 +55,7 @@ db.exec('PRAGMA foreign_keys = ON');
 // schema 里全是 IF NOT EXISTS / INSERT OR IGNORE，所以每次启动都跑一遍：
 // 加新表自动生效，不需要维护迁移器。
 {
-  const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  const schema = fs.readFileSync(SCHEMA_FILE, 'utf8');
   let ok = 0, all = 0;
   for (const stmt of schema.split(';')) {
     const clean = stmt.split('\n').filter(l => !l.trim().startsWith('--')).join('\n').trim();
@@ -503,7 +519,44 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// 打包后 resources/ 是必须的，缺失时早一点说清楚，别让用户对着白屏猜
+if (sea && !fs.existsSync(WEB)) {
+  console.error('');
+  console.error('找不到 resources/web 目录。');
+  console.error('请把 MyLife.exe 和它旁边的 resources 文件夹放在同一个目录下。');
+  console.error('当前 exe 位置：' + EXE_DIR);
+  process.exit(1);
+}
+
+// 端口被别的程序占了，给句人话，别抛一堆 ERR_ 堆栈
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error('');
+    console.error('端口 ' + PORT + ' 已经被占用了。');
+    console.error('多半是上一次的程序还没关。关掉它再双击；');
+    console.error('或者换个端口启动： set PORT=4401 && MyLife.exe');
+  } else {
+    console.error('启动失败：' + (e.message || e));
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
-  console.log('我的人生档案 · http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT);
-  console.log('数据目录：' + DATA);
+  const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
+  console.log('');
+  console.log('  我的人生档案 · The Story of My Life');
+  console.log('  ' + addr);
+  console.log('  数据目录：' + DATA);
+  console.log('');
+  console.log('  在这个黑窗口里按 Ctrl+C 或者关掉它就退出了。');
+  console.log('');
+
+  // 打包版双击运行：直接把浏览器打开，不用自己去敲地址
+  if (sea) {
+    try {
+      require('child_process')
+        .spawn('cmd', ['/c', 'start', '', addr], { detached: true, stdio: 'ignore' })
+        .unref();
+    } catch (e) { /* 打不开也无妨，地址已经打在上面了 */ }
+  }
 });
