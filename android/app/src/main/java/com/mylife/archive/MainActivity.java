@@ -24,9 +24,9 @@ import java.util.List;
 
 /**
  * 壳：起本地服务 → WebView 加载 http://127.0.0.1:port/ → 只补三件原生能力
- *   ① 原生 TTS（WebView 里的 speechSynthesis 在国产机上经常没有中文音色）
+ *   ① 朗读（Tts.java，原生 TTS，比 WebView 的 speechSynthesis 可靠）
  *   ② 相册选图（<input type=file> 在 WebView 里默认没反应）
- *   ③ 返回键交给网页处理
+ *   ③ 返回键：先停朗读，再回退
  */
 public class MainActivity extends Activity {
 
@@ -37,8 +37,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private Db db;
     private LocalServer server;
-    private android.speech.tts.TextToSpeech tts;
-    private volatile boolean ttsReady = false;
+    private Tts tts;
 
     private ValueCallback<Uri[]> fileCallback;
     private View splash;
@@ -56,7 +55,8 @@ public class MainActivity extends Activity {
         bar = findViewById(R.id.bar);
 
         setupWeb();
-        initTts();
+        tts = new Tts(getApplicationContext());
+        tts.attach(web);
         requestPerms();
         boot();
     }
@@ -72,9 +72,17 @@ public class MainActivity extends Activity {
                     db = new Db(getApplicationContext());
                     db.open();
 
-                    say("正在启动本地服务", 60);
+                    say("正在启动本地服务", 55);
                     server = new LocalServer(getApplicationContext(), db);
                     final int port = server.start();
+
+                    // TextToSpeech 必须在主线程构造
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            tts.init();
+                        }
+                    });
 
                     say("正在载入界面", 90);
                     runOnUiThread(new Runnable() {
@@ -114,7 +122,6 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setDefaultTextEncodingName("UTF-8");
         s.setTextZoom(100);
-        // 不让 WebView 缓存旧前端：每次启动都取 assets 里的最新版
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -179,9 +186,15 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && web != null && web.canGoBack()) {
-            web.goBack();
-            return true;
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (tts != null && tts.isPlaying()) {
+                tts.stop();
+                return true;
+            }
+            if (web != null && web.canGoBack()) {
+                web.goBack();
+                return true;
+            }
         }
         return super.onKeyDown(keyCode, event);
     }
@@ -209,63 +222,50 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) list.add(p);
     }
 
-    /* ---------------- 原生 TTS ---------------- */
+    /* ---------------- 朗读桥 ---------------- */
 
-    private void initTts() {
-        tts = new android.speech.tts.TextToSpeech(this, new android.speech.tts.TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                if (status != android.speech.tts.TextToSpeech.SUCCESS) {
-                    Log.w(TAG, "TTS 初始化失败");
-                    return;
-                }
-                try {
-                    tts.setLanguage(java.util.Locale.CHINA);
-                    ttsReady = true;
-                } catch (Exception e) {
-                    Log.w(TAG, "设置中文失败", e);
-                }
-            }
-        });
-    }
-
-    /** 只暴露朗读能力，别的系统能力以后再加 */
     public class TtsBridge {
+
         @JavascriptInterface
         public boolean ready() {
-            return ttsReady;
+            return tts != null && tts.status().indexOf("\"ready\":true") >= 0;
         }
 
         @JavascriptInterface
-        public void speak(final String text, final float rate) {
-            if (!ttsReady || text == null || text.trim().length() == 0) return;
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        tts.setSpeechRate(rate <= 0 ? 1.0f : rate);
-                        tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "ms");
-                    } catch (Exception e) {
-                        Log.w(TAG, "朗读失败", e);
-                    }
-                }
-            });
+        public String status() {
+            return tts == null ? Json.err("还没初始化") : tts.status();
+        }
+
+        @JavascriptInterface
+        public String engines() {
+            return tts == null ? Json.err("还没初始化") : tts.engines();
+        }
+
+        @JavascriptInterface
+        public String voices() {
+            return tts == null ? Json.err("还没初始化") : tts.voices();
+        }
+
+        /** itemsJson 是句子数组；朗读时回调 window.TTS.onSeg(i)，读完 onEnd() */
+        @JavascriptInterface
+        public String speak(String itemsJson, float rate) {
+            return tts == null ? Json.err("还没初始化") : tts.speak(itemsJson, rate);
         }
 
         @JavascriptInterface
         public void stop() {
-            if (!ttsReady) return;
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    try { tts.stop(); } catch (Exception ignored) {}
-                }
-            });
+            if (tts != null) tts.stop();
         }
 
         @JavascriptInterface
         public boolean speaking() {
-            try { return ttsReady && tts.isSpeaking(); } catch (Exception e) { return false; }
+            return tts != null && tts.isPlaying();
+        }
+
+        /** 换一个朗读引擎（某些机型默认引擎读不出中文） */
+        @JavascriptInterface
+        public void useEngine(String pkg) {
+            if (tts != null) tts.initWithEngine(pkg == null || pkg.length() == 0 ? null : pkg);
         }
     }
 
@@ -279,6 +279,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        if (tts != null) tts.stop();
         if (web != null) web.onPause();
         super.onPause();
     }
@@ -286,9 +287,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         try {
+            if (tts != null) tts.release();
             if (server != null) server.stop();
             if (db != null) db.close();
-            if (tts != null) { tts.stop(); tts.shutdown(); }
         } catch (Exception ignored) {
         }
         super.onDestroy();

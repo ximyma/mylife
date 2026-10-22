@@ -334,6 +334,79 @@
       });
     },
 
+    /* ---------------- AI 配置（可无限添加） ---------------- */
+
+    listProfiles: function () {
+      return API.query('SELECT * FROM ai_profiles ORDER BY sort, id', []);
+    },
+
+    getProfile: function (id) {
+      return API.query('SELECT * FROM ai_profiles WHERE id=?', [id]).then(function (r) {
+        return r[0] || null;
+      });
+    },
+
+    /** p: {id?, name, kind, base_url, api_key, default_model, vision_model, enabled} */
+    saveProfile: function (p) {
+      if (!p.name || !String(p.name).trim()) return Promise.reject(new Error('给这条配置起个名字'));
+      if (!p.base_url || !String(p.base_url).trim()) return Promise.reject(new Error('接口地址不能空'));
+      var name = String(p.name).trim();
+      var kind = p.kind || 'openai';
+      var base = String(p.base_url).trim().replace(/\/+$/, '');
+      var key = p.api_key === null || typeof p.api_key === 'undefined' ? null : String(p.api_key);
+      var dm = p.default_model || null;
+      var vm = p.vision_model || null;
+      var en = p.enabled === 0 || p.enabled === false ? 0 : 1;
+
+      if (p.id) {
+        return API.exec(
+          'UPDATE ai_profiles SET name=?, kind=?, base_url=?, api_key=?, default_model=?, vision_model=?, enabled=? WHERE id=?',
+          [name, kind, base, key, dm, vm, en, p.id]);
+      }
+      return API.exec(
+        'INSERT INTO ai_profiles (name, kind, base_url, api_key, default_model, vision_model, enabled, sort) ' +
+        'VALUES (?,?,?,?,?,?,?,100)', [name, kind, base, key, dm, vm, en]);
+    },
+
+    deleteProfile: function (id) {
+      return API.exec('UPDATE ai_slots SET profile_id=NULL, model=NULL WHERE profile_id=?', [id])
+        .then(function () {
+          return API.exec('DELETE FROM ai_profiles WHERE id=?', [id]);
+        });
+    },
+
+    /** 启用 / 停用一条配置（停用的不参与自动挑选） */
+    toggleProfile: function (id, on) {
+      return API.exec('UPDATE ai_profiles SET enabled=? WHERE id=?', [on ? 1 : 0, id]);
+    },
+
+    getSlots: function () {
+      return API.query('SELECT * FROM ai_slots', []);
+    },
+
+    setSlot: function (slot, profileId, model) {
+      return API.exec(
+        'UPDATE ai_slots SET profile_id=?, model=? WHERE slot=?',
+        [profileId || null, model || null, slot]).then(function (r) {
+        if (r.changes) return r;
+        return API.exec('INSERT INTO ai_slots (slot, profile_id, model) VALUES (?,?,?)',
+          [slot, profileId || null, model || null]);
+      });
+    },
+
+    pullModels: function (id) {
+      return API.aiModels(id);
+    },
+
+    testProfile: function (id, model) {
+      return API.aiTest({ profileId: id, model: model || null });
+    },
+
+    /** 用某个用途（slot）问一句，验证绑定是否可用 */
+    testSlot: function (slot) {
+      return API.aiTest({ slot: slot });
+    },
+
     /* ---------------- 设置 ---------------- */
 
     getSettings: function () {
@@ -346,6 +419,17 @@
 
     saveSetting: function (k, v) {
       return API.exec('INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', [k, v]);
+    },
+
+    /** 阅读偏好：字号、夜间、语速 */
+    getPref: function (k, def) {
+      return API.query('SELECT v FROM settings WHERE k=?', ['pref.' + k]).then(function (r) {
+        return r.length ? r[0].v : def;
+      });
+    },
+
+    setPref: function (k, v) {
+      return DB.saveSetting('pref.' + k, String(v));
     },
 
     /* ---------------- 工具 ---------------- */

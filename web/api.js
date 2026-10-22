@@ -6,7 +6,6 @@
  *
  * 刻意用 XMLHttpRequest 而不是 fetch：
  *   安卓 5/6 的 WebView 内核是 Chrome 37 左右，没有 fetch。
- *   XHR 从 IE7 时代就有，绝对不会翻车。
  */
 (function () {
   'use strict';
@@ -16,7 +15,7 @@
       var xhr = new XMLHttpRequest();
       xhr.open('POST', path, true);
       xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.timeout = 120000;
+      xhr.timeout = 130000;
       xhr.onreadystatechange = function () {
         if (xhr.readyState !== 4) return;
         if (xhr.status === 0) return reject(new Error('连不上本地服务'));
@@ -43,9 +42,22 @@
     exec: function (sql, params) {
       return post('/api/exec', { sql: sql, params: params || [] });
     },
-    ai: function (messages) {
-      return post('/api/ai', { messages: messages });
+
+    /** opts: { messages, profileId, slot, model, temperature, maxTokens } */
+    ai: function (opts) {
+      return post('/api/ai', opts || {});
     },
+
+    /** 拉某条配置的模型列表 */
+    aiModels: function (profileId) {
+      return post('/api/ai/models', { profileId: profileId });
+    },
+
+    /** 测试连通性：opts { profileId, model } 或 { slot } */
+    aiTest: function (opts) {
+      return post('/api/ai/test', opts || {});
+    },
+
     file: function (payload) {
       return post('/api/file', payload || {});
     }

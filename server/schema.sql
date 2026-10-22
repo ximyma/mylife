@@ -119,3 +119,30 @@ CREATE INDEX IF NOT EXISTS ix_arches ON archives(user_id, deleted_at);
 
 INSERT OR IGNORE INTO users (id, phone, name) VALUES (1, 'local', '我');
 INSERT OR IGNORE INTO settings (k, v) VALUES ('schema_version', '1');
+
+-- ===== AI 配置中心 =====
+-- 一条配置 = 一个可用的模型来源。可以无限添加。
+CREATE TABLE IF NOT EXISTS ai_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'openai',
+  base_url TEXT NOT NULL,
+  api_key TEXT,
+  models_json TEXT,
+  default_model TEXT,
+  vision_model TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- 用途绑定：哪个环节用哪个配置的哪个模型。一条用途一行。
+CREATE TABLE IF NOT EXISTS ai_slots (
+  slot TEXT PRIMARY KEY,
+  profile_id INTEGER,
+  model TEXT
+);
+
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('title', NULL, NULL);
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('vision', NULL, NULL);
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('asr', NULL, NULL);

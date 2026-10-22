@@ -42,7 +42,7 @@ mylife/
 │       ├── Files.java          base64 落盘
 │       └── Json.java
 ├── tools/sync.js   把 web/ 同步进 assets
-└── build-apk.bat   一条命令出 APK
+├── build-apk.bat   一条命令出 APK
 ```
 
 ---
@@ -121,6 +121,50 @@ WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所�
 见 `server/schema.sql`。两端共用同一份。
 
 ---
+
+## AI 配置中心
+
+设置 → 模型来源。可以加**任意多条**，每条独立：
+
+| 类型 | 地址示例 | 说明 |
+| --- | --- | --- |
+| OpenAI 兼容 | `https://api.openai.com/v1` | 任何走 `/v1/chat/completions` 的服务 |
+| DeepSeek | `https://api.deepseek.com/v1` | 官方接口 |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | 国内可直连，DeepSeek/千问都能调 |
+| 本机 Ollama | `http://127.0.0.1:11434/v1` | 不用 Key，跑在自己电脑上 |
+| 自定义 / 内网 | 你自己填 | vLLM、中转站等 |
+
+每条配置的操作：**测试**（发一句"只回两个字：可用"，回显耗时和回复）、**拉模型**（GET `/models`，拉回来存在本地供下拉选择）、**编辑**、**删除**。
+
+**用途绑定**（各环节用哪个模型）：起章名 / 看照片 / 语音转文字，留空就走第一条可用配置。
+
+**多模态**：`messages` 里带 `image_url`（data URL 或 http 地址）直接透传，不支持的模型会返回明确的错误。
+
+API Key 只存在本地 `settings` 表，**永远不下发到前端**；请求由原生侧（Java）或 Node 发出，前端拿不到 Key。
+
+## 朗读与阅读偏好
+
+- **安卓**：用系统原生 TTS（`Tts.java`），逐句朗读 + 逐句高亮 + 进度条
+- **浏览器**：用 `speechSynthesis`，同样的逐句逻辑
+- 底部条：慢/快调速（0.6×–1.5×）、当前第几句、停止
+- 设置里可调：字号 15–30px、夜间模式、语速
+
+### 关于「老手机能读、新手机没声音」
+
+这是 **Android 11（API 30）的包可见性限制**：App 必须先在 Manifest 里声明
+
+```xml
+<queries>
+    <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+</queries>
+```
+
+否则看不到系统 TTS 引擎，`new TextToSpeech()` 直接返回 ERROR。已补上（`AndroidManifest.xml` 顶部）。
+
+另外还做了三件事防同类问题：
+1. `setLanguage` 的返回值逐个判断，`LANG_MISSING_DATA` 会明确提示"去系统设置下载中文语音包"
+2. 枚举设备上的所有 TTS 引擎，可通过 `NativeTTS.useEngine(pkg)` 换一个
+3. 单句超过 900 字自动切分（TTS 对超长文本不可靠）
 
 ## 已知限制
 

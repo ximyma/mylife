@@ -36,20 +36,19 @@ const db = new DatabaseSync(DB_FILE);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
-if (fresh) {
+// schema 里全是 IF NOT EXISTS / INSERT OR IGNORE，所以每次启动都跑一遍：
+// 加新表自动生效，不需要维护迁移器。
+{
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   let ok = 0, all = 0;
   for (const stmt of schema.split(';')) {
-    // 逐行去掉注释后再判断
     const clean = stmt.split('\n').filter(l => !l.trim().startsWith('--')).join('\n').trim();
     if (!clean) continue;
     all++;
     try { db.exec(clean); ok++; }
     catch (e) { console.warn('[schema] 跳过：', clean.slice(0, 50), e.message); }
   }
-  console.log(`建表完成：${ok}/${all}`);
-} else {
-  console.log('已有数据库：' + DB_FILE);
+  console.log(`${fresh ? '新建' : '已有'}数据库，结构 ${ok}/${all} 条就绪`);
 }
 
 /* ---------------- HTTP 工具 ---------------- */
@@ -95,8 +94,9 @@ const MIME = {
   '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav',
 };
 
-/** 支持 Range：没有 206，视频拖不动进度条 */
-function sendFile(req, res, abs) {
+/** 支持 Range：没有 206，视频拖不动进度条。cache 默认给素材用一天，前端文件要 no-cache。 */
+function sendFile(req, res, abs, cache) {
+  var cache = arguments[3] || 'private, max-age=86400';
   let st;
   try { st = fs.statSync(abs); } catch { return sendText(res, 404, 'not found'); }
   if (!st.isFile()) return sendText(res, 404, 'not found');
@@ -119,7 +119,7 @@ function sendFile(req, res, abs) {
         'content-type': type, 'accept-ranges': 'bytes',
         'content-range': `bytes ${start}-${end}/${st.size}`,
         'content-length': end - start + 1,
-        'cache-control': 'private, max-age=86400',
+        'cache-control': cache,
       });
       return fs.createReadStream(abs, { start, end }).pipe(res);
     }
@@ -127,7 +127,7 @@ function sendFile(req, res, abs) {
 
   res.writeHead(200, {
     'content-type': type, 'content-length': st.size,
-    'accept-ranges': 'bytes', 'cache-control': 'private, max-age=86400',
+    'accept-ranges': 'bytes', 'cache-control': cache,
   });
   fs.createReadStream(abs).pipe(res);
 }
@@ -152,41 +152,182 @@ function apiExec(body) {
   return { ok: true, changes: Number(r.changes || 0), lastId: Number(r.lastInsertRowid || 0) };
 }
 
-async function apiAi(body) {
-  const get = k => {
-    const row = db.prepare('SELECT v FROM settings WHERE k=?').get(k);
-    return row ? String(row.v) : null;
-  };
-  const base = get('ai.base');
-  const key = get('ai.key');
-  const model = get('ai.model') || 'deepseek-ai/DeepSeek-V4-Flash';
-  const temp = Number(get('ai.temp') || 0.7);
+/* ---- AI：配置、拉模型、测试、对话 ---- */
 
-  if (!base) return { ok: false, message: '还没配模型。打开「设置 → 模型」，填上接口地址和 Key。' };
-  if (!key) return { ok: false, message: '还没填 API Key。' };
+function profileById(id) {
+  return db.prepare('SELECT * FROM ai_profiles WHERE id=?').get(Number(id));
+}
 
-  const url = base.replace(/\/+$/, '') + '/chat/completions';
-  const payload = { model, messages: body.messages || [], temperature: temp, stream: false };
+function profileForSlot(slot) {
+  const row = db.prepare('SELECT profile_id, model FROM ai_slots WHERE slot=?').get(slot);
+  if (!row || !row.profile_id) return null;
+  const p = profileById(row.profile_id);
+  return p ? { profile: p, model: row.model || p.default_model } : null;
+}
 
+function defaultProfile() {
+  return db.prepare('SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id LIMIT 1').get();
+}
+
+/** 决定这次用哪条配置：显式 profileId > 用途槽位 > 第一条可用 */
+function pickProfile(body) {
+  if (body.profileId) {
+    const p = profileById(body.profileId);
+    if (p) return { profile: p, model: body.model || p.default_model };
+  }
+  if (body.slot) {
+    const hit = profileForSlot(body.slot);
+    if (hit) return hit;
+  }
+  const p = defaultProfile();
+  return p ? { profile: p, model: body.model || p.default_model } : null;
+}
+
+function endpointOf(p) {
+  const base = String(p.base_url || '').replace(/\/+$/, '');
+  return base;
+}
+
+async function fetchJson(url, opts, timeoutMs) {
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 90000);
+  const timer = setTimeout(() => ac.abort(), timeoutMs || 30000);
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
-      body: JSON.stringify(payload),
-      signal: ac.signal,
-    });
+    const r = await fetch(url, { ...opts, signal: ac.signal });
     const text = await r.text();
-    if (!r.ok) return { ok: false, message: `模型返回 ${r.status}：${text.slice(0, 200)}` };
-    const j = JSON.parse(text);
-    const content = j.choices && j.choices[0] && j.choices[0].message
-      ? j.choices[0].message.content : '';
-    return { ok: true, text: content };
-  } catch (e) {
-    return { ok: false, message: '调不通：' + (e.message || e) };
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* 有的服务返回非 JSON */ }
+    return { ok: r.ok, status: r.status, text, json };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function authHeaders(p) {
+  const h = { 'content-type': 'application/json' };
+  if (p.api_key) h.authorization = 'Bearer ' + p.api_key;
+  return h;
+}
+
+/** 拉模型列表：GET /models（OpenAI / Ollama / vLLM 通吃） */
+async function apiAiModels(body) {
+  const p = body.profileId ? profileById(body.profileId) : null;
+  if (!p) return { ok: false, message: '没有这条配置' };
+  const url = endpointOf(p) + '/models';
+  try {
+    const r = await fetchJson(url, { method: 'GET', headers: authHeaders(p) }, 20000);
+    if (!r.ok) {
+      return { ok: false, message: `拉不到模型（HTTP ${r.status}）：${String(r.text).slice(0, 160)}` };
+    }
+    const list = (r.json && (r.json.data || r.json.models)) || [];
+    const ids = [];
+    for (const m of list) {
+      const id = m && (m.id || m.name || m.model);
+      if (id) ids.push(String(id));
+    }
+    db.prepare('UPDATE ai_profiles SET models_json=? WHERE id=?').run(JSON.stringify(ids), p.id);
+    return { ok: true, models: ids, count: ids.length };
+  } catch (e) {
+    return { ok: false, message: '连不上：' + (e.message || e) };
+  }
+}
+
+/** 测试连通性：发一句最短的话 */
+async function apiAiTest(body) {
+  const pick = pickProfile(body);
+  if (!pick) return { ok: false, message: '还没有可用的模型配置' };
+  const { profile, model } = pick;
+  const useModel = model || profile.default_model;
+  if (!useModel) return { ok: false, message: '这条配置还没选模型' };
+
+  const t0 = Date.now();
+  try {
+    const r = await fetchJson(endpointOf(profile) + '/chat/completions', {
+      method: 'POST',
+      headers: authHeaders(profile),
+      body: JSON.stringify({
+        model: useModel,
+        messages: [{ role: 'user', content: '只回两个字：可用' }],
+        temperature: 0,
+        // 推理模型（qwen3 / deepseek-r1）会先吐思考 token，给 16 会全被思考吃掉，
+        // 正文一个字都不剩。给 96 才稳。
+        max_tokens: 96,
+        stream: false,
+      }),
+    }, 60000);
+
+    const ms = Date.now() - t0;
+    if (!r.ok) {
+      return { ok: false, ms, status: r.status,
+        message: `HTTP ${r.status}：${String(r.text).slice(0, 200)}` };
+    }
+    const choice = (r.json && r.json.choices && r.json.choices[0]) || {};
+    const msg = choice.message || {};
+    // 推理模型的思考内容字段各家叫法不同
+    const text = String(msg.content || '').trim();
+    const think = String(msg.reasoning_content || msg.reasoning || '').trim();
+    const used = (r.json && r.json.usage && r.json.usage.completion_tokens) || 0;
+    const finished = choice.finish_reason || '';
+
+    if (!text && !think && !used) {
+      return { ok: false, ms, model: useModel,
+        message: '模型回了空内容，可能这不是对话模型' };
+    }
+    return {
+      ok: true, ms, model: useModel,
+      reply: String(text || '（推理模型，' + used + ' tokens 已响应）').slice(0, 40),
+      thinking: !text && !!think,
+      finish: finished,
+    };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, message: '连不上：' + (e.message || e) };
+  }
+}
+
+/** 对话：支持多模态（messages 里带 image_url 直接透传） */
+async function apiAi(body) {
+  const pick = pickProfile(body);
+  if (!pick) {
+    return { ok: false, message: '还没配模型。打开「设置 → 模型」加一条。' };
+  }
+  const { profile, model } = pick;
+  const useModel = model || profile.default_model;
+  if (!useModel) return { ok: false, message: '这条配置还没选模型' };
+  if (!body.messages || !body.messages.length) return { ok: false, message: '没有要发送的内容' };
+
+  const payload = {
+    model: useModel,
+    messages: body.messages,
+    temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
+    stream: false,
+  };
+  if (body.maxTokens) payload.max_tokens = body.maxTokens;
+
+  const t0 = Date.now();
+  try {
+    const r = await fetchJson(endpointOf(profile) + '/chat/completions', {
+      method: 'POST',
+      headers: authHeaders(profile),
+      body: JSON.stringify(payload),
+    }, 120000);
+    const ms = Date.now() - t0;
+
+    if (!r.ok) {
+      return { ok: false, ms, status: r.status,
+        message: `模型返回 ${r.status}：${String(r.text).slice(0, 200)}` };
+    }
+    const msg = r.json && r.json.choices && r.json.choices[0] && r.json.choices[0].message;
+    // 推理模型只吐思考、正文被 max_tokens 截断时，退一步拿思考内容，总比给用户一片空白强
+    const body = (msg && (msg.content || msg.reasoning_content || msg.reasoning)) || '';
+    return {
+      ok: true,
+      ms,
+      model: useModel,
+      profile: profile.name,
+      text: body,
+      usage: (r.json && r.json.usage) || null,
+    };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, message: '调不通：' + (e.message || e) };
   }
 }
 
@@ -261,6 +402,8 @@ const server = http.createServer(async (req, res) => {
       if (pathname === '/api/query') out = apiQuery(body);
       else if (pathname === '/api/exec') out = apiExec(body);
       else if (pathname === '/api/ai') out = await apiAi(body);
+      else if (pathname === '/api/ai/models') out = await apiAiModels(body);
+      else if (pathname === '/api/ai/test') out = await apiAiTest(body);
       else if (pathname === '/api/file') out = apiFile(body);
       else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
       return sendJson(res, 200, out);
@@ -279,9 +422,9 @@ const server = http.createServer(async (req, res) => {
     if (!abs.startsWith(WEB)) return sendText(res, 404, 'not found');
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
       // 单页应用：未知路径回 index.html
-      return sendFile(req, res, path.join(WEB, 'index.html'));
+      return sendFile(req, res, path.join(WEB, 'index.html'), 'no-cache');
     }
-    return sendFile(req, res, abs);
+    return sendFile(req, res, abs, 'no-cache');
 
   } catch (e) {
     if (pathname.startsWith('/api/')) return sendJson(res, 200, { __error: String(e.message || e) });

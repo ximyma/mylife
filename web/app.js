@@ -5,6 +5,29 @@
 (function () {
   'use strict';
 
+  /* ---- 老 WebView 补丁：安卓 5/6 的内核没有 closest / startsWith / find ---- */
+  if (!Element.prototype.closest) {
+    Element.prototype.closest = function (sel) {
+      var el = this;
+      while (el && el.nodeType === 1) {
+        if ((el.matches || el.msMatchesSelector || el.webkitMatchesSelector).call(el, sel)) return el;
+        el = el.parentElement;
+      }
+      return null;
+    };
+  }
+  if (!String.prototype.startsWith) {
+    String.prototype.startsWith = function (t, pos) {
+      return this.substr(pos || 0, String(t).length) === String(t);
+    };
+  }
+  if (!Array.prototype.find) {
+    Array.prototype.find = function (fn) {
+      for (var i = 0; i < this.length; i++) if (fn(this[i], i, this)) return this[i];
+      return undefined;
+    };
+  }
+
   var app = document.getElementById('app');
   var toastEl = document.getElementById('toast');
   var toastTimer = null;
@@ -172,6 +195,9 @@
         (a.intro ? '<p class="cover-intro">「' + esc(a.intro) + '」</p>' : '') +
         '<div class="cover-foot">共 ' + d.chapters.length + ' 章' +
         (a.status === 'ready' ? '' : ' · 还没生成') + '</div>' +
+        (d.chapters.length
+          ? '<div class="cover-acts"><button class="btn tiny" data-read-all="1">从头朗读</button></div>'
+          : '') +
         '</section>';
 
       /* 档案信息 */
@@ -221,7 +247,8 @@
         html += '<section class="chapter" id="ch-' + c.id + '">';
         html += '<h2 class="ch-title"><span class="ch-idx">' + (ci + 1) + '</span>' +
           '<span class="ch-name">' + esc(String(c.title || '').replace(/^[^·]*·\s*/, '')) + '</span>' +
-          '<span class="ch-year">' + esc(c.year_from ? DB.yearLabel(c.year_from, c.year_to) : '') + '</span></h2>';
+          '<span class="ch-year">' + esc(c.year_from ? DB.yearLabel(c.year_from, c.year_to) : '') + '</span>' +
+          '<button class="ch-read" data-read-ch="' + c.id + '" title="从这一章开头朗读">读</button></h2>';
         if (c.stage) html += '<div class="ch-kicker">' + esc(c.stage) +
           (a.birth_year && c.year_from ? ' · ' + (c.year_from - a.birth_year) + ' 岁' : '') + '</div>';
         if (c.quote) html += '<blockquote class="ch-quote">“' + esc(c.quote) + '”</blockquote>';
@@ -543,63 +570,371 @@
 
   /* ---------------- 设置 ---------------- */
 
+  var KINDS = [
+    { k: 'openai', label: 'OpenAI 兼容', base: 'https://api.openai.com/v1', key: true },
+    { k: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com/v1', key: true },
+    { k: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1', key: true },
+    { k: 'ollama', label: '本机 Ollama', base: 'http://127.0.0.1:11434/v1', key: false },
+    { k: 'custom', label: '自定义 / 内网', base: '', key: true }
+  ];
+
+  function kindLabel(k) {
+    for (var i = 0; i < KINDS.length; i++) if (KINDS[i].k === k) return KINDS[i].label;
+    return k;
+  }
+
+  var editing = null;          // 正在编辑的配置；null 表示新增
+  var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
+
   function renderSettings() {
-    DB.getSettings().then(function (s) {
-      app.innerHTML = topbar({ back: '#/', title: '设置' }) +
-        '<main class="wrap narrow">' +
-        '<h2 class="set-h">模型</h2>' +
-        '<p class="muted">用来给章节起名、写一句话简介。不填也能用——章节名会自动按年份加内容摘要。</p>' +
+    Promise.all([DB.listProfiles(), DB.getSlots(), DB.getSettings()]).then(function (r) {
+      var profiles = r[0], slots = r[1], cfg = r[2];
+      var slotMap = {};
+      for (var i = 0; i < slots.length; i++) slotMap[slots[i].slot] = slots[i];
 
-        '<div class="fld"><label>接口地址</label>' +
-        '<input id="aiBase" placeholder="https://api.siliconflow.cn/v1" value="' +
-        esc(s['ai.base'] || '') + '"></div>' +
+      var html = topbar({ back: '#/', title: '设置' }) + '<main class="wrap narrow">';
 
-        '<div class="fld"><label>API Key</label>' +
-        '<input id="aiKey" type="password" placeholder="sk-..." value="' +
-        esc(s['ai.key'] || '') + '"></div>' +
+      /* ---- 模型来源 ---- */
+      html += '<h2 class="set-h">模型来源</h2>' +
+        '<p class="hint">随便加几条，用哪个都行。不配也能用——章节名会按年份和内容自动生成。</p>' +
+        '<p class="hint dim">「拉模型」只读模型清单，几乎不占资源；「测试」会真发一句话。' +
+        '标着<b>本机</b>的配置会把模型加载进这台机器，没有独立显卡时很慢也很吃内存，' +
+        '平时建议用云端服务。</p>';
 
-        '<div class="fld"><label>模型名</label>' +
-        '<input id="aiModel" placeholder="deepseek-ai/DeepSeek-V4-Flash" value="' +
-        esc(s['ai.model'] || '') + '"></div>' +
+      if (!profiles.length) {
+        html += '<div class="empty">还没有配置。点下面「添加」开始。</div>';
+      }
 
-        '<div class="row"><div class="col"><label>温度</label>' +
-        '<input id="aiTemp" inputmode="decimal" value="' + esc(s['ai.temp'] || '0.7') + '"></div></div>' +
+      for (var p = 0; p < profiles.length; p++) {
+        var pf = profiles[p];
+        var models = [];
+        try { models = JSON.parse(pf.models_json || '[]'); } catch (e) { models = []; }
+        // 本机部署（ollama / vLLM / LM Studio）：点测试会真的把模型加载进内存
+        var local = /127\.0\.0\.1|localhost|0\.0\.0\.0|192\.168\.|:11434/.test(pf.base_url || '');
+        html += '<div class="ai-card' + (pf.enabled ? '' : ' off') + '">' +
+          '<div class="ai-card-top">' +
+          '<b>' + esc(pf.name) + '</b>' +
+          '<span class="tag">' + esc(kindLabel(pf.kind)) + '</span>' +
+          (local ? '<span class="tag warn" title="模型跑在这台机器上">本机</span>' : '') +
+          '<button class="linkbtn" data-toggle="' + pf.id + '" data-to="' + (pf.enabled ? 0 : 1) + '">' +
+          (pf.enabled ? '停用' : '启用') + '</button>' +
+          '</div>' +
+          '<div class="ai-url">' + esc(pf.base_url) + '</div>' +
+          '<div class="ai-model">' + (pf.default_model
+            ? '模型：<b>' + esc(pf.default_model) + '</b>'
+            : '<span class="warn-text">还没选模型</span>') +
+          (models.length ? ' <span class="muted">· 可选 ' + models.length + ' 个</span>' : '') +
+          '</div>' +
+          '<div class="ai-acts">' +
+          '<button class="btn tiny" data-test="' + pf.id + '"' +
+            (local ? ' data-local="1"' : '') + '>测试</button>' +
+          '<button class="btn tiny" data-pull="' + pf.id + '">拉模型</button>' +
+          '<button class="btn tiny" data-edit="' + pf.id + '">编辑</button>' +
+          '<button class="btn tiny danger" data-del="' + pf.id + '">删除</button>' +
+          '</div></div>';
+      }
 
-        '<div class="row end">' +
-        '<button class="btn" id="aiTest">测试连通性</button>' +
-        '<button class="btn primary" id="aiSave">保存</button></div>' +
+      html += '<div id="profileForm"></div>' +
+        (profiles.length ? '' : '') +
+        '<div class="row end" style="margin-top:14px">' +
+        '<button class="btn" id="addProfile">＋ 添加配置</button></div>';
 
-        '<h2 class="set-h">关于</h2>' +
+      /* ---- 用途绑定 ---- */
+      html += '<h2 class="set-h">各环节用哪个模型</h2>' +
+        '<p class="hint">留空就用上面第一条可用的配置。</p>';
+
+      var SLOTS = [
+        { k: 'title', label: '起章名 / 写简介', hint: '要一点文笔，建议用云端大模型' },
+        { k: 'vision', label: '看照片', hint: '给老照片认场景（多模态模型）' },
+        { k: 'asr', label: '语音转文字', hint: '需支持音频输入的服务' }
+      ];
+
+      for (var si = 0; si < SLOTS.length; si++) {
+        var sl = SLOTS[si];
+        var bound = slotMap[sl.k] || {};
+        var opts = '<option value="">不用（按规则）</option>';
+        for (var q = 0; q < profiles.length; q++) {
+          opts += '<option value="' + profiles[q].id + '"' +
+            (String(bound.profile_id) === String(profiles[q].id) ? ' selected' : '') + '>' +
+            esc(profiles[q].name) + '</option>';
+        }
+        html += '<div class="slot-row" data-slot="' + sl.k + '">' +
+          '<div class="slot-label"><b>' + esc(sl.label) + '</b><small>' + esc(sl.hint) + '</small></div>' +
+          '<select class="slot-pick">' + opts + '</select>' +
+          '<button class="btn tiny" data-slot-test="' + sl.k + '">试一下</button>' +
+          '</div>';
+      }
+
+      /* ---- 阅读 ---- */
+      html += '<h2 class="set-h">阅读</h2>' +
+        '<div class="pref-row"><span>字号</span>' +
+        '<input type="range" id="prefFont" min="15" max="30" step="1" value="' +
+        esc(cfg['pref.font'] || '18') + '">' +
+        '<b id="prefFontVal">' + esc(cfg['pref.font'] || '18') + '</b></div>' +
+
+        '<div class="pref-row"><span>夜间模式</span>' +
+        '<input type="checkbox" id="prefNight" class="switch"' +
+        (cfg['pref.night'] === '1' ? ' checked' : '') + '>' +
+        '<span class="muted">黑底米字，晚上看不刺眼</span></div>' +
+
+        '<div class="pref-row"><span>朗读语速</span>' +
+        '<input type="range" id="prefRate" min="6" max="14" step="1" value="' +
+        esc(Math.round((Number(cfg['pref.rate']) || 0.95) * 10)) + '">' +
+        '<b id="prefRateVal">' + (Number(cfg['pref.rate']) || 0.95).toFixed(1) + '×</b></div>';
+
+      /* ---- 关于 ---- */
+      html += '<h2 class="set-h">关于</h2>' +
         '<p class="hint">我的人生档案 · The Story of My Life<br>' +
-        '数据全部存在这台设备上，不上传任何地方。<br>' +
-        '只有你自己配了模型，生成时才会把章节标题发出去。</p>' +
-        '</main>';
+        '数据全部存在这台设备上，不会上传到任何地方。<br>' +
+        '只有你自己配了模型，生成时才会把章节标题发出去；照片只有在你点「看照片」时才会发。</p>';
 
-      document.getElementById('aiSave').onclick = function () {
-        var btn = this;
-        btn.disabled = true;
-        Promise.all([
-          DB.saveSetting('ai.base', document.getElementById('aiBase').value.trim()),
-          DB.saveSetting('ai.key', document.getElementById('aiKey').value.trim()),
-          DB.saveSetting('ai.model', document.getElementById('aiModel').value.trim()),
-          DB.saveSetting('ai.temp', document.getElementById('aiTemp').value.trim() || '0.7')
-        ]).then(function () {
-          toast('已保存');
-          btn.disabled = false;
-        }).catch(function (e) { fail(e); btn.disabled = false; });
-      };
+      html += '</main>';
+      app.innerHTML = html;
 
-      document.getElementById('aiTest').onclick = function () {
-        var btn = this;
-        btn.disabled = true;
-        toast('正在问模型……');
-        API.ai([{ role: 'user', content: '只回两个字：可用' }]).then(function (r) {
-          if (r.ok) toast('通了：' + String(r.text).slice(0, 20));
-          else toast(r.message || '不通');
-          btn.disabled = false;
-        }).catch(function (e) { fail(e); btn.disabled = false; });
-      };
+      bindSettings(profiles, slotMap);
     }).catch(fail);
+  }
+
+  function bindSettings(profiles, slotMap) {
+    /* --- 添加 / 编辑 --- */
+    var addBtn = document.getElementById('addProfile');
+    if (addBtn) addBtn.onclick = function () {
+      editing = null;
+      showProfileForm({ kind: 'openai', base_url: KINDS[0].base, enabled: 1 });
+    };
+
+    if (settingsClickHandler) document.removeEventListener('click', settingsClickHandler);
+    settingsClickHandler = function (ev) {
+      var t;
+
+      if ((t = ev.target.closest('[data-edit]'))) {
+        var id = Number(t.getAttribute('data-edit'));
+        for (var i = 0; i < profiles.length; i++) {
+          if (profiles[i].id === id) {
+            editing = profiles[i];
+            showProfileForm(profiles[i]);
+            return;
+          }
+        }
+      }
+
+      if ((t = ev.target.closest('[data-del]'))) {
+        var did = Number(t.getAttribute('data-del'));
+        if (!confirm('删掉这条配置？绑定了它的环节会自动清空。')) return;
+        DB.deleteProfile(did).then(function () {
+          toast('已删除');
+          renderSettings();
+        }).catch(fail);
+        return;
+      }
+
+      if ((t = ev.target.closest('[data-toggle]'))) {
+        var tid = Number(t.getAttribute('data-toggle'));
+        var to = Number(t.getAttribute('data-to')) === 1;
+        DB.toggleProfile(tid, to).then(function () {
+          renderSettings();
+        }).catch(fail);
+        return;
+      }
+
+      if ((t = ev.target.closest('[data-test]'))) {
+        var pid = Number(t.getAttribute('data-test'));
+        // 本机模型一点测试就真的进内存，没独显的机器会卡很久，先说清楚
+        if (t.getAttribute('data-local') === '1') {
+          if (!confirm('这条是跑在本机的模型。\n点「确定」会让它加载进内存（7B 约 5–6GB），\n没有独立显卡时单次要 20–60 秒，机器会明显变卡。\n\n继续测试吗？')) return;
+        }
+        t.disabled = true;
+        t.textContent = '测试中';
+        DB.testProfile(pid).then(function (r) {
+          if (r.ok) {
+            var sec = (r.ms / 1000).toFixed(1) + 's';
+            if (r.thinking) toast(r.model + ' · ' + sec + ' · 已响应（推理型）');
+            else toast(r.model + ' · ' + sec + ' · 「' + (r.reply || '') + '」');
+          } else {
+            toast(r.message || '不通');
+          }
+          t.disabled = false;
+          t.textContent = '测试';
+        }).catch(function (e) { fail(e); t.disabled = false; t.textContent = '测试'; });
+        return;
+      }
+
+      if ((t = ev.target.closest('[data-pull]'))) {
+        var lid = Number(t.getAttribute('data-pull'));
+        t.disabled = true;
+        t.textContent = '拉取中';
+        DB.pullModels(lid).then(function (r) {
+          if (r.ok) {
+            toast('拉到 ' + r.count + ' 个模型');
+            renderSettings();
+          } else {
+            toast(r.message || '拉不到');
+            t.disabled = false;
+            t.textContent = '拉模型';
+          }
+        }).catch(function (e) { fail(e); t.disabled = false; t.textContent = '拉模型'; });
+        return;
+      }
+
+      if ((t = ev.target.closest('[data-slot-test]'))) {
+        var sk = t.getAttribute('data-slot-test');
+        t.disabled = true;
+        t.textContent = '试跑中';
+        DB.testSlot(sk).then(function (r) {
+          if (r.ok) {
+            var sec2 = (r.ms / 1000).toFixed(1) + 's';
+            toast(r.model + ' · ' + sec2 + (r.thinking ? ' · 已响应（推理型）' : ' · 通了'));
+          } else {
+            toast(r.message || '没配好');
+          }
+          t.disabled = false;
+          t.textContent = '试一下';
+        }).catch(function (e) { fail(e); t.disabled = false; t.textContent = '试一下'; });
+        return;
+      }
+    };
+    document.addEventListener('click', settingsClickHandler);
+
+    /* --- 用途绑定 --- */
+    var rows = document.querySelectorAll('.slot-row');
+    for (var i = 0; i < rows.length; i++) {
+      (function (row) {
+        var sel = row.querySelector('.slot-pick');
+        sel.onchange = function () {
+          var slot = row.getAttribute('data-slot');
+          var pid = sel.value ? Number(sel.value) : null;
+          DB.setSlot(slot, pid, null).then(function () {
+            toast(pid ? '已绑定' : '已改为按规则');
+          }).catch(fail);
+        };
+      })(rows[i]);
+    }
+
+    /* --- 阅读偏好 --- */
+    var font = document.getElementById('prefFont');
+    var fontVal = document.getElementById('prefFontVal');
+    if (font) {
+      font.oninput = function () {
+        fontVal.textContent = font.value;
+      };
+      font.onchange = function () {
+        DB.setPref('font', font.value).then(function () { toast('字号已保存'); }).catch(fail);
+      };
+    }
+
+    var night = document.getElementById('prefNight');
+    if (night) night.onchange = function () {
+      DB.setPref('night', night.checked ? 1 : 0).then(function () {
+        applyPrefs();
+      }).catch(fail);
+    };
+
+    var rate = document.getElementById('prefRate');
+    var rateVal = document.getElementById('prefRateVal');
+    if (rate) {
+      rate.oninput = function () {
+        rateVal.textContent = (Number(rate.value) / 10).toFixed(1) + '×';
+      };
+      rate.onchange = function () {
+        DB.setPref('rate', Number(rate.value) / 10).then(function () { toast('语速已保存'); }).catch(fail);
+      };
+    }
+  }
+
+  function showProfileForm(pf) {
+    var box = document.getElementById('profileForm');
+    if (!box) return;
+
+    var isEdit = !!pf.id;
+    var kindOpts = '';
+    for (var i = 0; i < KINDS.length; i++) {
+      kindOpts += '<option value="' + KINDS[i].k + '"' +
+        ((pf.kind || 'openai') === KINDS[i].k ? ' selected' : '') + '>' + KINDS[i].label + '</option>';
+    }
+
+    var models = [];
+    try { models = JSON.parse(pf.models_json || '[]'); } catch (e) { models = []; }
+    var modelOpts = '<option value="">— 手填或先拉取 —</option>';
+    for (var m = 0; m < models.length; m++) {
+      modelOpts += '<option value="' + esc(models[m]) + '"' +
+        (pf.default_model === models[m] ? ' selected' : '') + '>' + esc(models[m]) + '</option>';
+    }
+
+    box.innerHTML = '<div class="ai-form">' +
+      '<div class="ai-form-title">' + (isEdit ? '编辑配置' : '新增配置') + '</div>' +
+
+      '<div class="fld"><label>名称</label>' +
+      '<input id="pfName" value="' + esc(pf.name || '') + '" placeholder="比如：硅基流动 / 家里电脑的 Ollama"></div>' +
+
+      '<div class="fld"><label>类型</label>' +
+      '<select id="pfKind">' + kindOpts + '</select></div>' +
+
+      '<div class="fld"><label>接口地址（到 /v1 为止）</label>' +
+      '<input id="pfBase" value="' + esc(pf.base_url || '') + '" placeholder="https://api.siliconflow.cn/v1"></div>' +
+
+      '<div class="fld"><label>API Key（Ollama 可留空）</label>' +
+      '<input id="pfKey" type="password" value="" placeholder="' +
+      (isEdit && pf.api_key ? '已保存，留空表示不改' : 'sk-...') + '"></div>' +
+
+      '<div class="fld"><label>用哪个模型</label>' +
+      '<select id="pfModelSel">' + modelOpts + '</select></div>' +
+
+      '<div class="fld"><label>或手填模型名</label>' +
+      '<input id="pfModel" value="' + esc(pf.default_model || '') + '" placeholder="deepseek-chat"></div>' +
+
+      '<div class="row end">' +
+      '<button class="btn tiny ghost" id="pfCancel">取消</button>' +
+      '<button class="btn primary" id="pfSave">保存</button></div>' +
+      '</div>';
+
+    var kindSel = document.getElementById('pfKind');
+    kindSel.onchange = function () {
+      for (var i = 0; i < KINDS.length; i++) {
+        if (KINDS[i].k === kindSel.value && KINDS[i].base) {
+          document.getElementById('pfBase').value = KINDS[i].base;
+        }
+      }
+    };
+
+    var modelSel = document.getElementById('pfModelSel');
+    modelSel.onchange = function () {
+      if (modelSel.value) document.getElementById('pfModel').value = modelSel.value;
+    };
+
+    document.getElementById('pfCancel').onclick = function () { box.innerHTML = ''; };
+
+    document.getElementById('pfSave').onclick = function () {
+      var btn = this;
+      btn.disabled = true;
+      var keyVal = document.getElementById('pfKey').value;
+      var payload = {
+        id: pf.id || null,
+        name: document.getElementById('pfName').value,
+        kind: kindSel.value,
+        base_url: document.getElementById('pfBase').value,
+        api_key: keyVal ? keyVal : (pf.api_key || null),
+        default_model: document.getElementById('pfModel').value.trim() || null,
+        enabled: 1
+      };
+      DB.saveProfile(payload).then(function () {
+        toast('已保存');
+        box.innerHTML = '';
+        renderSettings();
+      }).catch(function (e) { fail(e); btn.disabled = false; });
+    };
+
+    box.scrollIntoView({ block: 'center' });
+  }
+
+  /** 阅读偏好落到 body，档案页的字号和夜间都靠它 */
+  function applyPrefs() {
+    DB.getPref('font', '18').then(function (f) {
+      document.documentElement.style.setProperty('--fs', f + 'px');
+      return DB.getPref('night', '0');
+    }).then(function (n) {
+      if (n === '1') document.body.className = 'night';
+      else document.body.className = '';
+    }).catch(function () {});
   }
 
   /* ---------------- 路由 ---------------- */
@@ -619,10 +954,30 @@
     route();
   });
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', route);
-  } else {
+  function bindTtsOnce() {
+    document.addEventListener('click', function (ev) {
+      var t;
+      if ((t = ev.target.closest('[data-read-all]'))) {
+        var paper = document.querySelector('.paper');
+        if (paper) window.TTS.speakFrom(paper);
+        return;
+      }
+      if ((t = ev.target.closest('[data-read-ch]'))) {
+        var sec = document.getElementById('ch-' + t.getAttribute('data-read-ch'));
+        if (sec) window.TTS.speakFrom(sec);
+      }
+    });
+  }
+
+  function boot() {
+    applyPrefs();   // 先把字号/夜间落到页面，避免闪一下
+    bindTtsOnce();
     route();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
   }
 
   window.APP = { route: route, toast: toast };

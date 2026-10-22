@@ -175,6 +175,82 @@ img{max-width:100%;display:block}
 .set-h{font-family:var(--serif);font-size:17px;margin:26px 0 10px}
 .set-h:first-child{margin-top:0}
 
+/* ---------- AI 配置 ---------- */
+.ai-card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;margin:12px 0}
+.ai-card.off{opacity:.55}
+.hint.dim{color:var(--muted);opacity:.85}
+.hint.dim b{color:var(--ink2)}
+.ai-card-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15.5px}
+.ai-card-top b{font-weight:600}
+/* 停用 / 启用：排在卡片标题行右侧，随顶行的 gap 自动贴边 */
+.linkbtn{margin-left:auto;font-size:12.5px;color:var(--accent);background:none;
+  border:none;padding:2px 4px;cursor:pointer}
+.linkbtn:hover{text-decoration:underline}
+.tag{font-size:10.5px;padding:1px 7px;border-radius:9px;background:var(--accent-soft);
+  color:var(--accent);border:1px solid transparent}
+.tag.warn{background:#F6E2DE;color:var(--danger)}
+.ai-url{font-size:12px;color:var(--muted);margin-top:5px;word-break:break-all}
+.ai-model{font-size:13px;color:var(--ink2);margin-top:5px}
+.warn-text{color:var(--danger);font-size:12.5px}
+.ai-acts{display:flex;gap:7px;margin-top:11px;flex-wrap:wrap}
+.ai-form{background:var(--card);border:1px solid var(--accent);border-radius:10px;
+  padding:16px;margin:12px 0}
+.ai-form-title{font-size:14px;color:var(--accent);margin-bottom:12px}
+.fld{margin:12px 0}
+.fld label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px}
+.slot-row{display:flex;gap:10px;align-items:center;padding:11px 0;
+  border-bottom:1px solid var(--line2);flex-wrap:wrap}
+.slot-label{flex:1;min-width:150px}
+.slot-label b{display:block;font-size:14.5px;font-weight:500}
+.slot-label small{color:var(--muted);font-size:12px}
+.slot-pick{flex:1;min-width:140px;font-size:14px}
+.pref-row{display:flex;gap:12px;align-items:center;padding:11px 0;
+  border-bottom:1px solid var(--line2);font-size:14px}
+.pref-row>span:first-child{flex:0 0 76px;color:var(--ink2)}
+.pref-row input[type=range]{flex:1;padding:0;background:none;border:0;min-height:24px}
+.pref-row b{flex:0 0 44px;text-align:right;font-variant-numeric:tabular-nums}
+.switch{width:44px;height:26px;flex:0 0 44px;appearance:none;-webkit-appearance:none;
+  background:var(--line);border-radius:13px;position:relative;padding:0;border:0;cursor:pointer}
+.switch:checked{background:var(--accent)}
+.switch:after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;
+  border-radius:50%;background:#fff;transition:.18s}
+.switch:checked:after{left:21px}
+
+/* ---------- 夜间 ---------- */
+body.night{
+  --paper:#191714; --card:#221F1A; --ink:#E9E3D9; --ink2:#C6BFB4;
+  --muted:#8C857A; --line:#37322B; --line2:#2B2721;
+  --accent:#D2915F; --accent-soft:#332619;
+}
+body.night .top{background:rgba(25,23,20,.94)}
+body.night .en:hover{background:transparent}
+body.night .arc-cover{box-shadow:1px 1px 0 rgba(255,255,255,.06)}
+body.night .ph img{background:#2A251E}
+body.night .ph-item{background:#241F19}
+body.night .md video{background:#000}
+
+/* 正文跟随字号设置 */
+.en p{font-size:var(--fs,18px);line-height:2}
+.ch-quote{font-size:calc(var(--fs,18px) + 0.5px)}
+
+/* ---------- 朗读 ---------- */
+.cover-acts{margin-top:14px}
+.ch-read{flex:0 0 auto;background:none;border:1px solid var(--line);border-radius:12px;
+  color:var(--muted);font:inherit;font-size:11.5px;padding:2px 9px;cursor:pointer;letter-spacing:.5px}
+.ch-read:hover{border-color:var(--accent);color:var(--accent)}
+.tts-reading{background:#FBF1DE;box-shadow:0 0 0 6px #FBF1DE;border-radius:3px;transition:background .2s}
+body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
+.tts-bar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:80;
+  display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);
+  background:rgba(31,29,26,.93);color:#fff;border-radius:24px;padding:8px 12px 8px 16px;
+  font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.22)}
+.tts-bar button{background:none;border:1px solid rgba(255,255,255,.32);color:#fff;
+  border-radius:14px;font:inherit;font-size:12px;padding:3px 10px;cursor:pointer}
+.tts-bar button:hover{background:rgba(255,255,255,.14)}
+.tts-bar .tts-stop{border-color:rgba(255,120,100,.6);color:#FFC3B8}
+.tts-pos{font-variant-numeric:tabular-nums;color:rgba(255,255,255,.75);font-size:12px;min-width:52px}
+
 /* ---------- 提示 ---------- */
 .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
   background:rgba(31,29,26,.9);color:#fff;font-size:13.5px;padding:10px 18px;border-radius:20px;

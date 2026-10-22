@@ -220,6 +220,12 @@ public class LocalServer {
             if (path.equals("/api/ai")) {
                 return Ai.chat(ctx, db, json);
             }
+            if (path.equals("/api/ai/models")) {
+                return Ai.models(ctx, db, json);
+            }
+            if (path.equals("/api/ai/test")) {
+                return Ai.test(ctx, db, json);
+            }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, json);
             }
