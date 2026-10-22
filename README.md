@@ -4,6 +4,26 @@
 
 **一个 SQLite 文件 + 一套纯 JS 前端 + 两种宿主（浏览器 / 安卓 WebView）。零 npm 依赖，零构建。**
 
+### 直接跑起来
+
+**不想装 Node** → 用打包好的 Windows 单文件版：
+
+```
+dist/win/
+├── MyLife.exe        双击即可，自动开浏览器；黑窗口关掉就退出
+├── resources/        界面文件（改界面不用重新打包 exe）
+├── data/             你的档案、照片、录音全在这，只有这个目录要备份
+└── 使用说明.txt
+```
+
+整个文件夹可以拷到任何一台电脑上；数据是跟着文件夹走的，卸载就是删文件夹。
+端口被占时换一个：`set PORT=4401 && MyLife.exe`
+
+**要在本地改代码** → `node server/server.js`，然后开 `http://127.0.0.1:4321`
+（需要 Node 22+，用内置的 `node:sqlite`，不用装任何依赖）
+
+重新打包 exe：`node tools/build-exe.js`（输出到 `dist/win/`）
+
 ---
 
 ## 和旧版的区别
