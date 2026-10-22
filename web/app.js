@@ -341,9 +341,19 @@
       for (var i = d.segments.length - 1; i >= 0; i--) {
         var s = d.segments[i];
         var txt = String(s.raw_text || '');
-        mats += '<div class="mat"><div class="mat-text">' +
+        // 录音存进来时留的是占位文本，这时按钮说"转成文字"；转过之后是"再转一次"
+        var pending = !!s.audio_path &&
+          (!txt || txt.indexOf('待转写') >= 0 || txt.indexOf('录音已保存') >= 0);
+        mats += '<div class="mat" data-mat="' + s.id + '">' +
+          '<div class="mat-text">' +
           esc(txt.slice(0, 110)) + (txt.length > 110 ? '…' : '') + '</div>' +
-          '<div class="mat-side">' + (s.year_hint ? s.year_hint + ' 年' : '未编年') + '</div></div>';
+          '<div class="mat-side">' + (s.year_hint ? s.year_hint + ' 年' : '未编年') + '</div>' +
+          (s.audio_path
+            ? '<div class="mat-acts">' +
+              '<button class="btn tiny" data-tr="' + s.id + '">' +
+              (pending ? '转成文字' : '再转一次') + '</button></div>'
+            : '') +
+          '</div>';
       }
 
       app.innerHTML = topbar({
@@ -493,6 +503,34 @@
       });
     };
 
+    /* --- 语音转文字 --- */
+    // 反复进出这页时，监听器不能一层层往上叠
+    if (collectClickHandler) app.removeEventListener('click', collectClickHandler);
+    collectClickHandler = function (ev) {
+      var b = ev.target.closest && ev.target.closest('[data-tr]');
+      if (!b) return;
+      var sid = Number(b.getAttribute('data-tr'));
+      if (b.disabled) return;
+      b.disabled = true;
+      var label = b.textContent;
+      b.textContent = '转写中…';
+      DB.transcribe(sid).then(function (r) {
+        if (!r.ok) {
+          toast(r.message || '转不出来');
+          b.disabled = false;
+          b.textContent = label;
+          return;
+        }
+        toast('转好了（' + (r.ms / 1000).toFixed(1) + 's）：' + String(r.text).slice(0, 20));
+        route();   // 重画整页，把转出来的文字显示出来
+      }).catch(function (e) {
+        toast(e.message || '转不出来');
+        b.disabled = false;
+        b.textContent = label;
+      });
+    };
+    app.addEventListener('click', collectClickHandler);
+
     /* --- 生成 --- */
     document.getElementById('genBtn').onclick = function () {
       var btn = this, hint = document.getElementById('genHint');
@@ -578,6 +616,17 @@
     { k: 'custom', label: '自定义 / 内网', base: '', key: true }
   ];
 
+  // 平台注册入口。前者是本项目作者的硅基流动邀请码，点了两边都有券；
+  // 后面各家是实测能领到免费额度、且接口与本项目兼容的。
+  var SIGNUP = [
+    { name: '硅基流动', url: 'https://cloud.siliconflow.cn/i/oSZ7RcMc',
+      note: '免费档常驻模型：DeepSeek-OCR（看图）、Qwen3-ASR-1.7B（转文字）、Hunyuan-MT-7B（写稿）、Qwen3-8B', star: true },
+    { name: '腾讯云混元', url: 'https://curl.qcloud.com/ofeR1Flf',
+      note: '首次开通送 100 万 tokens（含 hunyuan-turbos-vision 等多模态），有效期 1 年；hunyuan-lite 永久免费' },
+    { name: '智谱 bigmodel', url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
+      note: 'Flash 系列永久免费，GLM-4.6V-Flash 是免费的多模态（能看懂照片场景，比 OCR 更进一步）' }
+  ];
+
   function kindLabel(k) {
     for (var i = 0; i < KINDS.length; i++) if (KINDS[i].k === k) return KINDS[i].label;
     return k;
@@ -585,6 +634,7 @@
 
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
+  var collectClickHandler = null;    // 同上，采集页的「转成文字」
 
   function renderSettings() {
     Promise.all([DB.listProfiles(), DB.getSlots(), DB.getSettings()]).then(function (r) {
@@ -600,6 +650,23 @@
         '<p class="hint dim">「拉模型」只读模型清单，几乎不占资源；「测试」会真发一句话。' +
         '标着<b>本机</b>的配置会把模型加载进这台机器，没有独立显卡时很慢也很吃内存，' +
         '平时建议用云端服务。</p>';
+
+      /* ---- 还没有 key？ ---- */
+      if (!profiles.length) {
+        var links = '';
+        for (var gi = 0; gi < SIGNUP.length; gi++) {
+          var g = SIGNUP[gi];
+          links += '<a class="signup" href="' + esc(g.url) + '" target="_blank" rel="noopener"' +
+            (g.star ? ' data-star="1"' : '') + '>' +
+            '<b>' + esc(g.name) + '</b>' +
+            (g.star ? '<span class="tag">推荐</span>' : '') +
+            '<span class="su-arrow">→</span>' +
+            '<small>' + esc(g.note) + '</small></a>';
+        }
+        html += '<div class="signup-box">' +
+          '<p class="hint">还没有 API Key？这几家都有免费额度，注册就能用，不用先充值：</p>' +
+          links + '</div>';
+      }
 
       if (!profiles.length) {
         html += '<div class="empty">还没有配置。点下面「添加」开始。</div>';

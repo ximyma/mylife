@@ -331,10 +331,80 @@ async function apiAi(body) {
   }
 }
 
+/* 路径安全：只允许落在 data/files/ 里 */
+const safe = s => String(s || 'misc').replace(/\.\./g, '').replace(/[\/\\]/g, '');
+const safePath = s => String(s || '').replace(/\.\./g, '').replace(/\\/g, '/');
+
+/**
+ * 语音转文字：把已经存好的音频转写成文字。
+ * 走 OpenAI 兼容的 multipart 接口，与词录入 Qwen3-ASR / SenseVoice / Whisper 通用。
+ * body: { path: 'audio/xxx.webm', profileId?, model?, language? }
+ */
+async function apiAsr(body) {
+  const rel = safePath(body.path || '');
+  if (!rel) return { ok: false, message: '没有指定音频' };
+
+  const abs = path.join(FILES, rel);
+  if (!abs.startsWith(FILES) || !fs.existsSync(abs)) {
+    return { ok: false, message: '找不到这个音频文件' };
+  }
+
+  const pick = pickProfile({ slot: 'asr', profileId: body.profileId });
+  if (!pick) return { ok: false, message: '没有可用的语音模型。去设置里给「语音转文字」绑一条配置。' };
+  const { profile, model } = pick;
+  const useModel = model || body.model || profile.default_model;
+  if (!useModel) return { ok: false, message: '这条配置还没选模型' };
+
+  // 超过 25MB 的服务端通常不接受，提前说清楚而不是让人干等
+  const size = fs.statSync(abs).size;
+  if (size > 25 * 1024 * 1024) {
+    return { ok: false, message: '音频 ' + Math.round(size / 1048576) + 'MB，超过服务端 25MB 上限，请先分段' };
+  }
+
+  const ext = (path.extname(abs) || '').toLowerCase();
+  const MIME = {
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+    '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.webm': 'audio/webm',
+    '.flac': 'audio/flac', '.aac': 'audio/aac', '.mp4': 'audio/mp4',
+  };
+  const mime = MIME[ext] || 'audio/mpeg';
+  const buf = fs.readFileSync(abs);
+
+  const form = new FormData();
+  form.set('file', new Blob([buf], { type: mime }), path.basename(abs));
+  form.set('model', useModel);
+  if (body.language) form.set('language', body.language);
+
+  const t0 = Date.now();
+  try {
+    const r = await fetchJson(endpointOf(profile) + '/audio/transcriptions', {
+      method: 'POST',
+      headers: profile.api_key ? { authorization: 'Bearer ' + profile.api_key } : {},
+      body: form,          // 不要手动设 content-type，让 fetch 带上 boundary
+    }, 180000);
+    const ms = Date.now() - t0;
+
+    if (!r.ok) {
+      return { ok: false, ms, message: `HTTP ${r.status}：${String(r.text).slice(0, 200)}` };
+    }
+    const text = (r.json && (r.json.text || r.json.transcript)) || '';
+    if (!String(text).trim()) {
+      return { ok: false, ms, message: '转出来是空的。录音里可能没说话，或者这段音频格式不支持。' };
+    }
+    return {
+      ok: true, ms, model: useModel,
+      text: String(text).trim(),
+      bytes: size,
+      usage: (r.json && r.json.usage) || null,
+      language: (r.json && r.json.language) || null,
+    };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, message: '转不了：' + (e.message || e) };
+  }
+}
+
 function apiFile(body) {
   const op = body.op || 'save';
-  const safe = s => String(s || 'misc').replace(/\.\./g, '').replace(/[\/\\]/g, '');
-  const safePath = s => String(s || '').replace(/\.\./g, '').replace(/\\/g, '/');
 
   if (op === 'save') {
     const kind = safe(body.kind);
@@ -405,6 +475,7 @@ const server = http.createServer(async (req, res) => {
       else if (pathname === '/api/ai/models') out = await apiAiModels(body);
       else if (pathname === '/api/ai/test') out = await apiAiTest(body);
       else if (pathname === '/api/file') out = apiFile(body);
+      else if (pathname === '/api/asr') out = await apiAsr(body);
       else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
       return sendJson(res, 200, out);
     }

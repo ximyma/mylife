@@ -161,6 +161,7 @@ img{max-width:100%;display:block}
   align-items:flex-start;font-size:14px}
 .mat-text{flex:1;min-width:0;color:var(--ink2);line-height:1.7;word-break:break-word}
 .mat-side{flex:0 0 auto;font-size:11.5px;color:var(--muted)}
+.mat-acts{flex:0 0 auto}
 .drop{display:flex;align-items:center;justify-content:center;min-height:88px;
   border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:14px;cursor:pointer}
 .row{display:flex;gap:10px;align-items:flex-end;margin:12px 0}
@@ -181,6 +182,17 @@ img{max-width:100%;display:block}
 .ai-card.off{opacity:.55}
 .hint.dim{color:var(--muted);opacity:.85}
 .hint.dim b{color:var(--ink2)}
+/* 注册引导：没有配置时给出去哪拿 Key */
+.signup-box{background:var(--card);border:1px dashed var(--line);border-radius:10px;
+  padding:14px 16px;margin:12px 0}
+.signup{display:block;text-decoration:none;color:var(--ink);padding:10px 0;
+  border-top:1px solid var(--line2);font-size:14.5px;position:relative}
+.signup:first-of-type{border-top:none}
+.signup b{font-weight:600}
+.signup small{display:block;color:var(--muted);font-size:12.5px;
+  line-height:1.6;margin-top:3px}
+.su-arrow{position:absolute;right:2px;top:10px;color:var(--accent);font-size:15px}
+.signup[data-star="1"] b{color:var(--accent)}
 .ai-card-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15.5px}
 .ai-card-top b{font-weight:600}
 /* 停用 / 启用：排在卡片标题行右侧，随顶行的 gap 自动贴边 */

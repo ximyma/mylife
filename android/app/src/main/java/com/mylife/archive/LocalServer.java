@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
  *   POST /api/query   {sql, params}  -> rows[]
  *   POST /api/exec    {sql, params}  -> {changes, lastId}
  *   POST /api/ai      {messages...}  -> {text}
+ *   POST /api/asr     {path}         -> {text}   语音转文字
  *   POST /api/file    {op, ...}      -> 落盘 / 读取 / 删除
  *   GET  /files/<rel>                 -> 二进制，支持 Range
  */
@@ -225,6 +226,9 @@ public class LocalServer {
             }
             if (path.equals("/api/ai/test")) {
                 return Ai.test(ctx, db, json);
+            }
+            if (path.equals("/api/asr")) {
+                return Ai.asr(ctx, db, json);
             }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, json);

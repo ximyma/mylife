@@ -10,12 +10,12 @@
 (function () {
   'use strict';
 
-  function post(path, body) {
+  function post(path, body, timeoutMs) {
     return new Promise(function (resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', path, true);
       xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.timeout = 130000;
+      xhr.timeout = timeoutMs || 130000;
       xhr.onreadystatechange = function () {
         if (xhr.readyState !== 4) return;
         if (xhr.status === 0) return reject(new Error('连不上本地服务'));
@@ -56,6 +56,11 @@
     /** 测试连通性：opts { profileId, model } 或 { slot } */
     aiTest: function (opts) {
       return post('/api/ai/test', opts || {});
+    },
+
+    /** 语音转文字：opts { path, profileId?, model?, language? }，长音频要等，超时放宽 */
+    asr: function (opts) {
+      return post('/api/asr', opts || {}, 200000);
     },
 
     file: function (payload) {

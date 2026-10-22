@@ -142,7 +142,36 @@ WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所�
 
 **多模态**：`messages` 里带 `image_url`（data URL 或 http 地址）直接透传，不支持的模型会返回明确的错误。
 
+### 免费方案（实测可用，不必先充值）
+
+没配 Key 也能用——章节名会按年份和内容自动生成。想用 AI，这几家都免费：
+
+| 平台 | 免费额度 | 本项目用什么 |
+| --- | --- | --- |
+| 硅基流动 | 常驻免费档模型 | DeepSeek-OCR 看图、Qwen3-ASR-1.7B 转文字、Hunyuan-MT-7B 写稿、Qwen3-8B 精写 |
+| 腾讯云混元 | 首开送 100 万 tokens（1 年），hunyuan-lite 永久免费 | hunyuan-turbos-vision 看图 |
+| 智谱 bigmodel | Flash 系列永久免费 | GLM-4.6V-Flash 多模态（能理解照片场景，比纯 OCR 更进一步） |
+
+2026-10 实测（硅基流动免费档，同一份素材）：
+
+| 模型 | 用途 | 耗时 | 结果 |
+| --- | --- | --- | --- |
+| `tencent/Hunyuan-MT-7B` | 起章名 | **0.5s** | 《九岁天安门》 |
+| `Qwen/Qwen3-8B` | 精写 | 11s | 免费但慢：思考占了 319 tokens |
+| `deepseek-ai/DeepSeek-OCR` | 看图 | **0.3s** | 描述准确 |
+| `Qwen/Qwen3-ASR-1.7B` | 语音转文字 | **0.4s** | 「1958年」→「一九五八年」全对 |
+| `PaddlePaddle/PaddleOCR-VL-1.5` | 看图 | 43s | ❌ 慢且答非所问，不推荐 |
+| `THUDM/GLM-4.1V-9B-Thinking` | 看图 | — | ❌ 已下线（403） |
+
 API Key 只存在本地 `settings` 表，**永远不下发到前端**；请求由原生侧（Java）或 Node 发出，前端拿不到 Key。
+
+## 语音转文字
+
+录完音不会立刻转——**你点「转成文字」才转**，避免为了一段废话白花钱。转写结果直接回填成讲述原文，并按内容重新识别出年份。
+
+后端 `POST /api/asr {path}`，Node 侧转发到模型服务的 `/v1/audio/transcriptions`；安卓侧同样实现（`Ai.asr` 手写的 multipart 上行）。两者接口一致。
+
+> 语音转写出来的年份常常是**中文数字**（「一九五八年」）。`findYear` 同时认「1958」和「一九五八」，不会出现「转出来有年份、档案里却没编上」的情况。
 
 ## 朗读与阅读偏好
 

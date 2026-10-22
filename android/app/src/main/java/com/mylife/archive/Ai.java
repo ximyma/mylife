@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -32,6 +33,7 @@ public final class Ai {
     private static final int T_CHAT = 120000;
     private static final int T_LIST = 20000;
     private static final int T_TEST = 40000;
+    private static final int T_ASR = 180000;
 
     private Ai() {}
 
@@ -301,6 +303,161 @@ public final class Ai {
             Log.w(TAG, "chat 失败", e);
             return msg(false, "调不通：" + e.getMessage());
         }
+    }
+
+    /* ================= 语音转文字 ================= */
+
+    /**
+     * 语音转文字：把已经存好的音频交给模型的 /v1/audio/transcriptions。
+     *
+     * 为什么这里要用 multipart 而不是 JSON：语音识别的上行约定就是文件字段，
+     * OpenAI 兼容的这个 endpoint 各家实现清一色收 form-data。
+     *
+     * payload: { path: 'audio/xxx.webm', profileId?, model?, language? }
+     */
+    public static String asr(Context ctx, Db db, String payload) {
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject in = Json.obj(payload);
+
+            // 优先用「语音转文字」这个用途绑定的配置
+            if (!in.has("slot")) in.put("slot", "asr");
+            JSONObject p = pick(db, in);
+            if (p == null) return msg(false, "没有可用的语音模型。去设置里给「语音转文字」绑一条配置。");
+
+            String model = in.optString("model", "");
+            if (model.length() == 0) model = modelOf(p);
+            if (model.length() == 0) return msg(false, "这条配置还没选模型");
+
+            String rel = in.optString("path", "").replace("..", "").replace("\\", "/");
+            if (rel.length() == 0) return msg(false, "没有指定音频");
+            // 与 LocalServer 的 /files/ 同一套根目录
+            File f = new File(new File(ctx.getFilesDir(), "files"), rel);
+            if (!f.exists()) return msg(false, "找不到这个音频文件");
+            long size = f.length();
+            if (size > 25L * 1024 * 1024) {
+                return msg(false, "音频 " + Math.round(size / 1048576.0)
+                        + "MB，超过服务端 25MB 上限，请先分段");
+            }
+
+            String name = f.getName().toLowerCase();
+            String mime = name.endsWith(".wav") ? "audio/wav"
+                    : name.endsWith(".mp3") ? "audio/mpeg"
+                    : name.endsWith(".m4a") ? "audio/mp4"
+                    : name.endsWith(".aac") ? "audio/aac"
+                    : name.endsWith(".ogg") ? "audio/ogg"
+                    : name.endsWith(".flac") ? "audio/flac"
+                    : name.endsWith(".mp4") ? "audio/mp4"
+                    : name.endsWith(".webm") ? "audio/webm" : "audio/mpeg";
+
+            JSONObject fields = new JSONObject();
+            fields.put("model", model);
+            if (in.optString("language", "").length() > 0) {
+                fields.put("language", in.optString("language", ""));
+            }
+
+            JSONObject r = callMultipart(base(p) + "/audio/transcriptions",
+                    p.optString("api_key", ""), readFile(f), "file", f.getName(), mime,
+                    fields, T_ASR);
+            long ms = System.currentTimeMillis() - t0;
+
+            int status = r.optInt("status", -1);
+            if (status != 200) {
+                JSONObject o = msgObj(false, "HTTP " + status + "：" + shorten(r.optString("text"), 200));
+                o.put("ms", ms);
+                return o.toString();
+            }
+
+            JSONObject j = r.optJSONObject("json");
+            String text = j != null ? j.optString("text", "") : "";
+            if (text.trim().length() == 0) {
+                return msg(false, "转出来是空的。录音里可能没说话，或者这段音频格式不支持。");
+            }
+
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("ms", ms);
+            o.put("model", model);
+            o.put("text", text.trim());
+            o.put("bytes", size);
+            if (j != null) {
+                if (j.has("usage")) o.put("usage", j.get("usage"));
+                if (j.has("language")) o.put("language", j.get("language"));
+            }
+            return o.toString();
+
+        } catch (Exception e) {
+            Log.w(TAG, "asr 失败", e);
+            return msg(false, "转不了：" + e.getMessage());
+        }
+    }
+
+    /** 手写的 multipart/form-data 上行 */
+    private static JSONObject callMultipart(String url, String apiKey, byte[] data,
+            String field, String fileName, String mime, JSONObject fields, int timeout) {
+        String boundary = "----MyLifeForm" + System.currentTimeMillis();
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(timeout);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type",
+                    "multipart/form-data; boundary=" + boundary);
+            if (apiKey != null && apiKey.length() > 0) {
+                conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            }
+            conn.setChunkedStreamingMode(0);   // 音频较大，不要一次性压进内存再发
+
+            OutputStream os = conn.getOutputStream();
+            // 普通字段
+            java.util.Iterator<String> it = fields.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                os.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+                os.write(("Content-Disposition: form-data; name=\"" + k + "\"\r\n\r\n")
+                        .getBytes("UTF-8"));
+                os.write((fields.optString(k, "") + "\r\n").getBytes("UTF-8"));
+            }
+            // 文件字段
+            os.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+            os.write(("Content-Disposition: form-data; name=\"" + field + "\"; filename=\""
+                    + fileName + "\"\r\n").getBytes("UTF-8"));
+            os.write(("Content-Type: " + mime + "\r\n\r\n").getBytes("UTF-8"));
+            os.write(data);
+            os.write("\r\n".getBytes("UTF-8"));
+            os.write(("--" + boundary + "--\r\n").getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            JSONObject out = new JSONObject();
+            out.put("status", code);
+            String text = readAll(is);
+            out.put("text", text);
+            try { out.put("json", new JSONObject(text)); } catch (Exception ignored) {}
+            return out;
+
+        } catch (Exception e) {
+            Log.w(TAG, "multipart 失败 " + url, e);
+            JSONObject out = new JSONObject();
+            try {
+                out.put("status", -1);
+                out.put("text", String.valueOf(e.getMessage()));
+            } catch (Exception ignored) {}
+            return out;
+        }
+    }
+
+    private static byte[] readFile(File f) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        InputStream is = new java.io.FileInputStream(f);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+        is.close();
+        return bos.toByteArray();
     }
 
     /* ================= 小工具 ================= */

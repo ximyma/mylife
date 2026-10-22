@@ -14,9 +14,37 @@
   }
 
   /** 从一段话里找年份：19xx / 20xx，取第一个 */
+  var CN_DIGIT = { '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+
+  /** 四位中文数字 -> 年份。「一九五八」-> 1958 */
+  function cnYear(s) {
+    if (s.length !== 4) return null;
+    var v = 0;
+    for (var i = 0; i < 4; i++) {
+      var d = CN_DIGIT[s.charAt(i)];
+      if (typeof d !== 'number') return null;
+      v = v * 10 + d;
+    }
+    return (v >= 1800 && v <= 2099) ? v : null;
+  }
+
+  /**
+   * 从一句话里找年份。
+   * 语音转写出来的往往是「一九五八年」而不是「1958年」，
+   * 只认阿拉伯数字的话，整段回忆就编不上年、进不了时间轴。
+   */
   function findYear(text) {
-    var m = String(text || '').match(/(1[89]\d{2}|20\d{2})\s*年?/);
-    return m ? parseInt(m[1], 10) : null;
+    var s = String(text || '');
+    var m = s.match(/(1[89]\d{2}|20\d{2})\s*年?/);
+    if (m) return parseInt(m[1], 10);
+
+    var c = s.match(/[零〇一二两三四五六七八九]{4}\s*年/);
+    if (c) {
+      var v = cnYear(c[0].replace(/[年\s]/g, ''));
+      if (v) return v;
+    }
+    return null;
   }
 
   /** 去掉口头语与重复标点，只做清理，不改写 */
@@ -210,6 +238,37 @@
         'INSERT INTO segments (archive_id, raw_text, audio_path, year_hint) VALUES (?,?,?,?)',
         [archiveId, t || '（录音已保存，待转写）', audioPath || null, findYear(t)]).then(function (r) {
         return r.lastId;
+      });
+    },
+
+    /* ---------------- 语音转文字 ---------------- */
+
+    /**
+     * 把一段录音转成文字，回填到这条讲述里。
+     * 原来存放的占位文本（"待转写"）会被替换掉；已经有字的则拼在后面。
+     */
+    transcribe: function (segId, opts) {
+      return API.query('SELECT * FROM segments WHERE id=?', [segId]).then(function (rows) {
+        if (!rows.length) return Promise.reject(new Error('找不到这段讲述'));
+        var seg = rows[0];
+        if (!seg.audio_path) return Promise.reject(new Error('这段没有录音可以转'));
+
+        return API.asr({
+          path: seg.audio_path,
+          slot: 'asr',        // 默认用「语音转文字」绑的那条；显式 profileId 时以它为准
+          profileId: (opts && opts.profileId) || null,
+          model: (opts && opts.model) || null,
+          language: (opts && opts.language) || null,
+        }).then(function (r) {
+          if (!r.ok) return r;
+          var old = String(seg.raw_text || '');
+          var isPlaceholder = !old || old.indexOf('待转写') >= 0 || old.indexOf('录音已保存') >= 0;
+          var merged = isPlaceholder ? r.text : old + '\n' + r.text;
+          return API.exec('UPDATE segments SET raw_text=?, year_hint=? WHERE id=?',
+            [merged, findYear(merged) || seg.year_hint, segId]).then(function () {
+            return { ok: true, ms: r.ms, model: r.model, text: r.text, merged: merged };
+          });
+        });
       });
     },
 
