@@ -248,7 +248,8 @@
         html += '<h2 class="ch-title"><span class="ch-idx">' + (ci + 1) + '</span>' +
           '<span class="ch-name">' + esc(String(c.title || '').replace(/^[^·]*·\s*/, '')) + '</span>' +
           '<span class="ch-year">' + esc(c.year_from ? DB.yearLabel(c.year_from, c.year_to) : '') + '</span>' +
-          '<button class="ch-read" data-read-ch="' + c.id + '" title="从这一章开头朗读">读</button></h2>';
+          '<button class="ch-read" data-read-ch="' + c.id + '" title="从这一章开头朗读">读</button>' +
+          '<button class="ch-edit" data-ch-edit="' + c.id + '" title="改章名">改</button></h2>';
         if (c.stage) html += '<div class="ch-kicker">' + esc(c.stage) +
           (a.birth_year && c.year_from ? ' · ' + (c.year_from - a.birth_year) + ' 岁' : '') + '</div>';
         if (c.quote) html += '<blockquote class="ch-quote">“' + esc(c.quote) + '”</blockquote>';
@@ -290,10 +291,62 @@
         esc(a.subject_name) + '</span><span>由 AI 协助整理 · 可随时修改</span></footer>';
       html += '</main>';
       app.innerHTML = html;
+      bindArchive(id);
     }).catch(function (e) {
       app.innerHTML = topbar({ back: '#/' }) + '<main class="wrap"><div class="empty">' +
         esc(e.message) + '</div></main>';
     });
+  }
+
+  /** 卷宗里的改与删：条目改字、改章名、删条目 */
+  function bindArchive(id) {
+    if (archiveClickHandler) app.removeEventListener('click', archiveClickHandler);
+    archiveClickHandler = function (ev) {
+      var t = ev.target.closest ? ev.target : null;
+      if (!t) return;
+      var b;
+
+      if ((b = t.closest('[data-entry-edit]'))) {
+        editState = { type: 'entry', id: Number(b.getAttribute('data-entry-edit')) };
+        return route();
+      }
+      if ((b = t.closest('[data-edit-cancel]'))) {
+        clearEdit();
+        return route();
+      }
+      if ((b = t.closest('[data-entry-save]'))) {
+        var eid = Number(b.getAttribute('data-entry-save'));
+        var ta = document.querySelector('[data-entry-text="' + eid + '"]');
+        DB.updateEntry(eid, ta ? ta.value : '').then(function () {
+          clearEdit();
+          toast('改好了');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-entry-del]'))) {
+        var did = Number(b.getAttribute('data-entry-del'));
+        if (!confirm('删掉这一段？删了就找不回来了。')) return;
+        DB.deleteEntry(did).then(function () {
+          toast('已删除');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ch-edit]'))) {
+        var chid = Number(b.getAttribute('data-ch-edit'));
+        var el = document.querySelector('[data-ch-title="' + chid + '"]');
+        var cur = el ? el.textContent : '';
+        var v = prompt('章名改成什么？（留空就不改）', cur);
+        if (v === null) return;
+        DB.updateChapter(chid, v, '').then(function () {
+          toast('改好了');
+          route();
+        }).catch(fail);
+        return;
+      }
+    };
+    app.addEventListener('click', archiveClickHandler);
   }
 
   function renderEntry(e) {
@@ -320,7 +373,19 @@
       return '<div class="md">' + inner +
         (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') + '</div>';
     }
-    return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p></div>';
+    // 文字条目：可就地改，可删
+    if (isEdit('entry', e.id)) {
+      return '<div class="en editing">' +
+        '<textarea class="say mini" data-entry-text="' + e.id + '">' + esc(e.text) + '</textarea>' +
+        '<div class="en-acts">' +
+        '<button class="btn tiny primary" data-entry-save="' + e.id + '">保存</button>' +
+        '<button class="btn tiny" data-edit-cancel="1">取消</button></div></div>';
+    }
+    return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
+      '<div class="en-acts">' +
+      '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
+      '<button class="linkbtn danger-t" data-entry-del="' + e.id + '">删</button>' +
+      '</div></div>';
   }
 
   /* ---------------- 补内容 ---------------- */
@@ -338,23 +403,71 @@
       if (!a) throw new Error('找不到这本档案');
 
       var mats = '';
+
+      /* --- 讲述：可改可删，有录音的还能转成文字 --- */
       for (var i = d.segments.length - 1; i >= 0; i--) {
         var s = d.segments[i];
         var txt = String(s.raw_text || '');
         // 录音存进来时留的是占位文本，这时按钮说"转成文字"；转过之后是"再转一次"
         var pending = !!s.audio_path &&
           (!txt || txt.indexOf('待转写') >= 0 || txt.indexOf('录音已保存') >= 0);
+
+        if (isEdit('seg', s.id)) {
+          mats += '<div class="mat editing">' +
+            '<textarea class="say mini" data-seg-text="' + s.id + '">' + esc(txt) + '</textarea>' +
+            '<div class="mat-acts">' +
+            '<button class="btn tiny primary" data-seg-save="' + s.id + '">保存</button>' +
+            '<button class="btn tiny" data-edit-cancel="1">取消</button></div></div>';
+          continue;
+        }
+
         mats += '<div class="mat" data-mat="' + s.id + '">' +
           '<div class="mat-text">' +
           esc(txt.slice(0, 110)) + (txt.length > 110 ? '…' : '') + '</div>' +
           '<div class="mat-side">' + (s.year_hint ? s.year_hint + ' 年' : '未编年') + '</div>' +
+          '<div class="mat-acts">' +
           (s.audio_path
-            ? '<div class="mat-acts">' +
-              '<button class="btn tiny" data-tr="' + s.id + '">' +
-              (pending ? '转成文字' : '再转一次') + '</button></div>'
+            ? '<button class="btn tiny" data-tr="' + s.id + '">' +
+              (pending ? '转成文字' : '再转一次') + '</button>'
             : '') +
-          '</div>';
+          '<button class="btn tiny" data-seg-edit="' + s.id + '">改</button>' +
+          '<button class="btn tiny danger" data-seg-del="' + s.id + '">删</button>' +
+          '</div></div>';
       }
+
+      /* --- 照片：看得到、改得了、删得掉 --- */
+      for (var pi = d.photos.length - 1; pi >= 0; pi--) {
+        var ph = d.photos[pi];
+
+        if (isEdit('photo', ph.id)) {
+          mats += '<div class="mat editing">' +
+            '<div class="ph-edit">' +
+            '<img class="ph-thumb" src="/files/' + esc(ph.path) + '" alt="">' +
+            '<div class="ph-fields">' +
+            '<label>哪一年<input class="fi" type="number" data-ph-year="' + ph.id +
+            '" value="' + esc(ph.taken_year) + '" placeholder="1958"></label>' +
+            '<label>在哪儿<input class="fi" data-ph-place="' + ph.id +
+            '" value="' + esc(ph.place) + '" placeholder="北京"></label>' +
+            '<label>什么事<input class="fi" data-ph-event="' + ph.id +
+            '" value="' + esc(ph.event) + '" placeholder="在天安门前"></label>' +
+            '</div></div>' +
+            '<div class="mat-acts">' +
+            '<button class="btn tiny primary" data-ph-save="' + ph.id + '">保存</button>' +
+            '<button class="btn tiny" data-edit-cancel="1">取消</button></div></div>';
+          continue;
+        }
+
+        mats += '<div class="mat">' +
+          '<img class="mat-thumb" src="/files/' + esc(ph.path) + '" alt="">' +
+          '<div class="mat-text"><b>' + esc(ph.taken_year) + '</b> · ' +
+          esc(ph.place) + ' · ' + esc(ph.event) + '</div>' +
+          '<div class="mat-acts">' +
+          '<button class="btn tiny" data-ph-edit="' + ph.id + '">改</button>' +
+          '<button class="btn tiny danger" data-ph-del="' + ph.id + '">删</button>' +
+          '</div></div>';
+      }
+
+      if (!mats) mats = '<p class="muted">还没有材料。上面说一段，或者加张照片。</p>';
 
       app.innerHTML = topbar({
         back: '#/a/' + id, title: '补内容',
@@ -503,31 +616,91 @@
       });
     };
 
-    /* --- 语音转文字 --- */
+    /* --- 语音转文字 + 改 / 删 --- */
     // 反复进出这页时，监听器不能一层层往上叠
     if (collectClickHandler) app.removeEventListener('click', collectClickHandler);
     collectClickHandler = function (ev) {
-      var b = ev.target.closest && ev.target.closest('[data-tr]');
-      if (!b) return;
-      var sid = Number(b.getAttribute('data-tr'));
-      if (b.disabled) return;
-      b.disabled = true;
-      var label = b.textContent;
-      b.textContent = '转写中…';
-      DB.transcribe(sid).then(function (r) {
-        if (!r.ok) {
-          toast(r.message || '转不出来');
+      var t = ev.target.closest ? ev.target : null;
+      if (!t) return;
+      var b, sid;
+
+      /* 转成文字 */
+      if ((b = t.closest('[data-tr]'))) {
+        sid = Number(b.getAttribute('data-tr'));
+        if (b.disabled) return;
+        b.disabled = true;
+        var label = b.textContent;
+        b.textContent = '转写中…';
+        DB.transcribe(sid).then(function (r) {
+          if (!r.ok) {
+            toast(r.message || '转不出来');
+            b.disabled = false;
+            b.textContent = label;
+            return;
+          }
+          toast('转好了（' + (r.ms / 1000).toFixed(1) + 's）：' + String(r.text).slice(0, 20));
+          route();   // 重画整页，把转出来的文字显示出来
+        }).catch(function (e) {
+          toast(e.message || '转不出来');
           b.disabled = false;
           b.textContent = label;
-          return;
-        }
-        toast('转好了（' + (r.ms / 1000).toFixed(1) + 's）：' + String(r.text).slice(0, 20));
-        route();   // 重画整页，把转出来的文字显示出来
-      }).catch(function (e) {
-        toast(e.message || '转不出来');
-        b.disabled = false;
-        b.textContent = label;
-      });
+        });
+        return;
+      }
+
+      /* 进入编辑 */
+      if ((b = t.closest('[data-seg-edit]'))) {
+        editState = { type: 'seg', id: Number(b.getAttribute('data-seg-edit')) };
+        return route();
+      }
+      if ((b = t.closest('[data-ph-edit]'))) {
+        editState = { type: 'photo', id: Number(b.getAttribute('data-ph-edit')) };
+        return route();
+      }
+      if ((b = t.closest('[data-edit-cancel]'))) {
+        clearEdit();
+        return route();
+      }
+
+      /* 保存 */
+      if ((b = t.closest('[data-seg-save]'))) {
+        sid = Number(b.getAttribute('data-seg-save'));
+        var ta = document.querySelector('[data-seg-text="' + sid + '"]');
+        DB.updateSegment(sid, ta ? ta.value : '').then(function () {
+          clearEdit();
+          toast('改好了');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ph-save]'))) {
+        var pid = Number(b.getAttribute('data-ph-save'));
+        var g = function (sel) {
+          var el = document.querySelector('[data-ph-' + sel + '="' + pid + '"]');
+          return el ? el.value : '';
+        };
+        DB.updatePhoto(pid, { year: g('year'), place: g('place'), event: g('event') })
+          .then(function () {
+            clearEdit();
+            toast('改好了');
+            route();
+          }).catch(fail);
+        return;
+      }
+
+      /* 删除：都先问一句，删了就找不回来了 */
+      if ((b = t.closest('[data-seg-del]'))) {
+        var dseg = Number(b.getAttribute('data-seg-del'));
+        if (!confirm('删掉这段讲述？删了就找不回来了。')) return;
+        DB.deleteSegment(dseg).then(function () { toast('已删除'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ph-del]'))) {
+        var dph = Number(b.getAttribute('data-ph-del'));
+        if (!confirm('删掉这张照片？删了就找不回来了。')) return;
+        DB.deletePhoto(dph).then(function () { toast('已删除'); route(); }).catch(fail);
+        return;
+      }
     };
     app.addEventListener('click', collectClickHandler);
 
@@ -635,6 +808,16 @@
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
+  var archiveClickHandler = null;    // 同上，卷宗页的改与删
+
+  /* 就地编辑：哪一条正在被改。type 为 seg / photo / entry / chapter，null 表示没在改 */
+  var editState = { type: null, id: null };
+
+  function isEdit(type, id) {
+    return editState.type === type && String(editState.id) === String(id);
+  }
+
+  function clearEdit() { editState.type = null; editState.id = null; }
 
   function renderSettings() {
     Promise.all([DB.listProfiles(), DB.getSlots(), DB.getSettings()]).then(function (r) {
@@ -651,26 +834,45 @@
         '标着<b>本机</b>的配置会把模型加载进这台机器，没有独立显卡时很慢也很吃内存，' +
         '平时建议用云端服务。</p>';
 
-      /* ---- 还没有 key？ ---- */
-      if (!profiles.length) {
-        var links = '';
-        for (var gi = 0; gi < SIGNUP.length; gi++) {
-          var g = SIGNUP[gi];
-          links += '<a class="signup" href="' + esc(g.url) + '" target="_blank" rel="noopener"' +
-            (g.star ? ' data-star="1"' : '') + '>' +
-            '<b>' + esc(g.name) + '</b>' +
-            (g.star ? '<span class="tag">推荐</span>' : '') +
-            '<span class="su-arrow">→</span>' +
-            '<small>' + esc(g.note) + '</small></a>';
-        }
-        html += '<div class="signup-box">' +
-          '<p class="hint">还没有 API Key？这几家都有免费额度，注册就能用，不用先充值：</p>' +
-          links + '</div>';
+      /* ---- 该填什么模型：照抄就行，这些全都免费 ---- */
+      html += '<h2 class="set-h">该填什么模型</h2>' +
+        '<p class="hint">下面这几款都是实测过、不用花钱的，照着名字抄进「模型 ID」即可。</p>' +
+        '<dl class="ai-kv pick">' +
+        '<dt>起章名 / 写简介</dt><dd><code>tencent/Hunyuan-MT-7B</code> <span class="muted">0.5 秒</span></dd>' +
+        '<dt>看照片</dt><dd><code>deepseek-ai/DeepSeek-OCR</code> <span class="muted">0.3 秒</span></dd>' +
+        '<dt>语音转文字</dt><dd><code>Qwen/Qwen3-ASR-1.7B</code> <span class="muted">0.4 秒</span></dd>' +
+        '<dt>要更好文笔</dt><dd><code>Qwen/Qwen3-8B</code> <span class="muted">免费但慢些（会先思考）</span></dd>' +
+        '</dl>' +
+        '<p class="hint dim">想让程序真正「看懂」照片场景而不只是认字，' +
+        '可以去智谱开个号用 <code>GLM-4.6V-Flash</code>，那是免费的多模态模型。</p>';
+
+      /* ---- 去哪拿 Key（常驻，不只在没配置时才出现） ---- */
+      var links = '';
+      for (var gi = 0; gi < SIGNUP.length; gi++) {
+        var g = SIGNUP[gi];
+        links += '<a class="signup" href="' + esc(g.url) + '" target="_blank" rel="noopener"' +
+          (g.star ? ' data-star="1"' : '') + '>' +
+          '<b>' + esc(g.name) + '</b>' +
+          (g.star ? '<span class="tag">推荐</span>' : '') +
+          '<span class="su-arrow">→</span>' +
+          '<small>' + esc(g.note) + '</small></a>';
       }
+      html += '<div class="signup-box">' +
+        '<p class="hint">' + (profiles.length
+          ? '要去别家拿免费额度？这几家都能直接用：'
+          : '还没有 API Key？这几家都有免费额度，注册就能用，不用先充值：') + '</p>' +
+        links + '</div>';
 
       if (!profiles.length) {
         html += '<div class="empty">还没有配置。点下面「添加」开始。</div>';
       }
+
+      // 三个环节。卡片上要显示"这条配置负责哪一环"，所以放在卡片之前
+      var SLOTS = [
+        { k: 'title', label: '起章名 / 写简介', hint: '要一点文笔，建议用云端大模型' },
+        { k: 'vision', label: '看照片', hint: '给老照片认场景（多模态模型）' },
+        { k: 'asr', label: '语音转文字', hint: '需支持音频输入的服务' }
+      ];
 
       for (var p = 0; p < profiles.length; p++) {
         var pf = profiles[p];
@@ -678,6 +880,20 @@
         try { models = JSON.parse(pf.models_json || '[]'); } catch (e) { models = []; }
         // 本机部署（ollama / vLLM / LM Studio）：点测试会真的把模型加载进内存
         var local = /127\.0\.0\.1|localhost|0\.0\.0\.0|192\.168\.|:11434/.test(pf.base_url || '');
+        // 这张卡上写全：接口地址、密钥、现在用着的模型、各自负责哪一环。
+        // 不用去猜"填在哪"，一眼能核对。
+        var keyMask = pf.api_key
+          ? String(pf.api_key).slice(0, 6) + '…' + String(pf.api_key).slice(-4)
+          : '<span class="warn-text">没填（本机模型不需要）</span>';
+
+        var usedBy = [];
+        for (var sl = 0; sl < SLOTS.length; sl++) {
+          var bind = slotMap[SLOTS[sl].k] || {};
+          if (String(bind.profile_id) === String(pf.id)) {
+            usedBy.push(SLOTS[sl].label + ' → ' + (bind.model || pf.default_model || '?'));
+          }
+        }
+
         html += '<div class="ai-card' + (pf.enabled ? '' : ' off') + '">' +
           '<div class="ai-card-top">' +
           '<b>' + esc(pf.name) + '</b>' +
@@ -686,18 +902,23 @@
           '<button class="linkbtn" data-toggle="' + pf.id + '" data-to="' + (pf.enabled ? 0 : 1) + '">' +
           (pf.enabled ? '停用' : '启用') + '</button>' +
           '</div>' +
-          '<div class="ai-url">' + esc(pf.base_url) + '</div>' +
-          '<div class="ai-model">' + (pf.default_model
-            ? '模型：<b>' + esc(pf.default_model) + '</b>'
-            : '<span class="warn-text">还没选模型</span>') +
-          (models.length ? ' <span class="muted">· 可选 ' + models.length + ' 个</span>' : '') +
-          '</div>' +
+
+          '<dl class="ai-kv">' +
+          '<dt>接口地址</dt><dd><code>' + esc(pf.base_url) + '</code></dd>' +
+          '<dt>密钥</dt><dd><code>' + keyMask + '</code></dd>' +
+          '<dt>默认模型</dt><dd><code>' +
+            (pf.default_model ? esc(pf.default_model) : '还没选') + '</code></dd>' +
+          '<dt>负责</dt><dd>' + (usedBy.length
+            ? usedBy.join('；')
+            : '<span class="muted">没绑到具体环节（会被自动挑用）</span>') + '</dd>' +
+          '</dl>' +
+
           '<div class="ai-acts">' +
           '<button class="btn tiny" data-test="' + pf.id + '"' +
             (local ? ' data-local="1"' : '') + '>测试</button>' +
           '<button class="btn tiny" data-pull="' + pf.id + '">拉模型</button>' +
-          '<button class="btn tiny" data-edit="' + pf.id + '">编辑</button>' +
-          '<button class="btn tiny danger" data-del="' + pf.id + '">删除</button>' +
+          '<button class="btn tiny" data-edit="' + pf.id + '">改</button>' +
+          '<button class="btn tiny danger" data-del="' + pf.id + '">删</button>' +
           '</div></div>';
       }
 
@@ -708,13 +929,7 @@
 
       /* ---- 用途绑定 ---- */
       html += '<h2 class="set-h">各环节用哪个模型</h2>' +
-        '<p class="hint">留空就用上面第一条可用的配置。</p>';
-
-      var SLOTS = [
-        { k: 'title', label: '起章名 / 写简介', hint: '要一点文笔，建议用云端大模型' },
-        { k: 'vision', label: '看照片', hint: '给老照片认场景（多模态模型）' },
-        { k: 'asr', label: '语音转文字', hint: '需支持音频输入的服务' }
-      ];
+        '<p class="hint">留空就用上面第一条可用的配置。这三个环节可以同时用不同家的服务。</p>';
 
       for (var si = 0; si < SLOTS.length; si++) {
         var sl = SLOTS[si];
@@ -928,26 +1143,37 @@
     }
 
     box.innerHTML = '<div class="ai-form">' +
-      '<div class="ai-form-title">' + (isEdit ? '编辑配置' : '新增配置') + '</div>' +
+      '<div class="ai-form-title">' + (isEdit ? '改这条配置' : '新增一条配置') + '</div>' +
+      '<p class="hint">一共就填四样：叫什么、接口地址、密钥、用哪个模型。改完点保存。</p>' +
 
       '<div class="fld"><label>名称</label>' +
-      '<input id="pfName" value="' + esc(pf.name || '') + '" placeholder="比如：硅基流动 / 家里电脑的 Ollama"></div>' +
+      '<input id="pfName" value="' + esc(pf.name || '') + '" placeholder="比如：硅基流动 / 家里电脑的 Ollama">' +
+      '<small>随便起，自己认得就行。</small></div>' +
 
       '<div class="fld"><label>类型</label>' +
-      '<select id="pfKind">' + kindOpts + '</select></div>' +
+      '<select id="pfKind">' + kindOpts + '</select>' +
+      '<small>选一个会自动填好下面的接口地址，也可以自己改。</small></div>' +
 
-      '<div class="fld"><label>接口地址（到 /v1 为止）</label>' +
-      '<input id="pfBase" value="' + esc(pf.base_url || '') + '" placeholder="https://api.siliconflow.cn/v1"></div>' +
+      '<div class="fld"><label>接口地址（base_url）</label>' +
+      '<input id="pfBase" value="' + esc(pf.base_url || '') + '" placeholder="https://api.siliconflow.cn/v1">' +
+      '<small>服务商给的网址，一般到 <code>/v1</code> 为止，别带后面的 <code>/chat/completions</code>。</small></div>' +
 
-      '<div class="fld"><label>API Key（Ollama 可留空）</label>' +
+      '<div class="fld"><label>密钥（API Key）</label>' +
       '<input id="pfKey" type="password" value="" placeholder="' +
-      (isEdit && pf.api_key ? '已保存，留空表示不改' : 'sk-...') + '"></div>' +
+      (isEdit && pf.api_key ? '已保存，留空表示不改' : 'sk-...') + '">' +
+      '<small>在服务商后台「API 密钥」页面生成。只存在这台设备上，不会传出去。' +
+      '跑在自己电脑上的 Ollama 不需要，留空即可。</small></div>' +
 
-      '<div class="fld"><label>用哪个模型</label>' +
-      '<select id="pfModelSel">' + modelOpts + '</select></div>' +
+      '<div class="fld"><label>用哪个模型（模型 ID）</label>' +
+      '<select id="pfModelSel">' + modelOpts + '</select>' +
+      '<small>点上面的「拉模型」会把这家能用的模型全拉回来，在这里挑。' +
+      (models.length ? '现在是 ' + models.length + ' 个可选。' : '') + '</small></div>' +
 
-      '<div class="fld"><label>或手填模型名</label>' +
-      '<input id="pfModel" value="' + esc(pf.default_model || '') + '" placeholder="deepseek-chat"></div>' +
+      '<div class="fld"><label>或者手填模型名</label>' +
+      '<input id="pfModel" value="' + esc(pf.default_model || '') + '" placeholder="deepseek-chat">' +
+      '<small>要和服务商写的<b>一模一样</b>，多了少了都调不通。' +
+      '免费档常用：<code>tencent/Hunyuan-MT-7B</code>、<code>deepseek-ai/DeepSeek-OCR</code>、' +
+      '<code>Qwen/Qwen3-ASR-1.7B</code></small></div>' +
 
       '<div class="row end">' +
       '<button class="btn tiny ghost" id="pfCancel">取消</button>' +

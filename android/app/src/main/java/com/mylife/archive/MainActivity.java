@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.webkit.PermissionRequest;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -138,6 +139,35 @@ public class MainActivity extends Activity {
         });
 
         web.setWebChromeClient(new WebChromeClient() {
+            /**
+             * WebView 里的录音要过两道门：
+             *   ① 系统权限（Manifest 声明 + requestPermissions）——这道已经有了
+             *   ② WebView 自己的授权回调——以前漏的就是这道
+             * 少了 onPermissionRequest，JS 那边拿到的一律是 NotAllowedError，
+             * 界面上看起来像"没给麦克风权限"，其实系统在 ABIitaries 早就点了允许。
+             */
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                String[] want = request.getResources();
+                java.util.List<String> grant = new java.util.ArrayList<>();
+
+                for (String r : want) {
+                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                        if (hasPerm(Manifest.permission.RECORD_AUDIO)) grant.add(r);
+                    } else if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {
+                        if (hasPerm(Manifest.permission.CAMERA)) grant.add(r);
+                    }
+                    // 其它资源一概不放
+                }
+
+                if (grant.isEmpty()) {
+                    request.deny();
+                    toastIt("录音权限没给。到系统设置 → 应用 → 我的人生档案 → 权限里打开麦克风。");
+                } else {
+                    request.grant(grant.toArray(new String[0]));
+                }
+            }
+
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> cb,
                                              FileChooserParams params) {
@@ -220,6 +250,21 @@ public class MainActivity extends Activity {
 
     private void addPerm(List<String> list, String p) {
         if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) list.add(p);
+    }
+
+    /** 系统权限是否真的拿到了（WebView 授权前先查这道） */
+    private boolean hasPerm(String p) {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void toastIt(String msg) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                android.widget.Toast.makeText(MainActivity.this, msg,
+                        android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     /* ---------------- 朗读桥 ---------------- */

@@ -241,6 +241,108 @@
       });
     },
 
+    /* ---------------- 改动 / 删除（内容全可改可删） ---------------- */
+
+    updateSegment: function (id, text) {
+      var t = String(text || '').trim();
+      if (!t) return Promise.reject(new Error('内容不能是空的'));
+      return API.exec('UPDATE segments SET raw_text=?, year_hint=? WHERE id=?',
+        [t, findYear(t), id]);
+    },
+
+    /** 删讲述。同时清掉它的录音文件，免得留垃圾 */
+    deleteSegment: function (id) {
+      return API.query('SELECT audio_path FROM segments WHERE id=?', [id]).then(function (rows) {
+        var p = rows.length ? rows[0].audio_path : null;
+        var chain = API.exec('DELETE FROM segments WHERE id=?', [id]);
+        if (p) {
+          chain = chain.then(function (r) {
+            return API.file({ op: 'del', path: p }).then(function () { return r; },
+              function () { return r; });
+          });
+        }
+        return chain;
+      });
+    },
+
+    updatePhoto: function (id, f) {
+      if (!f.year) return Promise.reject(new Error('这张是哪一年的？'));
+      if (!f.place) return Promise.reject(new Error('这张照片是在哪儿拍的？'));
+      return API.exec(
+        'UPDATE photos SET taken_year=?, place=?, event=?, note=? WHERE id=?',
+        [parseInt(f.year, 10), String(f.place).trim(),
+         String(f.event || '').trim(), String(f.note || '').trim(), id]);
+    },
+
+    deletePhoto: function (id) {
+      return API.query('SELECT path FROM photos WHERE id=?', [id]).then(function (rows) {
+        var p = rows.length ? rows[0].path : null;
+        var chain = API.exec('DELETE FROM photos WHERE id=?', [id]);
+        if (p) {
+          chain = chain.then(function (r) {
+            return API.file({ op: 'del', path: p }).then(function () { return r; },
+              function () { return r; });
+          });
+        }
+        return chain;
+      });
+    },
+
+    /** 改档案封面上的几项 */
+    updateArchive: function (id, f) {
+      return API.exec(
+        'UPDATE archives SET subject_name=?, birth_year=?, death_year=?, hometown=?, intro=?, updated_at=? WHERE id=?',
+        [String(f.name || '').trim(), f.birth || null, f.death || null,
+         String(f.hometown || '').trim(), String(f.intro || '').trim(), nowSql(), id]);
+    },
+
+    updateChapter: function (id, title, summary) {
+      return API.exec('UPDATE chapters SET title=?, summary=? WHERE id=?',
+        [String(title || '').trim(), String(summary || '').trim(), id]);
+    },
+
+    updateEntry: function (id, text) {
+      var t = String(text || '').trim();
+      if (!t) return Promise.reject(new Error('内容不能是空的'));
+      return API.exec('UPDATE entries SET text=? WHERE id=?', [t, id]);
+    },
+
+    /** 删条目。章里一条不剩就把章也收走，免得留下空标题 */
+    deleteEntry: function (id) {
+      return API.query('SELECT chapter_id FROM entries WHERE id=?', [id]).then(function (rows) {
+        var cid = rows.length ? rows[0].chapter_id : null;
+        return API.exec('DELETE FROM entries WHERE id=?', [id]).then(function (r) {
+          if (!cid) return r;
+          return API.query('SELECT count(*) n FROM entries WHERE chapter_id=?', [cid])
+            .then(function (c) {
+              if (c[0].n === 0) {
+                return API.exec('DELETE FROM chapters WHERE id=?', [cid]).then(function () { return r; });
+              }
+              return r;
+            });
+        });
+      });
+    },
+
+    deleteMedia: function (id) {
+      return API.query('SELECT path, poster FROM media WHERE id=?', [id]).then(function (rows) {
+        if (!rows.length) return { changes: 0 };
+        var row = rows[0];
+        var chain = API.exec('DELETE FROM media WHERE id=?', [id]);
+        var paths = [row.path, row.poster];
+        for (var i = 0; i < paths.length; i++) {
+          if (!paths[i]) continue;
+          chain = chain.then((function (p) {
+            return function (r) {
+              return API.file({ op: 'del', path: p }).then(function () { return r; },
+                function () { return r; });
+            };
+          })(paths[i]));
+        }
+        return chain;
+      });
+    },
+
     /* ---------------- 语音转文字 ---------------- */
 
     /**

@@ -35,7 +35,8 @@ const BASE = sea ? path.join(EXE_DIR, 'resources') : path.join(__dirname, '..');
 
 const ROOT = BASE;
 const WEB = path.join(ROOT, 'web');
-const SCHEMA_FILE = path.join(BASE, 'schema.sql');
+// 开发时 schema.sql 就躺在 server/ 里；打包后才挪到 resources/
+const SCHEMA_FILE = sea ? path.join(BASE, 'schema.sql') : path.join(__dirname, 'schema.sql');
 const DATA = process.env.DATA_DIR || (sea ? path.join(EXE_DIR, 'data') : path.join(ROOT, 'data'));
 const FILES = path.join(DATA, 'files');
 const PORT = Number(process.env.PORT || 4321);

@@ -161,7 +161,26 @@ img{max-width:100%;display:block}
   align-items:flex-start;font-size:14px}
 .mat-text{flex:1;min-width:0;color:var(--ink2);line-height:1.7;word-break:break-word}
 .mat-side{flex:0 0 auto;font-size:11.5px;color:var(--muted)}
-.mat-acts{flex:0 0 auto}
+.mat-acts{flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap}
+.mat-thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;flex:0 0 auto}
+/* 就地编辑：整条变成表单，看清在改哪一条 */
+.mat.editing{display:block;border:1px solid var(--accent);border-radius:10px;
+  padding:12px;margin:8px 0;background:var(--card)}
+.say.mini{width:100%;min-height:90px;font-size:14.5px;line-height:1.8}
+.ph-edit{display:flex;gap:12px;align-items:flex-start}
+.ph-thumb{width:72px;height:72px;object-fit:cover;border-radius:8px;flex:0 0 auto}
+.ph-fields{flex:1;min-width:0}
+.ph-fields label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+/* 卷宗里的条目操作：平时很淡，划到它才显出来，不打断阅读 */
+.en-acts{display:flex;gap:14px;margin-top:6px;opacity:.35;transition:.15s}
+.en:hover .en-acts,.en.editing .en-acts{opacity:1}
+.en.editing{border-left:3px solid var(--accent);padding-left:12px;margin:14px 0}
+.ch-edit{margin-left:6px;font-size:12.5px;color:var(--accent);background:none;
+  border:none;cursor:pointer;opacity:.5}
+.ch-title:hover .ch-edit{opacity:1}
+.danger-t{color:var(--danger)}
+.fi{width:100%;margin-top:3px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:7px;background:var(--paper);color:var(--ink);font-size:14.5px}
 .drop{display:flex;align-items:center;justify-content:center;min-height:88px;
   border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:14px;cursor:pointer}
 .row{display:flex;gap:10px;align-items:flex-end;margin:12px 0}
@@ -193,6 +212,15 @@ img{max-width:100%;display:block}
   line-height:1.6;margin-top:3px}
 .su-arrow{position:absolute;right:2px;top:10px;color:var(--accent);font-size:15px}
 .signup[data-star="1"] b{color:var(--accent)}
+/* 配置明细：字段对齐，一眼能核对填了什么 */
+.ai-kv{display:grid;grid-template-columns:78px 1fr;gap:5px 10px;margin:9px 0;font-size:13px}
+.ai-kv dt{color:var(--muted)}
+.ai-kv dd{margin:0;color:var(--ink2);word-break:break-all}
+.ai-kv code,.hint code,.fld small code{background:var(--accent-soft);color:var(--accent);
+  padding:1px 5px;border-radius:4px;font-size:12.5px;word-break:break-all}
+.ai-kv.pick{background:var(--card);border:1px solid var(--line2);
+  border-radius:10px;padding:12px 14px;grid-template-columns:96px 1fr}
+.fld small{display:block;margin-top:4px;color:var(--muted);font-size:12px;line-height:1.65}
 .ai-card-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15.5px}
 .ai-card-top b{font-weight:600}
 /* 停用 / 启用：排在卡片标题行右侧，随顶行的 gap 自动贴边 */
