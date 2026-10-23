@@ -121,9 +121,9 @@ async function seed(S, t) {
     fs.writeFileSync(path.join(files, 'audio', 'seg-' + i + '.wav'), silentWav(2));
   }
 
-  // 主角：李秀兰，1942 年生，济南国棉三厂挡车工
+  // 主角：张桂芳，1942 年生，济南国棉三厂挡车工
   await exec(`INSERT INTO archives (archive_no, subject_name, birth_year, hometown, intro, facts_json, status, visibility)
-    VALUES ('MS-2026-001','李秀兰',1942,'山东济南',
+    VALUES ('MS-2026-001','张桂芳',1942,'山东济南',
     '我这一辈子没做过什么大事，就是把三个孩子拉扯大了。',
     '[{"k":"出生","v":"1942 年，济南西郊段店"},{"k":"兄弟姐妹","v":"五个，我排老三"},{"k":"工作","v":"国棉三厂挡车工，四十一年"},{"k":"子女","v":"两个儿子，一个女儿"}]',
     'ready',1)`);
@@ -275,7 +275,7 @@ let chrome = null;
   await S.waitReady();
   const token = await S.register();
   await seed(S, token);
-  console.log('示范档案已就绪（李秀兰 / 王德福 / 陈志远）');
+  console.log('示范档案已就绪（张桂芳 / 王德福 / 陈志远）');
 
   fs.rmSync(path.join(__dirname, '..', 'tmp', 'cdp-profile'), { recursive: true, force: true });
   chrome = spawn(CHROME, [
