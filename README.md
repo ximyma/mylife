@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.3.0**（2026-10-23 · 变更明细见 [CHANGELOG.md](CHANGELOG.md)）
+**当前版本 v0.3.3**（2026-10-23 · 变更明细见 [CHANGELOG.md](CHANGELOG.md)）
 
 **v0.3 新增：手机号注册登录，每用户独立数据库，数据物理隔离。**
 

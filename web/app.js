@@ -591,7 +591,7 @@
 
   /* ---------------- 补内容 ---------------- */
 
-  var rec = { mr: null, chunks: [], path: '', started: 0 };
+  var rec = { mr: null, chunks: [], path: '', started: 0, native: false, peak: 0 };
 
   function renderCollect(id) {
     app.innerHTML = topbar({
@@ -737,9 +737,17 @@
     var recBtn = document.getElementById('recBtn');
     var recState = document.getElementById('recState');
 
-    /* --- 录音：边录边写盘，别攒在内存里 --- */
-    var canRec = typeof MediaRecorder !== 'undefined' &&
-      navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+    /* --- 录音：边录边写盘，别攒在内存里 ---
+     *
+     * 两条路：
+     *  ① 安卓壳里的 NativeRec（原生 AudioRecord）——稳，优先走这条
+     *  ② 浏览器 / WebView 的 getUserMedia —— Windows 版和普通浏览器走这条
+     * 安卓上 getUserMedia 经常被 WebView 那一层挡掉（系统权限给了也没用），
+     * 所以原生这条路是主力，WebView 那条只当兜底。
+     */
+    var NATIVE = window.NativeRec || null;
+    var canRec = !!NATIVE || (typeof MediaRecorder !== 'undefined' &&
+      navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
     if (!canRec) {
       recState.textContent = '这台设备不支持录音，可以直接打字';
       recBtn.disabled = true;
@@ -748,6 +756,7 @@
     }
 
     var recording = false;
+    var nativeTick = 0;
     recBtn.onclick = function () {
       if (!canRec) return;
       if (recording) return stopRec();
@@ -777,7 +786,7 @@
         sel.hidden = n < 2;   // 只有一个设备就不摆出来添乱
       }).catch(function () {});
     }
-    fillMicList();
+    if (!NATIVE) fillMicList();   // 原生录音直接抓系统默认麦克风，不用挑设备
 
     var micSel = document.getElementById('micSel');
     if (micSel) micSel.onchange = function () {
@@ -786,12 +795,112 @@
     };
 
     function startRec() {
+      if (NATIVE) return startRecNative();
+      return startRecWeb('');
+    }
+
+    /* ---- ① 原生录音（安卓壳里的 AudioRecord） ---- */
+
+    function startRecNative() {
+      var st = '';
+      try { st = String(NATIVE.state() || ''); } catch (e) { st = ''; }
+      if (st.indexOf('granted') < 0) {
+        recState.textContent = '正在请求麦克风权限……';
+        window.__micPerm = function (r) {
+          window.__micPerm = null;
+          if (String(r) === 'granted') doStartNative();
+          else {
+            recState.textContent = '系统没放行麦克风（' + r + '）。到「设置 → 应用 → 我的人生档案 → 权限」' +
+              '把麦克风改成「仅使用期间允许」，再点一次';
+          }
+        };
+        try { NATIVE.ask(); } catch (e) {
+          window.__micPerm = null;
+          recState.textContent = '要不了麦克风权限：' + e.message;
+        }
+        return;
+      }
+      doStartNative();
+    }
+
+    function doStartNative() {
+      var name = 'seg-' + id + '-' + Date.now() + '.wav';
+      var r = '';
+      try { r = String(NATIVE.start(API.auth.token(), name) || ''); } catch (e) { r = 'err:' + e.message; }
+
+      if (r.indexOf('ok') !== 0) {
+        if (r.indexOf('needperm') >= 0) {
+          recState.textContent = '系统还没给麦克风权限，去设置里打开再点一次';
+          return;
+        }
+        // 原生也开不了：退回 WebView 那条路再试一次，两条路都失败就把原因一起报出来
+        var why = r.replace(/^err:/, '');
+        recState.textContent = '原生录音开不了（' + why + '），换一条路试试……';
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return startRecWeb(why);
+        recState.textContent = '录音打不开：' + why + '。可以先直接打字';
+        return;
+      }
+
+      recording = true;
+      rec.native = true;
+      rec.peak = 0;
+      rec.started = Date.now();
+      rec.path = '';
+      recBtn.className = 'btn rec-btn on';
+      recBtn.innerHTML = '<span class="dot"></span> <b>正在录 · 点这里停下</b>';
+      recState.textContent = '正在听……';
+
+      nativeTick = setInterval(function () {
+        if (!recording) return;
+        var pk = 0, sec = 0;
+        try { pk = Number(NATIVE.level()) || 0; } catch (e) {}
+        try { sec = Number(NATIVE.seconds()) || 0; } catch (e) {}
+        if (pk > rec.peak) rec.peak = pk;
+        var db = pk > 0 ? Math.round(20 * Math.log(pk) / Math.LN10 * 10) / 10 : -99;
+        recState.textContent = '正在听… 音量 ' + db + ' dB · 已录 ' + sec + ' 秒' +
+          (pk < 0.01 ? '（几乎没有声音，对着手机底下的小孔说）' : '');
+        if (sec >= 600) stopRec();      // 10 分钟上限：再长转写服务就不收了
+      }, 500);
+    }
+
+    function stopRecNative() {
+      recording = false;
+      rec.native = false;
+      if (nativeTick) { clearInterval(nativeTick); nativeTick = 0; }
+      recBtn.className = 'btn rec-btn';
+      recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
+
+      var out = null;
+      try { out = JSON.parse(String(NATIVE.stop() || '{}')); } catch (e) { out = null; }
+      if (!out || !out.ok) {
+        recState.textContent = '这段没存下来：' + ((out && out.err) || '一个字节都没录到') + '，重录一次试试';
+        return;
+      }
+      if (Number(out.peak) < 0.01) {
+        recState.textContent = '这段全是静音。看看手机壳有没有挡到麦克风孔，再录一次';
+        return;
+      }
+      rec.path = out.path;
+      recState.textContent = '录好了 ' + out.seconds + ' 秒 · 记得点「存为一条讲述」';
+    }
+
+    /* ---- ② WebView / 浏览器录音（兜底） ---- */
+
+    function startRecWeb(nativeErr) {
       // AudioContext 必须在点击手势里创建并确认运行——
       // 在 getUserMedia 回调里才创建的话，Chrome 会把它挂起：
       // 回调照常触发、文件照常生成，但里面全是接近全零的低频噪声，
       // 转写服务返回空，界面上就成了"录音是空的"。
       var AC = window.AudioContext || window.webkitAudioContext;
-      var ctx = new AC();
+      if (!AC) {
+        recState.textContent = '这个浏览器内核太老，录不了音' + (nativeErr ? '（' + nativeErr + '）' : '') + '，可以先直接打字';
+        return;
+      }
+      var ctx;
+      try { ctx = new AC(); } catch (e) {
+        recState.textContent = '音频通道打不开（' + e.name + '）' + (nativeErr ? '，原生录音也失败：' + nativeErr : '') + '，可以先直接打字';
+        return;
+      }
       var kick = (ctx.state === 'suspended') ? ctx.resume() : Promise.resolve();
       kick.then(function () {
         // 用用户选过的麦克风；没选过就让系统定（选错设备是"录出来全静音"的头号原因）
@@ -802,6 +911,7 @@
       }).then(function (stream) {
         rec.chunks = [];
         rec.path = '';
+        rec.native = false;
         rec.started = Date.now();
         rec.peak = 0;                 // 全程最大瞬时音量，停的时候用来判断"到底录没录上"
         var src = ctx.createMediaStreamSource(stream);
@@ -834,7 +944,23 @@
           ? '正在听……'
           : '音频通道没就绪（' + ctx.state + '），重试一次';
       }).catch(function (e) {
-        recState.textContent = '没有拿到麦克风权限，可以直接打字';
+        // 以前这里一律说"没有拿到麦克风权限"，把设备不可用、被占用、
+        // WebView 不放行全糊成一句，反而让人以为是自己权限没开。
+        var n = (e && e.name) || '';
+        var tip;
+        if (n === 'NotAllowedError' || n === 'PermissionDeniedError') {
+          tip = '系统/网页内核没放行麦克风（NotAllowedError）';
+        } else if (n === 'NotFoundError' || n === 'DevicesNotFoundError') {
+          tip = '系统里找不到可用的麦克风（NotFoundError）';
+        } else if (n === 'NotReadableError' || n === 'TrackStartError') {
+          tip = '麦克风被别的应用占着（NotReadableError），先关掉录音、通话、语音助手再试';
+        } else if (n === 'OverconstrainedError') {
+          try { localStorage.removeItem('mylife.mic'); } catch (e2) {}
+          tip = '上次选的麦克风不在了，已重置，再点一次';
+        } else {
+          tip = '录音打不开' + (n ? '（' + n + (e.message ? '：' + e.message : '') + '）' : '');
+        }
+        recState.textContent = tip + (nativeErr ? '；原生录音也失败：' + nativeErr : '') + '。也可以直接打字';
       });
     }
 
@@ -870,6 +996,7 @@
 
     function stopRec() {
       if (!recording) return;
+      if (rec.native) return stopRecNative();
       recording = false;
       try { if (rec.proc) rec.proc.disconnect(); } catch (e) {}
       try { if (rec.src) rec.src.disconnect(); } catch (e) {}
@@ -1129,7 +1256,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.3.2';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.3.3';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1372,7 +1499,10 @@
           : '') +
         '<div class="pref-row"><button class="btn tiny" id="dbDiag">数据自检</button>' +
         '<span class="muted">保存了却看不到数据时点这个，把弹出的信息截图发我</span></div>' +
-        '<pre id="dbDiagOut" style="display:none;font-size:11px;white-space:pre-wrap;background:var(--card);padding:10px;border-radius:8px"></pre>';
+        '<pre id="dbDiagOut" style="display:none;font-size:11px;white-space:pre-wrap;background:var(--card);padding:10px;border-radius:8px"></pre>' +
+        '<div class="pref-row"><button class="btn tiny" id="micDiag">麦克风诊断</button>' +
+        '<span class="muted">录音打不开、或者录出来没声音时点这个</span></div>' +
+        '<pre id="micDiagOut" style="display:none;font-size:11px;white-space:pre-wrap;background:var(--card);padding:10px;border-radius:8px"></pre>';
 
       html += '</main>';
       app.innerHTML = html;
@@ -1538,8 +1668,35 @@
       });
     };
 
-    var logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) logoutBtn.onclick = function () {
+    var micDiag = document.getElementById('micDiag');
+    if (micDiag) micDiag.onclick = function () {
+      var out = document.getElementById('micDiagOut');
+      out.style.display = 'block';
+      out.textContent = '正在检查……';
+      if (window.NativeRec && window.NativeRec.info) {
+        try { out.textContent = JSON.stringify(JSON.parse(window.NativeRec.info()), null, 2); }
+        catch (e) { out.textContent = '原生信息读不出来：' + e.message; }
+        return;
+      }
+      // 浏览器：把 mediaDevices 能看到的东西都列出来
+      var o = { native: false, hasMediaDevices: !!(navigator.mediaDevices),
+        hasGetUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+        hasMediaRecorder: typeof MediaRecorder !== 'undefined',
+        hasAudioContext: !!(window.AudioContext || window.webkitAudioContext),
+        secure: location.protocol + '//' + location.host, isSecureContext: !!window.isSecureContext };
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        out.textContent = JSON.stringify(o, null, 2); return;
+      }
+      navigator.mediaDevices.enumerateDevices().then(function (ds) {
+        o.devices = ds.map(function (d) { return d.kind + ' | ' + (d.label || '(无名字)') + ' | ' + d.deviceId; });
+        out.textContent = JSON.stringify(o, null, 2);
+      }).catch(function (e) {
+        o.err = e.name + ': ' + e.message;
+        out.textContent = JSON.stringify(o, null, 2);
+      });
+    };
+
+    var logoutBtn = document.getElementById('logoutBtn');    if (logoutBtn) logoutBtn.onclick = function () {
       if (!confirm('退出登录？退出后要重新登录才能看到档案。')) return;
       API.auth.logout().catch(function () {});
       API.auth.setToken('');

@@ -315,7 +315,7 @@ public final class Ai {
      *
      * payload: { path: 'audio/xxx.webm', profileId?, model?, language? }
      */
-    public static String asr(Context ctx, Db db, String payload) {
+    public static String asr(Context ctx, long uid, Db db, String payload) {
         long t0 = System.currentTimeMillis();
         try {
             JSONObject in = Json.obj(payload);
@@ -331,8 +331,10 @@ public final class Ai {
 
             String rel = in.optString("path", "").replace("..", "").replace("\\", "/");
             if (rel.length() == 0) return msg(false, "没有指定音频");
-            // 与 LocalServer 的 /files/ 同一套根目录
-            File f = new File(new File(ctx.getFilesDir(), "files"), rel);
+            // 与 LocalServer 的 /files/、Files.java 同一套根目录：users/<uid>/files/
+            // v0.3.3 修：原来少了 users/<uid> 这一层，v0.3 之后录的音一律"找不到这个音频文件"
+            File f = new File(new File(new File(new File(ctx.getFilesDir(), "users"),
+                    String.valueOf(uid)), "files"), rel);
             if (!f.exists()) return msg(false, "找不到这个音频文件");
             long size = f.length();
             if (size > 25L * 1024 * 1024) {

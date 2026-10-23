@@ -95,6 +95,7 @@ ck('环节绑定有模型下拉', /class="slot-model"/.test(h));
 ck('下拉有免费标注', h.indexOf('· 免费') >= 0);
 ck('有阅读偏好', h.indexOf('prefFont') >= 0);
 ck('设置页显示当前账号', h.indexOf(S.phone) >= 0);
+ck('设置页有麦克风诊断入口', h.indexOf('micDiag') >= 0);
 ck('有图片生成环节', h.indexOf('图片生成') >= 0);
 ck('有视频生成环节', h.indexOf('视频生成') >= 0);
 ck('视频下拉列出 Wan 模型', h.indexOf('Wan-AI/Wan2.2-T2V-A14B') >= 0);

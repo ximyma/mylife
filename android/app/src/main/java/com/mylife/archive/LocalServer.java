@@ -297,7 +297,7 @@ public class LocalServer {
                 return Ai.test(ctx, udb, json);
             }
             if (path.equals("/api/asr")) {
-                return Ai.asr(ctx, udb, json);
+                return Ai.asr(ctx, uid, udb, json);
             }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);
@@ -374,7 +374,9 @@ public class LocalServer {
             writeText(out, 404, "not found");
             return;
         }
-        File f = new File(new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid)), decoded);
+        // 根目录是 users/<uid>/files —— 少这一层 files 就会 404（v0.3.3 修）
+        File f = new File(new File(new File(new File(ctx.getFilesDir(), "users"),
+                String.valueOf(uid)), "files"), decoded);
         if (!f.isFile()) {
             writeText(out, 404, "not found");
             return;

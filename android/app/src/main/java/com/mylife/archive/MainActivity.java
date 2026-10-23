@@ -37,11 +37,15 @@ public class MainActivity extends Activity {
     private static final String TAG = "MainActivity";
     private static final int REQ_PERM = 1001;
     private static final int REQ_FILE = 1002;
+    private static final int REQ_MIC = 1003;
 
     private WebView web;
     private Db db;
     private LocalServer server;
     private Auth auth;
+
+    /** v0.3.3：原生录音（绕开 WebView 的 getUserMedia，国产 ROM 上那层不可靠） */
+    private final MicRec mic = new MicRec();
 
     /** v0.2 的旧单用户库还在吗（决定首个注册账号是否继承） */
     public static boolean hasLegacyData(Context ctx) {
@@ -197,6 +201,11 @@ public class MainActivity extends Activity {
 
                 if (grant.isEmpty()) {
                     request.deny();
+                    // 顺手把系统那道门也要一次：用户点完允许，再点录音就能成
+                    if (!hasPerm(Manifest.permission.RECORD_AUDIO)
+                            && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                    }
                     toastIt("录音权限没给。到系统设置 → 应用 → 我的人生档案 → 权限里打开麦克风。");
                 } else {
                     request.grant(grant.toArray(new String[0]));
@@ -232,6 +241,97 @@ public class MainActivity extends Activity {
 
         web.addJavascriptInterface(new TtsBridge(), "NativeTTS");
         web.addJavascriptInterface(new NativeIO(), "NativeIO");
+        web.addJavascriptInterface(new NativeRec(), "NativeRec");
+    }
+
+    /* ---------------- 录音桥（v0.3.3） ---------------- */
+
+    /**
+     * 前端录音优先级：
+     *   ① window.NativeRec 存在 → 走原生 AudioRecord（稳）
+     *   ② 否则 / 原生也失败 → 走 WebView 的 getUserMedia
+     * 桥里只做三件事：查权限、要权限、录。
+     */
+    public class NativeRec {
+
+        /** "granted" / "denied" + 是否支持原生录音 */
+        @JavascriptInterface
+        public String state() {
+            boolean ok = hasPerm(Manifest.permission.RECORD_AUDIO);
+            return "{\"perm\":\"" + (ok ? "granted" : "denied") + "\",\"running\":" + mic.isRunning() + "}";
+        }
+
+        /** 要系统权限；结果异步回到 window.__micPerm('granted'|'denied') */
+        @JavascriptInterface
+        public void ask() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                            || hasPerm(Manifest.permission.RECORD_AUDIO)) {
+                        callJsMic("granted");
+                        return;
+                    }
+                    requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                }
+            });
+        }
+
+        /** token 用来定位是哪个用户（每个用户一套文件目录），name 是文件名 */
+        @JavascriptInterface
+        public String start(String token, String name) {
+            Auth.User u = auth == null ? null : auth.verify(token);
+            if (u == null) return "err:登录已过期，重新登录再录";
+            if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
+                ask();
+                return "err:needperm";
+            }
+            return mic.start(getApplicationContext(), u.uid, name);
+        }
+
+        @JavascriptInterface
+        public String stop() {
+            return mic.stop();
+        }
+
+        @JavascriptInterface
+        public String cancel() {
+            return mic.cancel();
+        }
+
+        @JavascriptInterface
+        public double level() {
+            return mic.level();
+        }
+
+        @JavascriptInterface
+        public long seconds() {
+            return mic.seconds();
+        }
+
+        /** 体检报告：出问题时让用户截图 */
+        @JavascriptInterface
+        public String info() {
+            String j = MicRec.info(getApplicationContext(), hasPerm(Manifest.permission.RECORD_AUDIO));
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(j);
+                o.put("webview", String.valueOf(WebSettings.getDefaultUserAgent(MainActivity.this)));
+                o.put("native", true);
+                return o.toString();
+            } catch (Exception e) {
+                return j;
+            }
+        }
+    }
+
+    private void callJsMic(final String result) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (web == null) return;
+                web.evaluateJavascript("window.__micPerm&&window.__micPerm('" + result + "')", null);
+            }
+        });
     }
 
     /* ---------------- 导出桥 ---------------- */
@@ -309,18 +409,39 @@ public class MainActivity extends Activity {
 
     private void requestPerms() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+
+        // 麦克风单独一批。
+        // 以前和存储权限混在一起请求，只要批次里有一个权限是 Manifest 没声明的
+        // （比如 Android 11 上已废弃的 WRITE_EXTERNAL_STORAGE），部分 ROM 会把
+        // 整批请求判成失败，麦克风那道系统弹窗从来没出现过——用户看到的就是
+        // 「我明明开了权限，App 还说没权限」。分开请求，麦克风这道一定弹。
+        if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+        }
+
         List<String> need = new ArrayList<String>();
-        addPerm(need, Manifest.permission.RECORD_AUDIO);
         if (Build.VERSION.SDK_INT >= 33) {
             addPerm(need, Manifest.permission.READ_MEDIA_IMAGES);
             addPerm(need, Manifest.permission.READ_MEDIA_VIDEO);
             addPerm(need, Manifest.permission.READ_MEDIA_AUDIO);
         } else {
             addPerm(need, Manifest.permission.READ_EXTERNAL_STORAGE);
-            addPerm(need, Manifest.permission.WRITE_EXTERNAL_STORAGE);
         }
         if (!need.isEmpty()) {
             requestPermissions(need.toArray(new String[0]), REQ_PERM);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == REQ_MIC) {
+            boolean ok = hasPerm(Manifest.permission.RECORD_AUDIO);
+            Log.i(TAG, "麦克风权限结果：" + ok);
+            callJsMic(ok ? "granted" : "denied");
+            if (!ok) {
+                toastIt("麦克风被系统挡住了。去「设置 → 应用 → 我的人生档案 → 权限」改成「仅使用期间允许」");
+            }
         }
     }
 
@@ -408,6 +529,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         try {
+            if (mic.isRunning()) mic.stop();   // 退出时把正在录的那段落成文件，别丢
             if (tts != null) tts.release();
             if (server != null) server.stop();
             if (db != null) db.close();

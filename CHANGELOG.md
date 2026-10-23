@@ -2,6 +2,33 @@
 
 格式参考「Keep a Changelog」；版本号：主.次.修订。
 
+## v0.3.3 · 2026-10-23 —— 安卓录音改走原生，麦克风"没权限"根治
+
+### 修复
+- **安卓录音（荣耀 50 实机）**：系统权限明明给了「仅使用期间允许」，App 仍然提示
+  「没有拿到麦克风权限」。两个原因叠在一起：
+  1. 前端把 `getUserMedia` 的所有失败一律写成「没有权限」，把设备不可用、被占用、
+     WebView 不放行全糊成一句，误导了排查方向；
+  2. WebView 里的录音要过两道门，系统权限是第二道，`onPermissionRequest` 是第一道——
+     国产 ROM 上这道经常直接拒，系统权限给了也没用。
+  现在前端**优先走原生 `AudioRecord` 录音**（新增 `MicRec.java` + `NativeRec` 桥），
+  完全绕开 WebView；原生也开不了才回退 `getUserMedia`，并把真实错误名（NotAllowedError /
+  NotFoundError / NotReadableError / OverconstrainedError）显示出来。
+- **权限申请拆批**：麦克风单独一批请求。原来和存储权限混在同一个批次里，批次里带着已废弃的
+  `WRITE_EXTERNAL_STORAGE`（Manifest 里根本没声明），部分 ROM 会把整批判成失败，
+  麦克风系统弹窗从头到尾没出现过。
+- **安卓 `/files/` 静态服务少一层目录**：`users/<uid>/<rel>` 应为 `users/<uid>/files/<rel>`，
+  导致照片、录音回放全 404；`/api/asr` 读音频是同一个错（v0.3 之后录的音一律"找不到这个音频文件"），一并修好。
+- 录音落盘按用户分流：原生录音直接写 `users/<uid>/files/audio/`，与 `API.file` 的 kind=audio 完全一致。
+
+### 新增
+- **设置 → 麦克风诊断**：输出权限状态、Android 版本与机型、三种采样率下 `AudioRecord`
+  能否初始化、系统可见的输入设备清单、WebView 版本。出问题截个图就能定位是系统层还是 WebView 层。
+
+### 质量
+- 审计回归：主功能 52 / 多用户隔离 21 / 生成逻辑 13 / 档案管理 9 / UI 38，全部通过
+- 产物内容校验：APK 内 `assets/web/app.js` 为 v0.3.3，`classes.dex` 含 `NativeRec` / `MicRec`
+
 ## v0.3.2 · 2026-10-23 —— 安卓写入修复
 
 ### 修复
