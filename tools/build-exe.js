@@ -12,7 +12,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 // 版本号唯一来源：android/app/build.gradle 的 versionName（EXE/APK/备份包命名都用它）
@@ -140,6 +140,45 @@ const readme = [
   '',
 ].join('\n');
 fs.writeFileSync(path.join(OUT, '使用说明.txt'), readme, 'utf8');
+
+/* ---- 6.5 单文件冒烟测试：拷到空目录独立启动，探活失败就终止构建 ---- */
+step(6.5, '单文件冒烟测试');
+{
+  const smokeDir = path.join(TMP, 'smoke');
+  fs.rmSync(smokeDir, { recursive: true, force: true });
+  fs.mkdirSync(smokeDir, { recursive: true });
+  fs.copyFileSync(exe, path.join(smokeDir, 'MyLife.exe'));
+  const smokePort = String(4490 + Math.floor(Math.random() * 50));
+  const proc = spawn(path.join(smokeDir, 'MyLife.exe'), [], {
+    env: Object.assign({}, process.env, { PORT: smokePort, DATA_DIR: path.join(smokeDir, 'data') }),
+    stdio: 'ignore', detached: false,
+  });
+  const probe = spawnSync(process.execPath, ['-e', `
+    const http = require('http');
+    const port = process.argv[1];
+    (async () => {
+      for (let i = 0; i < 25; i++) {
+        const code = await new Promise((resolve) => {
+          const rq = http.get('http://127.0.0.1:' + port + '/', (res) => { res.resume(); resolve(res.statusCode); });
+          rq.on('error', () => resolve(0));
+          rq.setTimeout(300, () => { rq.destroy(); resolve(0); });
+        });
+        if (code === 200) { process.exit(0); }
+        setTimeout(() => {}, 400);
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      process.exit(1);
+    })();
+  `, smokePort], { timeout: 20000 });
+  try { proc.kill && proc.kill(); } catch (e) {}
+  fs.rmSync(smokeDir, { recursive: true, force: true });
+  if (probe.status !== 0) {
+    console.error('\n冒烟测试失败：单文件 EXE 无法独立启动（常见原因：require 了本地文件）');
+    console.error('不要发布这个包！');
+    process.exit(1);
+  }
+  console.log('  单文件独立启动 OK');
+}
 
 const size = fs.statSync(exe).size;
 console.log('  ' + exe + '  ' + Math.round(size / 1024 / 1024 * 10) / 10 + ' MB');
