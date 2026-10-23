@@ -1096,6 +1096,7 @@
         '<dt>语音转文字</dt><dd><code>Qwen/Qwen3-ASR-1.7B</code> <span class="muted">0.4 秒</span></dd>' +
         '<dt>要更好文笔</dt><dd><code>Qwen/Qwen3-8B</code> <span class="muted">免费但慢些（会先思考）</span></dd>' +
         '<dt>图片生成</dt><dd><code>Kwai-Kolors/Kolors</code> <span class="muted">免费，功能接入前可先配好</span></dd>' +
+        '<dt>视频生成</dt><dd><code>Wan-AI/Wan2.2-T2V-A14B</code> 等 <span class="warn-text">很贵，一条几块钱起，慎重</span></dd>' +
         '</dl>' +
         '<p class="hint dim">想让程序真正「看懂」照片场景而不只是认字，' +
         '可以去智谱开个号用 <code>GLM-4.6V-Flash</code>，那是免费的多模态模型。' +
@@ -1138,8 +1139,8 @@
           rec: ['Kwai-Kolors/Kolors'],
           hint: '文生图，功能快来了，先配好备用。Kolors 免费' },
         { k: 'vid', label: '视频生成（预留）', kind: 't2v',
-          rec: [],
-          hint: '文生视频，模型普遍较贵，接入前不用配' }
+          rec: ['Wan-AI/Wan2.2-T2V-A14B'],
+          hint: '文生视频，普遍很贵（一条几块钱起）。功能接入前配好备用即可，不配不影响其它功能' }
       ];
 
       for (var p = 0; p < profiles.length; p++) {

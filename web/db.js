@@ -454,7 +454,8 @@
       if (/tts|cosyvoice|speech/.test(s)) return 'tts';
       if (/ocr|vl|vision/.test(s)) return 'vision';
       if (/kolors|flux|cogview|qwen-image|z-image/.test(s)) return 't2i';
-      if (/cogvideo|seedance|video/.test(s)) return 't2v';
+      // Wan 系列的 t2v/i2v、CogVideo、Seedance 都是视频；关键词里 t2v/i2v 要在 text 兜底之前
+      if (/cogvideo|seedance|video|t2v|i2v|wan2/.test(s)) return 't2v';
       return 'text';
     },
 
