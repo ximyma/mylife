@@ -1369,7 +1369,10 @@
         (myPhone
           ? '<div class="pref-row"><span>当前账号</span><b>' + esc(myPhone) + '</b>' +
             '<button class="btn tiny" id="logoutBtn">退出登录</button></div>'
-          : '');
+          : '') +
+        '<div class="pref-row"><button class="btn tiny" id="dbDiag">数据自检</button>' +
+        '<span class="muted">保存了却看不到数据时点这个，把弹出的信息截图发我</span></div>' +
+        '<pre id="dbDiagOut" style="display:none;font-size:11px;white-space:pre-wrap;background:var(--card);padding:10px;border-radius:8px"></pre>';
 
       html += '</main>';
       app.innerHTML = html;
@@ -1522,6 +1525,18 @@
     }
 
     var night = document.getElementById('prefNight');
+
+    var dbDiag = document.getElementById('dbDiag');
+    if (dbDiag) dbDiag.onclick = function () {
+      var out = document.getElementById('dbDiagOut');
+      out.style.display = 'block';
+      out.textContent = '正在读取……';
+      API.auth.debugData().then(function (r) {
+        out.textContent = JSON.stringify(r, null, 2);
+      }).catch(function (e) {
+        out.textContent = '自检失败：' + e.message;
+      });
+    };
 
     var logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) logoutBtn.onclick = function () {

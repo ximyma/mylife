@@ -61,6 +61,11 @@ public class Db {
         }
     }
 
+    /** 幂等补表（全部 IF NOT EXISTS）：迁移来的旧库也要补上新表 */
+    public void ensureSchema() throws Exception {
+        initSchema();
+    }
+
     private void initSchema() throws Exception {
         String raw = readAsset("schema.sql");
         List<String> stmts = splitSql(raw);

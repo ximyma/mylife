@@ -193,6 +193,9 @@ public class LocalServer {
             dir.mkdirs();
             d = new Db(ctx, new File(dir, "archive.db"));
             d.open();
+            // 关键：迁移来的可能是 v0.1 的旧库，缺 v0.2/v0.3 的新表。
+            // schema 全是 IF NOT EXISTS，幂等——每次打开都补一遍（Node 端同样做法）。
+            d.ensureSchema();
             userDbs.put(uid, d);
             return d;
         }
@@ -299,7 +302,43 @@ public class LocalServer {
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);
             }
+            if (path.equals("/api/debug/data")) {
+                return debugData(udb, uid);
+            }
             return "{\"__error\":\"未知接口 " + path + "\"}";
+        } catch (Exception e) {
+            return "{\"__error\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}";
+        }
+    }
+
+    /** 数据自检：uid、库路径、表清单、行数——设置页展示，用户截图即可确诊 */
+    private String debugData(Db udb, long uid) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"uid\":").append(uid);
+            File f = new File(new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid)), "archive.db");
+            sb.append(",\"dbPath\":\"").append(Json.esc(f.getAbsolutePath()));
+            sb.append("\",\"dbBytes\":").append(f.length());
+            sb.append(",\"tables\":[");
+            android.database.Cursor c = udb.raw().rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", null);
+            boolean first = true;
+            while (c.moveToNext()) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("\"").append(Json.esc(c.getString(0))).append("\"");
+            }
+            c.close();
+            sb.append("]");
+            String[] counts = {"archives", "chapters", "entries", "photos", "segments", "ai_profiles"};
+            for (int i = 0; i < counts.length; i++) {
+                c = udb.raw().rawQuery("SELECT count(*) FROM " + counts[i], null);
+                c.moveToFirst();
+                sb.append(",\"").append(counts[i]).append("_n\":").append(c.getLong(0));
+                c.close();
+            }
+            sb.append("}");
+            return sb.toString();
         } catch (Exception e) {
             return "{\"__error\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}";
         }

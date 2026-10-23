@@ -108,6 +108,9 @@
       sms: function (phone) {
         return post('/api/auth/sms', { phone: phone });
       },
+      debugData: function () {
+        return post('/api/debug/data', {});
+      },
       token: token,
       setToken: setToken,
       /** app.js 注入 401 跳转回调 */
