@@ -43,8 +43,19 @@ console.log('  blob: ' + fs.statSync(path.join(TMP, 'sea-prep.blob')).size + ' b
 
 /* ---- 2. 复制 node.exe 做骨架 ---- */
 step(2, '以 node.exe 为骨架');
+// dist/win/data 是用户的数据，重打包不能动它：先挪开，打完再放回来
+const dataDir = path.join(OUT, 'data');
+const dataKeep = path.join(TMP, 'data-keep');
+let hadData = fs.existsSync(dataDir);
+if (hadData) fs.cpSync(dataDir, dataKeep, { recursive: true });
+
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(path.join(OUT, 'resources'), { recursive: true });
+if (hadData) {
+  fs.cpSync(dataKeep, dataDir, { recursive: true });
+  fs.rmSync(dataKeep, { recursive: true, force: true });
+  console.log('  （已保留现有 data/ 数据）');
+}
 const exe = path.join(OUT, 'MyLife.exe');
 fs.copyFileSync(NODE_BIN, exe);
 console.log('  ' + exe);

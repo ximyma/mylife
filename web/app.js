@@ -556,31 +556,21 @@
         rec.chunks = [];
         rec.path = '';
         rec.started = Date.now();
-        var mr = new MediaRecorder(stream, { audioBitsPerSecond: 32000 });
-        rec.mr = mr;
-        var idx = 0;
-        mr.ondataavailable = function (ev) {
-          if (!ev.data || !ev.data.size) return;
-          var reader = new FileReader();
-          reader.onload = function () {
-            var b64 = String(reader.result).split(',')[1];
-            var name = 'seg-' + id + '-' + Date.now() + '.webm';
-            API.file({ op: 'save', kind: 'audio', name: name, base64: b64, append: idx > 0 ? 1 : 0 })
-              .then(function (r) { if (r && r.path) rec.path = r.path; })
-              .catch(function () {});
-            idx++;
-          };
-          reader.readAsDataURL(ev.data);
+        var AC = window.AudioContext || window.webkitAudioContext;
+        var ctx = new AC();
+        var src = ctx.createMediaStreamSource(stream);
+        // ScriptProcessor 虽老但稳：安卓 5 的 WebView（Chrome 37）也认它
+        var proc = ctx.createScriptProcessor(4096, 1, 1);
+        proc.onaudioprocess = function (e) {
+          if (!recording) return;
+          rec.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+          // 12 分钟上限：WAV 到 25MB 附近，转写服务就不收了
+          if (rec.chunks.length * 4096 / ctx.sampleRate > 720) stopRec();
         };
-        mr.onstop = function () {
-          stream.getTracks().forEach(function (t) { t.stop(); });
-          recording = false;
-          recBtn.className = 'btn rec-btn';
-          recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
-          var sec = Math.round((Date.now() - rec.started) / 1000);
-          recState.textContent = '录好了 ' + sec + ' 秒 · 记得点「存为一条讲述」';
-        };
-        mr.start(4000);   // 每 4 秒切一片，已经落盘
+        src.connect(proc);
+        proc.connect(ctx.destination);   // 不接 destination 回调不跑
+        rec.ctx = ctx; rec.src = src; rec.proc = proc; rec.stream = stream;
+
         recording = true;
         recBtn.className = 'btn rec-btn on';
         recBtn.innerHTML = '<span class="dot"></span> <b>正在录 · 点这里停下</b>';
@@ -590,8 +580,67 @@
       });
     }
 
+    /** 采到的浮点 PCM 合并、降采样到 16k、打成 16bit 单声道 WAV */
+    function buildWav(chunks, srcRate, targetRate) {
+      var total = 0, i;
+      for (i = 0; i < chunks.length; i++) total += chunks[i].length;
+      var merged = new Float32Array(total);
+      var off = 0;
+      for (i = 0; i < chunks.length; i++) { merged.set(chunks[i], off); off += chunks[i].length; }
+
+      var ratio = srcRate / targetRate;
+      var n = Math.floor(total / ratio);
+      var pcm = new Int16Array(n);
+      for (i = 0; i < n; i++) {
+        var v = merged[Math.floor(i * ratio)];
+        if (v > 1) v = 1; else if (v < -1) v = -1;
+        pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+      }
+
+      var buf = new ArrayBuffer(44 + n * 2);
+      var dv = new DataView(buf);
+      function wstr(o, s) { for (var k = 0; k < s.length; k++) dv.setUint8(o + k, s.charCodeAt(k)); }
+      wstr(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true);
+      wstr(8, 'WAVE'); wstr(12, 'fmt ');
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, targetRate, true); dv.setUint32(28, targetRate * 2, true);
+      dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      wstr(36, 'data'); dv.setUint32(40, n * 2, true);
+      new Int16Array(buf, 44).set(pcm);
+      return buf;
+    }
+
     function stopRec() {
-      try { if (rec.mr && rec.mr.state !== 'inactive') rec.mr.stop(); } catch (e) {}
+      if (!recording) return;
+      recording = false;
+      try { if (rec.proc) rec.proc.disconnect(); } catch (e) {}
+      try { if (rec.src) rec.src.disconnect(); } catch (e) {}
+      try { if (rec.stream) rec.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      try { if (rec.ctx) rec.ctx.close(); } catch (e) {}
+
+      var rate = rec.ctx ? rec.ctx.sampleRate : 48000;
+      var buf = buildWav(rec.chunks, rate, 16000);
+      var bytes = new Uint8Array(buf);
+      // 一段段拼 base64，直接 apply 几 MB 会爆栈
+      var bin = '', CH = 0x8000;
+      for (var i = 0; i < bytes.length; i += CH) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+      }
+      var b64 = btoa(bin);
+      var name = 'seg-' + id + '-' + rec.started + '.wav';
+      var sec = Math.round((Date.now() - rec.started) / 1000);
+
+      recState.textContent = '正在保存录音…';
+      API.file({ op: 'save', kind: 'audio', name: name, base64: b64 }).then(function (r) {
+        if (r && r.path) rec.path = r.path;
+        recBtn.className = 'btn rec-btn';
+        recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
+        recState.textContent = '录好了 ' + sec + ' 秒 · 记得点「存为一条讲述」';
+      }).catch(function () {
+        recState.textContent = '录音保存失败，重录一次试试';
+        recBtn.className = 'btn rec-btn';
+        recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
+      });
     }
 
     /* --- 存一条讲述 --- */
