@@ -54,7 +54,7 @@ public final class Ai {
         if (row == null || row.isNull("profile_id")) return null;
         JSONObject p = byId(db, row.optInt("profile_id"));
         if (p == null) return null;
-        String m = row.optString("model", "");
+        String m = Json.sv(row, "model");
         if (m.length() > 0) p.put("__model", m);
         return p;
     }
@@ -63,23 +63,23 @@ public final class Ai {
         if (in != null && in.has("profileId") && !in.isNull("profileId")) {
             JSONObject p = byId(db, in.optInt("profileId"));
             if (p != null) {
-                if (in.has("model") && in.optString("model", "").length() > 0) {
-                    p.put("__model", in.optString("model"));
+                if (in.has("model") && Json.sv(in, "model").length() > 0) {
+                    p.put("__model", Json.sv(in, "model"));
                 }
                 return p;
             }
         }
         if (in != null && in.has("slot")) {
-            JSONObject p = forSlot(db, in.optString("slot"));
+            JSONObject p = forSlot(db, Json.sv(in, "slot"));
             if (p != null) return p;
         }
         return one(db, "SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id LIMIT 1", new JSONArray());
     }
 
     private static String modelOf(JSONObject p) {
-        String m = p.optString("__model", "");
+        String m = Json.sv(p, "__model");
         if (m.length() > 0) return m;
-        return p.optString("default_model", "");
+        return Json.sv(p, "default_model");
     }
 
     /* ================= HTTP ================= */
@@ -135,7 +135,7 @@ public final class Ai {
     }
 
     private static String base(JSONObject p) {
-        String b = p.optString("base_url", "");
+        String b = Json.sv(p, "base_url");
         while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
         return b;
     }
@@ -153,10 +153,10 @@ public final class Ai {
             JSONObject p = in.has("profileId") ? byId(db, in.optInt("profileId")) : null;
             if (p == null) return msg(false, "没有这条配置");
 
-            JSONObject r = call(base(p) + "/models", "GET", p.optString("api_key", ""), null, T_LIST);
+            JSONObject r = call(base(p) + "/models", "GET", Json.sv(p, "api_key"), null, T_LIST);
             int status = r.optInt("status", -1);
             if (status != 200) {
-                return msg(false, "拉不到模型（HTTP " + status + "）：" + shorten(r.optString("text"), 160));
+                return msg(false, "拉不到模型（HTTP " + status + "）：" + shorten(Json.sv(r, "text"), 160));
             }
             JSONObject j = r.optJSONObject("json");
             JSONArray list = null;
@@ -169,7 +169,10 @@ public final class Ai {
                 for (int i = 0; i < list.length(); i++) {
                     JSONObject m = list.optJSONObject(i);
                     if (m == null) continue;
-                    String id = m.optString("id", m.optString("name", m.optString("model", "")));
+                    // 模型清单里字段名各家用得不一样：id / name / model 依次兜底
+                    String id = Json.sv(m, "id");
+                    if (id.length() == 0) id = Json.sv(m, "name");
+                    if (id.length() == 0) id = Json.sv(m, "model");
                     if (id.length() > 0) ids.put(id);
                 }
             }
@@ -225,16 +228,16 @@ public final class Ai {
             // 语音模型不能拿对话接口试：ASR 模型在 /chat/completions 上一律
             // "Model does not exist"，看着像配置错，其实是接口用错了。
             // 这里真发 1 秒静音 WAV 到 /audio/transcriptions，HTTP 200 就算通。
-            if ("asr".equals(in.optString("slot", ""))) {
+            if ("asr".equals(Json.sv(in, "slot"))) {
                 JSONObject fields = new JSONObject();
                 fields.put("model", model);
                 JSONObject r2 = callMultipart(base(p) + "/audio/transcriptions",
-                        p.optString("api_key", ""), tinyWav(1), "file", "probe.wav",
+                        Json.sv(p, "api_key"), tinyWav(1), "file", "probe.wav",
                         "audio/wav", fields, T_TEST);
                 long ms2 = System.currentTimeMillis() - t0;
                 int st2 = r2.optInt("status", -1);
                 if (st2 != 200) {
-                    String body2 = shorten(r2.optString("text"), 200);
+                    String body2 = shorten(Json.sv(r2, "text"), 200);
                     String hint = "";
                     if (body2.matches("(?s).*(20012|does not exist|model_not_found|invalid model).*")) {
                         hint = "\n→ 这个模型不支持转写接口。硅基流动免费能转写的只有 "
@@ -247,7 +250,7 @@ public final class Ai {
                 JSONObject o = msgObj(true, "转写接口可用");
                 o.put("ms", ms2);
                 o.put("model", model);
-                o.put("profile", p.optString("name", ""));
+                o.put("profile", Json.sv(p, "name"));
                 o.put("reply", "转写接口可用（发了一段静音测试音）");
                 return o.toString();
             }
@@ -265,12 +268,12 @@ public final class Ai {
             body.put("stream", false);
 
             JSONObject r = call(base(p) + "/chat/completions", "POST",
-                    p.optString("api_key", ""), body.toString(), T_TEST);
+                    Json.sv(p, "api_key"), body.toString(), T_TEST);
             long ms = System.currentTimeMillis() - t0;
 
             int status = r.optInt("status", -1);
             if (status != 200) {
-                JSONObject o = msgObj(false, "HTTP " + status + "：" + shorten(r.optString("text"), 200));
+                JSONObject o = msgObj(false, "HTTP " + status + "：" + shorten(Json.sv(r, "text"), 200));
                 o.put("ms", ms);
                 return o.toString();
             }
@@ -281,14 +284,14 @@ public final class Ai {
                 JSONArray ch = j.optJSONArray("choices");
                 if (ch != null && ch.length() > 0) {
                     JSONObject msg = ch.optJSONObject(0).optJSONObject("message");
-                    if (msg != null) text = msg.optString("content", "");
+                    if (msg != null) text = Json.sv(msg, "content");
                 }
             }
             JSONObject o = new JSONObject();
             o.put("ok", true);
             o.put("ms", ms);
             o.put("model", model);
-            o.put("profile", p.optString("name", ""));
+            o.put("profile", Json.sv(p, "name"));
             o.put("reply", shorten(text.trim(), 40));
             return o.toString();
 
@@ -320,12 +323,12 @@ public final class Ai {
             body.put("stream", false);
 
             JSONObject r = call(base(p) + "/chat/completions", "POST",
-                    p.optString("api_key", ""), body.toString(), T_CHAT);
+                    Json.sv(p, "api_key"), body.toString(), T_CHAT);
             long ms = System.currentTimeMillis() - t0;
 
             int status = r.optInt("status", -1);
             if (status != 200) {
-                JSONObject o = msgObj(false, "模型返回 " + status + "：" + shorten(r.optString("text"), 200));
+                JSONObject o = msgObj(false, "模型返回 " + status + "：" + shorten(Json.sv(r, "text"), 200));
                 o.put("ms", ms);
                 return o.toString();
             }
@@ -337,7 +340,7 @@ public final class Ai {
                 JSONArray ch = j.optJSONArray("choices");
                 if (ch != null && ch.length() > 0) {
                     JSONObject msg = ch.getJSONObject(0).optJSONObject("message");
-                    if (msg != null) text = msg.optString("content", "");
+                    if (msg != null) text = Json.sv(msg, "content");
                 }
                 usage = j.optJSONObject("usage");
             }
@@ -346,7 +349,7 @@ public final class Ai {
             o.put("ok", true);
             o.put("ms", ms);
             o.put("model", model);
-            o.put("profile", p.optString("name", ""));
+            o.put("profile", Json.sv(p, "name"));
             o.put("text", text);
             if (usage != null) o.put("usage", usage);
             return o.toString();
@@ -377,11 +380,11 @@ public final class Ai {
             JSONObject p = pick(db, in);
             if (p == null) return msg(false, "没有可用的语音模型。去设置里给「语音转文字」绑一条配置。");
 
-            String model = in.optString("model", "");
+            String model = Json.sv(in, "model");
             if (model.length() == 0) model = modelOf(p);
             if (model.length() == 0) return msg(false, "这条配置还没选模型");
 
-            String rel = in.optString("path", "").replace("..", "").replace("\\", "/");
+            String rel = Json.sv(in, "path").replace("..", "").replace("\\", "/");
             if (rel.length() == 0) return msg(false, "没有指定音频");
             // 与 LocalServer 的 /files/、Files.java 同一套根目录：users/<uid>/files/
             // v0.3.3 修：原来少了 users/<uid> 这一层，v0.3 之后录的音一律"找不到这个音频文件"
@@ -406,26 +409,33 @@ public final class Ai {
 
             JSONObject fields = new JSONObject();
             fields.put("model", model);
-            if (in.optString("language", "").length() > 0) {
-                fields.put("language", in.optString("language", ""));
+            if (Json.sv(in, "language").length() > 0) {
+                fields.put("language", Json.sv(in, "language"));
             }
 
             JSONObject r = callMultipart(base(p) + "/audio/transcriptions",
-                    p.optString("api_key", ""), readFile(f), "file", f.getName(), mime,
+                    Json.sv(p, "api_key"), readFile(f), "file", f.getName(), mime,
                     fields, T_ASR);
             long ms = System.currentTimeMillis() - t0;
 
             int status = r.optInt("status", -1);
             if (status != 200) {
-                JSONObject o = msgObj(false, "HTTP " + status + "：" + shorten(r.optString("text"), 200));
+                JSONObject o = msgObj(false, msgForStatus(status, Json.sv(r, "text")));
                 o.put("ms", ms);
+                // 把这次请求的原始信息一并带回去，界面上「看详情」直接能判断
+                // 是网络、鉴权、模型名还是音频本身的问题，不用再猜
+                o.put("diag", diag(base(p), model, Json.sv(p, "name"), rel, size, status,
+                        Json.sv(r, "text")));
                 return o.toString();
             }
 
             JSONObject j = r.optJSONObject("json");
-            String text = j != null ? j.optString("text", "") : "";
+            String text = j != null ? Json.sv(j, "text") : "";
             if (text.trim().length() == 0) {
-                return msg(false, "转出来是空的。录音里可能没说话，或者这段音频格式不支持。");
+                JSONObject o = msgObj(false, "转出来是空的。录音里可能没说话，或者这段音频格式不支持。");
+                o.put("diag", diag(base(p), model, Json.sv(p, "name"), rel, size, status,
+                        Json.sv(r, "text")));
+                return o.toString();
             }
 
             JSONObject o = new JSONObject();
@@ -442,45 +452,102 @@ public final class Ai {
 
         } catch (Exception e) {
             Log.w(TAG, "asr 失败", e);
-            return msg(false, "转不了：" + e.getMessage());
+            JSONObject o = msgObj(false, "转不了：" + e.getMessage());
+            try {
+                JSONObject d = new JSONObject();
+                d.put("status", -1);
+                d.put("body", e.getClass().getSimpleName() + ": " + e.getMessage());
+                o.put("diag", d);
+            } catch (Exception ignored) {
+            }
+            return o.toString();
         }
     }
 
-    /** 手写的 multipart/form-data 上行 */
+    /** 状态码 → 人话。网络层失败（-1）跟服务端 4xx/5xx 是两回事，别混成一句 */
+    private static String msgForStatus(int status, String body) {
+        if (status == -1) {
+            return "连不上服务器：" + shorten(body, 160)
+                    + "\n→ 检查手机网络（或用的是需要代理的接口）";
+        }
+        if (status == 401 || status == 403) {
+            return "HTTP " + status + "：API Key 不对或用不了\n→ " + shorten(body, 200);
+        }
+        if (status == 413) {
+            return "HTTP 413：音频太大，服务端不收\n→ " + shorten(body, 160);
+        }
+        if (status == 429) {
+            return "HTTP 429：调用太频繁或免费额度用完了\n→ " + shorten(body, 160);
+        }
+        return "HTTP " + status + "：" + shorten(body, 200);
+    }
+
+    /** 把这次转写请求的原貌打成一个 JSON，界面上一展开就知道卡在哪 */
+    private static JSONObject diag(String base, String model, String profile,
+            String path, long bytes, int status, String body) {
+        JSONObject d = new JSONObject();
+        try {
+            d.put("base", base);
+            d.put("model", model);
+            d.put("profile", profile);
+            d.put("path", path);
+            d.put("bytes", bytes);
+            d.put("status", status);
+            d.put("body", shorten(body, 600));
+        } catch (Exception ignored) {
+        }
+        return d;
+    }
+
+    /**
+     * 手写的 multipart/form-data 上行。
+     *
+     * v0.3.5 改了两处，都是安卓端独有的坑：
+     *   ① 原来用 setChunkedStreamingMode(0) 走 Transfer-Encoding: chunked。
+     *      不少 OpenAI 兼容网关（nginx/云 WAF 前置）对 chunked 的 POST 直接拒，
+     *      表现是连响应都拿不到、或者 411 Length Required。改成固定长度，
+     *      和 fetch(FormData) 发出去的东西长得一模一样。
+     *   ② 头部和文件分开写，避免把 25MB 音频再复制一份（手机内存吃不消）。
+     */
     private static JSONObject callMultipart(String url, String apiKey, byte[] data,
             String field, String fileName, String mime, JSONObject fields, int timeout) {
         String boundary = "----MyLifeForm" + System.currentTimeMillis();
+        HttpURLConnection conn = null;
         try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            // ---- 先把所有"头"拼出来，算出总长度，才能用固定长度模式 ----
+            ByteArrayOutputStream head = new ByteArrayOutputStream(1024);
+            java.util.Iterator<String> it = fields.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                head.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+                head.write(("Content-Disposition: form-data; name=\"" + k + "\"\r\n\r\n")
+                        .getBytes("UTF-8"));
+                head.write((Json.sv(fields, k) + "\r\n").getBytes("UTF-8"));
+            }
+            head.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
+            head.write(("Content-Disposition: form-data; name=\"" + field + "\"; filename=\""
+                    + fileName + "\"\r\n").getBytes("UTF-8"));
+            head.write(("Content-Type: " + mime + "\r\n\r\n").getBytes("UTF-8"));
+            byte[] tail = ("\r\n--" + boundary + "--\r\n").getBytes("UTF-8");
+            byte[] hb = head.toByteArray();
+
+            conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(timeout);
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type",
                     "multipart/form-data; boundary=" + boundary);
+            conn.setRequestProperty("Accept", "application/json");
             if (apiKey != null && apiKey.length() > 0) {
                 conn.setRequestProperty("Authorization", "Bearer " + apiKey);
             }
-            conn.setChunkedStreamingMode(0);   // 音频较大，不要一次性压进内存再发
+            conn.setFixedLengthStreamingMode((long) hb.length + data.length + tail.length);
 
             OutputStream os = conn.getOutputStream();
-            // 普通字段
-            java.util.Iterator<String> it = fields.keys();
-            while (it.hasNext()) {
-                String k = it.next();
-                os.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
-                os.write(("Content-Disposition: form-data; name=\"" + k + "\"\r\n\r\n")
-                        .getBytes("UTF-8"));
-                os.write((fields.optString(k, "") + "\r\n").getBytes("UTF-8"));
-            }
-            // 文件字段
-            os.write(("--" + boundary + "\r\n").getBytes("UTF-8"));
-            os.write(("Content-Disposition: form-data; name=\"" + field + "\"; filename=\""
-                    + fileName + "\"\r\n").getBytes("UTF-8"));
-            os.write(("Content-Type: " + mime + "\r\n\r\n").getBytes("UTF-8"));
+            os.write(hb);
             os.write(data);
-            os.write("\r\n".getBytes("UTF-8"));
-            os.write(("--" + boundary + "--\r\n").getBytes("UTF-8"));
+            os.write(tail);
             os.flush();
             os.close();
 
@@ -498,9 +565,12 @@ public final class Ai {
             JSONObject out = new JSONObject();
             try {
                 out.put("status", -1);
-                out.put("text", String.valueOf(e.getMessage()));
+                out.put("text", e.getClass().getSimpleName()
+                        + (e.getMessage() == null ? "" : "：" + e.getMessage()));
             } catch (Exception ignored) {}
             return out;
+        } finally {
+            if (conn != null) conn.disconnect();
         }
     }
 

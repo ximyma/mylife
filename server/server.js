@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.3.4';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.3.5';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -687,6 +687,17 @@ async function apiAsr(body) {
   if (body.language) form.set('language', body.language);
 
   const t0 = Date.now();
+  // 失败时把请求原貌带回去：模型、接口、大小、HTTP 状态、服务端原话。
+  // 手机上转不出来、电脑上又正常时，两边各点一次就能比出差异在哪。
+  const diagOf = (status, body) => ({
+    base: endpointOf(profile),
+    profile: profile.name,
+    model: useModel,
+    path: rel,
+    bytes: size,
+    status: status,
+    body: String(body || '').slice(0, 600),
+  });
   try {
     const r = await fetchJson(endpointOf(profile) + '/audio/transcriptions', {
       method: 'POST',
@@ -701,11 +712,12 @@ async function apiAsr(body) {
       return {
         ok: false, ms, model: useModel,
         message: `HTTP ${r.status}：${body0}` + (missing ? '\n→ ' + asrModelHint(useModel) : ''),
+        diag: diagOf(r.status, r.text),
       };
     }
     const text = (r.json && (r.json.text || r.json.transcript)) || '';
     if (!String(text).trim()) {
-      return { ok: false, ms, message: '转出来是空的。录音里可能没说话，或者这段音频格式不支持。' };
+      return { ok: false, ms, message: '转出来是空的。录音里可能没说话，或者这段音频格式不支持。', diag: diagOf(200, r.text) };
     }
     return {
       ok: true, ms, model: useModel,
@@ -715,7 +727,11 @@ async function apiAsr(body) {
       language: (r.json && r.json.language) || null,
     };
   } catch (e) {
-    return { ok: false, ms: Date.now() - t0, message: '转不了：' + (e.message || e) };
+    return {
+      ok: false, ms: Date.now() - t0,
+      message: '连不上服务器：' + (e.message || e) + '\n→ 检查网络，或这条配置的地址是否需要代理',
+      diag: diagOf(-1, e.message || String(e)),
+    };
   }
 }
 
@@ -782,8 +798,17 @@ function bearerToken(req) {
   return m ? m[1].trim() : null;
 }
 
+/** 给 <img src>/<audio src> 兜底：这两个标签发不了自定义头，也不一定带得上 cookie */
+function queryToken(req) {
+  try {
+    return new URL(req.url, 'http://127.0.0.1').searchParams.get('token') || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function authUser(req) {
-  const t = bearerToken(req) || cookieToken(req);
+  const t = bearerToken(req) || cookieToken(req) || queryToken(req);
   const u = AUTH.verify(t);
   console.log('[auth]', pathname_hint, 'token=' + (t ? t.slice(0, 8) + '...' : '无'), '->', u ? 'uid=' + u.uid : '无效');
   return u;

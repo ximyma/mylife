@@ -12,6 +12,7 @@ import android.os.Environment;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -152,6 +153,19 @@ public class MainActivity extends Activity {
     /* ---------------- WebView ---------------- */
 
     private void setupWeb() {
+        // 照片和录音是 <img src="/files/..."> / <audio src="/files/..."> 直接取的，
+        // 标签发不了 Authorization 头，只能靠 cookie 过鉴权。本地服务在登录时
+        // 会 Set-Cookie，这里必须允许 WebView 收下并回传。
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            cm.setAcceptCookie(true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                cm.setAcceptThirdPartyCookies(web, true);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "cookie 开关设置失败", t);
+        }
+
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);

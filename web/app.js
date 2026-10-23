@@ -45,6 +45,17 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
+  /**
+   * /files/ 的地址。图片和音频是标签直接 fetch 的，发不了 Authorization 头，
+   * 所以统一把 token 挂在 query 上（本地服务也认 cookie，双保险）。
+   * 以前安卓端这些地址一律 401，表现就是"照片不显示、录音点不动"。
+   */
+  function fsrc(p) {
+    var path = String(p === null || p === undefined ? '' : p).replace(/^\/+/, '');
+    var t = (window.API && API.auth && API.auth.token) ? (API.auth.token() || '') : '';
+    return '/files/' + path + (t ? '?token=' + encodeURIComponent(t) : '');
+  }
+
   function toast(msg) {
     if (!toastEl) return;
     toastEl.textContent = msg;
@@ -131,7 +142,7 @@
         cards += '<div class="arc-wrap">' +
           '<a class="arc-card" href="#/a/' + a.id + '">' +
           '<div class="arc-cover">' +
-          (a.cover_path ? '<img src="/files/' + esc(a.cover_path) + '" alt="">' :
+          (a.cover_path ? '<img src="' + esc(fsrc(a.cover_path)) + '" alt="">' :
             '<span class="arc-empty">档案</span>') +
           '</div>' +
           '<div class="arc-meta">' +
@@ -346,7 +357,7 @@
 
       html += '<section class="cover">' +
         (coverPhoto
-          ? '<img class="cover-photo" src="/files/' + esc(coverPhoto.path) + '" alt="">'
+          ? '<img class="cover-photo" src="' + esc(fsrc(coverPhoto.path)) + '" alt="">'
           : '<div class="cover-photo"></div>') +
         '<div class="cover-no">档案第 ' + esc(a.archive_no || '—') + ' 号</div>' +
         '<h1 class="cover-name">' + esc(a.subject_name) + '</h1>' +
@@ -438,7 +449,7 @@
           ' 张照片没找到位置 <small>不是丢了，是不硬塞</small></h2><div class="pending-grid">';
         for (var pg = 0; pg < pending.length; pg++) {
           var ph = pending[pg];
-          html += '<figure class="ph small"><img src="/files/' + esc(ph.path) + '" alt="" loading="lazy">' +
+          html += '<figure class="ph small"><img src="' + esc(fsrc(ph.path)) + '" alt="" loading="lazy">' +
             '<figcaption><span class="ph-meta">' + esc(ph.taken_year) + ' · ' + esc(ph.place) + '</span>' +
             '<span class="ph-event">' + esc(ph.event) + '</span>' +
             '<span class="ph-why">' + esc(ph.match_reason || '时间地点对不上') + '</span>' +
@@ -551,7 +562,7 @@
 
   function renderEntry(e) {    if (e.kind === 'photo') {
       return '<figure class="ph">' +
-        '<img src="/files/' + esc(e.photo_path || '') + '" alt="" loading="lazy">' +
+        '<img src="' + esc(fsrc(e.photo_path || '')) + '" alt="" loading="lazy">' +
         '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
         (e.place ? ' · ' + esc(e.place) : '') + '</span>' +
         '<span class="ph-event">' + esc(e.text || '') + '</span>' +
@@ -559,11 +570,11 @@
         '</figcaption></figure>';
     }
     if (e.kind === 'media') {
-      var url = '/files/' + esc(e.media_path || '');
+      var url = fsrc(e.media_path || '');
       var inner = '';
       if (e.media_kind === 'video') {
         inner = '<video controls playsinline preload="metadata" src="' + url + '"' +
-          (e.media_poster ? ' poster="/files/' + esc(e.media_poster) + '"' : '') + '></video>';
+          (e.media_poster ? ' poster="' + esc(fsrc(e.media_poster)) + '"' : '') + '></video>';
       } else if (e.media_kind === 'audio') {
         inner = '<audio controls preload="metadata" src="' + url + '"></audio>';
       } else {
@@ -592,6 +603,10 @@
   /* ---------------- 补内容 ---------------- */
 
   var rec = { mr: null, chunks: [], path: '', started: 0, native: false, peak: 0 };
+  // 每段录音的播放地址：补内容页渲染时顺手记下，点击时不用再查库
+  var segAudio = {};
+  // 上一次转写失败的原始信息（模型、地址、HTTP 状态、响应体），给「看详情」用
+  var lastDiag = null;
 
   function renderCollect(id) {
     app.innerHTML = topbar({
@@ -604,6 +619,7 @@
       if (!a) throw new Error('找不到这本档案');
 
       var mats = '';
+      segAudio = {};
 
       /* --- 讲述：可改可删，有录音的还能转成文字 --- */
       for (var i = d.segments.length - 1; i >= 0; i--) {
@@ -622,13 +638,16 @@
           continue;
         }
 
+        if (s.audio_path) segAudio[s.id] = s.audio_path;
+
         mats += '<div class="mat" data-mat="' + s.id + '">' +
           '<div class="mat-text">' +
           esc(txt.slice(0, 110)) + (txt.length > 110 ? '…' : '') + '</div>' +
           '<div class="mat-side">' + (s.year_hint ? s.year_hint + ' 年' : '未编年') + '</div>' +
           '<div class="mat-acts">' +
           (s.audio_path
-            ? '<button class="btn tiny" data-tr="' + s.id + '">' +
+            ? '<button class="btn tiny" data-play="' + s.id + '">试听</button>' +
+              '<button class="btn tiny" data-tr="' + s.id + '">' +
               (pending ? '转成文字' : '再转一次') + '</button>'
             : '') +
           '<button class="btn tiny" data-seg-edit="' + s.id + '">改</button>' +
@@ -644,7 +663,7 @@
         if (isEdit('photo', ph.id)) {
           mats += '<div class="mat editing">' +
             '<div class="ph-edit">' +
-            '<img class="ph-thumb" src="/files/' + esc(ph.path) + '" alt="">' +
+            '<img class="ph-thumb" src="' + esc(fsrc(ph.path)) + '" alt="">' +
             '<div class="ph-fields">' +
             '<label>哪一年<input class="fi" type="number" data-ph-year="' + ph.id +
             '" value="' + esc(ph.taken_year) + '" placeholder="1958"></label>' +
@@ -660,7 +679,7 @@
         }
 
         mats += '<div class="mat">' +
-          '<img class="mat-thumb" src="/files/' + esc(ph.path) + '" alt="">' +
+          '<img class="mat-thumb" src="' + esc(fsrc(ph.path)) + '" alt="">' +
           '<div class="mat-text"><b>' + esc(ph.taken_year) + '</b> · ' +
           esc(ph.place) + ' · ' + esc(ph.event) + '</div>' +
           '<div class="mat-acts">' +
@@ -686,6 +705,10 @@
         '<div class="rec">' +
         '<button class="btn rec-btn" id="recBtn"><span class="dot"></span> <b>点一下，开始说</b></button>' +
         '<span class="rec-state" id="recState"></span></div>' +
+        // 录完立刻能听：判断"录音本身有没有问题"最快的办法
+        '<div class="rec-play" id="recPlayRow" hidden>' +
+        '<audio id="recPlay" controls preload="metadata"></audio>' +
+        '<span class="muted" id="recPlayTip">先听一遍，声音正常再存</span></div>' +
         '<select id="micSel" hidden class="mic-sel"></select>' +
         '<div class="row end"><button class="btn primary" id="saveSeg">存为一条讲述</button></div>' +
         '</section>' +
@@ -701,6 +724,8 @@
         '<h1 class="blk-title">已有的材料</h1>' +
         '<p class="muted">' + d.segments.length + ' 条讲述 · ' + d.photos.length + ' 张照片</p>' +
         '<div>' + (mats || '<p class="muted">还没有讲述。</p>') + '</div>' +
+        // 转写失败时把原始信息摊在这里：是网络、Key、模型名还是音频本身的问题，一眼能分
+        '<div class="last-diag" id="trDiag" hidden></div>' +
         '<div class="row"><button class="btn primary block" id="genBtn">生成档案</button></div>' +
         '<p class="hint" id="genHint">生成会把讲述按年份排好、分成章、把照片放回原位。你手改过的内容不会被覆盖。</p>' +
         '</section>' +
@@ -736,6 +761,45 @@
     var sayText = document.getElementById('sayText');
     var recBtn = document.getElementById('recBtn');
     var recState = document.getElementById('recState');
+
+    /* ---- 播放：全页共用一个 <audio>，避免十段录音同时加载 ---- */
+
+    function resetPlayBtns() {
+      var bs = document.querySelectorAll('[data-play]');
+      for (var i = 0; i < bs.length; i++) bs[i].textContent = '试听';
+    }
+
+    /** 录完立刻能听——这是判断"录音本身有没有问题"最快的办法 */
+    function showRecPlay(path) {
+      var row = document.getElementById('recPlayRow');
+      var au = document.getElementById('recPlay');
+      if (!row || !au) return;
+      au.src = fsrc(path);
+      row.hidden = false;
+      au.load();
+    }
+
+    /** 转写失败的原始信息摊开：比一句"转不出来"有用一百倍 */
+    function showDiag(diag) {
+      var box = document.getElementById('trDiag');
+      if (!box || !diag) return;
+      var lines = [];
+      if (diag.status !== undefined && diag.status !== null) lines.push('HTTP 状态：' + diag.status);
+      if (diag.base) lines.push('接口地址：' + diag.base);
+      if (diag.profile) lines.push('用的配置：' + diag.profile);
+      if (diag.model) lines.push('模型：' + diag.model);
+      if (diag.path) lines.push('音频：' + diag.path + (diag.bytes ? '（' + Math.round(diag.bytes / 1024) + ' KB）' : ''));
+      if (diag.body) lines.push('服务端原话：' + diag.body);
+      if (!lines.length) return;
+      box.hidden = false;
+      box.innerHTML = '<div class="diag-head"><b>上次转写失败详情</b>' +
+        '<button class="btn tiny ghost" id="diagHide">收起</button></div>' +
+        '<pre>' + esc(lines.join('\n')) + '</pre>';
+      var h = document.getElementById('diagHide');
+      if (h) h.onclick = function () { box.hidden = true; };
+    }
+
+    if (lastDiag) showDiag(lastDiag);
 
     /* --- 录音：边录边写盘，别攒在内存里 ---
      *
@@ -883,7 +947,8 @@
         return;
       }
       rec.path = out.path;
-      recState.textContent = '录好了 ' + out.seconds + ' 秒 · 记得点「存为一条讲述」';
+      recState.textContent = '录好了 ' + out.seconds + ' 秒 · 先听一遍，再点「存为一条讲述」';
+      showRecPlay(out.path);
     }
 
     /* ---- ② WebView / 浏览器录音（兜底） ---- */
@@ -1031,7 +1096,8 @@
         if (r && r.path) rec.path = r.path;
         recBtn.className = 'btn rec-btn';
         recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
-        recState.textContent = '录好了 ' + sec + ' 秒 · 记得点「存为一条讲述」';
+        recState.textContent = '录好了 ' + sec + ' 秒 · 先听一遍，再点「存为一条讲述」';
+        if (rec.path) showRecPlay(rec.path);
       }).catch(function () {
         recState.textContent = '录音保存失败，重录一次试试';
         recBtn.className = 'btn rec-btn';
@@ -1069,6 +1135,44 @@
       if (!t) return;
       var b, sid;
 
+      /* 试听这一段录音 */
+      if ((b = t.closest('[data-play]'))) {
+        sid = Number(b.getAttribute('data-play'));
+        var src = segAudio[sid];
+        if (!src) return;
+        var ap = document.getElementById('segPlayer');
+        var host = b.parentNode.parentNode;      // .mat
+        if (!ap) {
+          ap = document.createElement('audio');
+          ap.id = 'segPlayer';
+          ap.controls = true;
+          ap.preload = 'metadata';
+          ap.addEventListener('ended', function () { resetPlayBtns(); });
+          ap.addEventListener('pause', function () {
+            if (ap.currentTime > 0 && !ap.ended) return;   // 拖动进度条不算停
+            resetPlayBtns();
+          });
+        }
+        // 全页只有这一个播放器，点到哪一段就把它挪到哪一段下面
+        if (ap.parentNode !== host) host.appendChild(ap);
+        var want = fsrc(src);
+        if (ap.getAttribute('data-src') === want) {
+          if (ap.paused) { ap.play(); b.textContent = '暂停'; }
+          else { ap.pause(); b.textContent = '试听'; }
+          return;
+        }
+        resetPlayBtns();
+        ap.setAttribute('data-src', want);
+        ap.src = want;
+        var pr = ap.play();
+        // 播不动就把原因说出来，别让人对着按钮瞎猜
+        if (pr && pr.catch) pr.catch(function (e) {
+          toast('这段音频打不开：' + (e && e.name ? e.name : e.message || e));
+        });
+        b.textContent = '暂停';
+        return;
+      }
+
       /* 转成文字 */
       if ((b = t.closest('[data-tr]'))) {
         sid = Number(b.getAttribute('data-tr'));
@@ -1078,11 +1182,14 @@
         b.textContent = '转写中…';
         DB.transcribe(sid).then(function (r) {
           if (!r.ok) {
+            lastDiag = r.diag || null;
             toast(r.message || '转不出来');
             b.disabled = false;
             b.textContent = label;
+            if (lastDiag) showDiag(lastDiag);
             return;
           }
+          lastDiag = null;
           toast('转好了（' + (r.ms / 1000).toFixed(1) + 's' +
             (r.switched ? '，已自动改用 ' + r.switched : '') + '）：' + String(r.text).slice(0, 20));
           route();   // 重画整页，把转出来的文字显示出来
@@ -1261,7 +1368,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.3.4';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.3.5';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」

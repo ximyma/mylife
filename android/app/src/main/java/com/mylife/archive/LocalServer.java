@@ -106,10 +106,15 @@ public class LocalServer {
     /* ---------------- 请求解析 ---------------- */
 
     private void handle(Socket client) throws Exception {
+        try {
+            client.setSoTimeout(60000);      // 半开的连接别把线程挂死
+            client.setTcpNoDelay(true);
+        } catch (Exception ignored) {
+        }
         InputStream in = client.getInputStream();
         OutputStream out = client.getOutputStream();
 
-        byte[] all = readAll(in, MAX_BODY);
+        byte[] all = readRequest(in, MAX_BODY);
         if (all == null || all.length == 0) return;
 
         int split = indexOfHeaderEnd(all);
@@ -131,9 +136,10 @@ public class LocalServer {
             query = target.substring(qm + 1);
         }
 
-        // Range 头（视频拖动）+ Authorization
+        // Range 头（视频拖动）+ Authorization + Cookie
         String range = null;
         String authHeader = null;
+        String cookieHeader = null;
         for (int i = 1; i < lines.length; i++) {
             String l = lines[i];
             int c = l.indexOf(':');
@@ -141,6 +147,7 @@ public class LocalServer {
             String k = l.substring(0, c).trim().toLowerCase();
             if (k.equals("range")) range = l.substring(c + 1).trim();
             if (k.equals("authorization")) authHeader = l.substring(c + 1).trim();
+            if (k.equals("cookie")) cookieHeader = l.substring(c + 1).trim();
         }
 
         if ("OPTIONS".equals(method)) {
@@ -149,12 +156,21 @@ public class LocalServer {
         }
 
         if (path.startsWith("/api/auth/")) {
-            writeJson(out, routeAuth(path, body, authHeader));
+            String json = routeAuth(path, body, authHeader);
+            // 登录/注册成功顺手种 cookie：<img src> 和 <audio src> 发不了
+            // Authorization 头，没有 cookie 就一律 401——这正是安卓端
+            // 照片不显示、录音点不动的原因（Node 端一直有 Set-Cookie）。
+            String tk = Json.sv(Json.obj(json), "token");
+            String extra = tk.length() > 0
+                    ? "Set-Cookie: " + COOKIE_NAME + "=" + tk
+                      + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000\r\n"
+                    : "";
+            writeJson(out, json, extra);
             return;
         }
 
         if (path.startsWith("/api/")) {
-            Auth.User user = auth.verify(tokenOf(authHeader));
+            Auth.User user = auth.verify(tokenFrom(authHeader, cookieHeader, query));
             if (user == null) {
                 writeJson(out, "{\"__auth\":\"需要登录\"}");
                 return;
@@ -166,7 +182,7 @@ public class LocalServer {
         }
 
         if (path.startsWith("/files/")) {
-            Auth.User user = auth.verify(tokenOf(authHeader));
+            Auth.User user = auth.verify(tokenFrom(authHeader, cookieHeader, query));
             if (user == null) {
                 writeText(out, 401, "需要登录");
                 return;
@@ -176,6 +192,41 @@ public class LocalServer {
         }
 
         serveAsset(out, path);
+    }
+
+    private static final String COOKIE_NAME = "mylife_token";
+
+    /** token 三个来源：Authorization 头 → cookie → ?token=（给 <img>/<audio> 兜底） */
+    private static String tokenFrom(String authHeader, String cookieHeader, String query) {
+        String t = tokenOf(authHeader);
+        if (t != null && t.length() > 0) return t;
+        if (cookieHeader != null) {
+            String[] parts = cookieHeader.split(";");
+            for (int i = 0; i < parts.length; i++) {
+                String p = parts[i].trim();
+                int eq = p.indexOf('=');
+                if (eq <= 0) continue;
+                if (COOKIE_NAME.equals(p.substring(0, eq))) {
+                    String v = p.substring(eq + 1).trim();
+                    if (v.length() > 0) return v;
+                }
+            }
+        }
+        if (query != null) {
+            String[] qs = query.split("&");
+            for (int i = 0; i < qs.length; i++) {
+                int eq = qs[i].indexOf('=');
+                if (eq <= 0) continue;
+                if ("token".equals(qs[i].substring(0, eq))) {
+                    try {
+                        String v = URLDecoder.decode(qs[i].substring(eq + 1), "UTF-8");
+                        if (v.length() > 0) return v;
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static String tokenOf(String authHeader) {
@@ -226,26 +277,71 @@ public class LocalServer {
         }
     }
 
-    /** 读完整个请求。手机内存有限，所以有上限；超了直接截断，上层会报错。 */
-    private static byte[] readAll(InputStream in, int max) throws Exception {
-        ByteArrayOutputStream bo = new ByteArrayOutputStream(8192);
-        byte[] buf = new byte[16384];
-        int n;
-        int guard = 0;
-        while ((n = in.read(buf)) > 0) {
-            bo.write(buf, 0, n);
-            guard += n;
-            if (guard >= max) break;
-            // 已经读到 Content-Length 指定的长度就停，不等连接关闭
-            byte[] cur = bo.toByteArray();
-            int h = indexOfHeaderEnd(cur);
-            if (h >= 0) {
-                long need = contentLength(cur, h);
-                if (need >= 0 && cur.length - (h + 4) >= need) break;
+    /**
+     * 读一个完整请求（头 + 体）。
+     *
+     * v0.3.5 重写。原来的实现靠 `in.available() == 0` 判断"读完了"，这是错的：
+     * available() 只表示"此刻内核缓冲区里有几个字节"，请求体分成多个 TCP 段到达时
+     * 中途会返回 0，于是 body 被截断。小 JSON 平时刚好一整包到达所以看不出问题，
+     * 一旦传照片（base64 好几 MB）就会随机解析失败。
+     *
+     * 正确做法：先把请求头读到 \r\n\r\n 结束，取出 Content-Length，再精确读那么多字节。
+     */
+    private static byte[] readRequest(InputStream raw, int max) throws Exception {
+        InputStream in = new java.io.BufferedInputStream(raw, 16384);
+
+        ByteArrayOutputStream head = new ByteArrayOutputStream(1024);
+        int s = 0;                                  // 匹配 \r\n\r\n 的状态机
+        while (head.size() < 65536) {
+            int c = in.read();
+            if (c < 0) break;
+            head.write(c);
+            if (c == '\r') {
+                s = (s == 2) ? 3 : 1;
+            } else if (c == '\n') {
+                if (s == 1) s = 2;
+                else if (s == 3) { s = 4; break; }
+                else s = 0;
+            } else {
+                s = 0;
             }
-            if (in.available() == 0) break;
         }
-        return bo.toByteArray();
+        byte[] hb = head.toByteArray();
+        if (hb.length == 0) return null;
+
+        long need = contentLength(hb, hb.length);
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        byte[] buf = new byte[16384];
+
+        if (need > 0) {
+            long left = Math.min(need, max);
+            while (left > 0) {
+                int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                if (n <= 0) break;
+                body.write(buf, 0, n);
+                left -= n;
+            }
+        } else if (need < 0) {
+            // 没有 Content-Length（chunked 之类）：把此刻能读到的都读走
+            int guard = 0;
+            while (guard < max && in.available() > 0) {
+                int n = in.read(buf, 0, Math.min(buf.length, max - guard));
+                if (n <= 0) break;
+                body.write(buf, 0, n);
+                guard += n;
+            }
+        }
+
+        byte[] bb = body.toByteArray();
+        byte[] all = new byte[hb.length + bb.length];
+        System.arraycopy(hb, 0, all, 0, hb.length);
+        System.arraycopy(bb, 0, all, hb.length, bb.length);
+        return all;
+    }
+
+    /** 兼容旧调用：整包读完（不再被用到，但留着防止别处引用） */
+    private static byte[] readAll(InputStream in, int max) throws Exception {
+        return readRequest(in, max);
     }
 
     private static int indexOfHeaderEnd(byte[] b) {
@@ -444,6 +540,10 @@ public class LocalServer {
     private static final byte[] CRLF = "\r\n".getBytes();
 
     private void writeJson(OutputStream out, String json) throws Exception {
+        writeJson(out, json, null);
+    }
+
+    private void writeJson(OutputStream out, String json, String extraHeaders) throws Exception {
         byte[] data = json.getBytes("UTF-8");
         StringBuilder h = new StringBuilder();
         h.append("HTTP/1.1 200 OK").append("\r\n");
@@ -451,6 +551,7 @@ public class LocalServer {
         h.append("Content-Length: ").append(data.length).append("\r\n");
         h.append("Cache-Control: no-store").append("\r\n");
         h.append("Access-Control-Allow-Origin: *").append("\r\n");
+        if (extraHeaders != null && extraHeaders.length() > 0) h.append(extraHeaders);
         h.append("\r\n");
         out.write(h.toString().getBytes("UTF-8"));
         out.write(data);

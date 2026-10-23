@@ -2,6 +2,44 @@
 
 格式参考「Keep a Changelog」；版本号：主.次.修订。
 
+## v0.3.5 · 2026-10-23 —— 录音回放 + 转写失败的真因
+
+### 修复（都是"只有安卓端才错"的 bug，网页端一直正常）
+
+- **转文字在手机上一定失败，根因是 `JSON null` 被当成了字符串 `"null"`。**
+  前端 `DB.transcribe` 发的是 `{ model: null, language: null }`（没指定模型时就是这样）；
+  Android 的 `org.json` 里 `optString(name, "")` 的实现是 `JSON.toString(opt(name))`，
+  而 `JSONObject.NULL.toString()` 返回字符串 `"null"` —— 于是
+  `if (model.length() == 0)` 判断失效，请求里带上了 `model=null`，
+  转写接口回 `400 Model does not exist`。
+  Node 端写的是 `body.model || profile.default_model`，`null` 是 falsy 直接跳过，
+  所以同一个接口电脑上一直好好的。
+  修法：`Json.sv()` 把 JSON null / 缺失 / 字面 `"null"` / `"undefined"` 一律当成"没给"，
+  `Ai.java` 里所有 `optString` 全部替换掉。
+- **照片不显示、录音点不动：`/files/` 鉴权方式两端不一致。**
+  `<img src>` 和 `<audio src>` 是标签自己去取文件，发不了 `Authorization` 头。
+  Node 端登录时 `Set-Cookie`，浏览器自动带上，所以网页端正常；
+  安卓本地服务只认 `Authorization`，这些请求一律 401。
+  修法：本地服务登录/注册成功时同样 `Set-Cookie`，`/files/` 接受
+  `Authorization` → `Cookie` → `?token=` 三种来源；前端统一走 `fsrc()` 带 token。
+- **multipart 上传用 chunked 编码**：`setChunkedStreamingMode(0)` 会发
+  `Transfer-Encoding: chunked`，不少 OpenAI 兼容网关（nginx / 云 WAF 前置）直接拒。
+  改成固定长度，和浏览器 `fetch(FormData)` 发出去的东西完全一致。
+- **请求体可能被截断**：本地服务原来靠 `in.available() == 0` 判断"读完了"，
+  这个值只表示内核缓冲区此刻有多少字节，请求体分多段到达时会误判。
+  小 JSON 平时一整包到达所以看不出来，传照片（几 MB base64）就会随机失败。
+  改成先读到 `\r\n\r\n` 拿到 `Content-Length`，再精确读那么多字节。
+
+### 新增
+
+- **录音回放**：补内容页每条讲述都有「试听」按钮（全页共用一个播放器，
+  点到哪段就挪到哪段下面）；**刚录完也会立刻出现播放条** —— 先确认录音本身没问题，
+  再谈转文字，把"平台问题还是程序问题"分开。
+- **转写失败详情**：失败后页面展开一块红色面板，列出 HTTP 状态、接口地址、
+  用的配置、模型名、音频文件与大小、服务端原话。以后不用猜，也不会再把
+  「网络不通」和「模型不存在」混成一句"转不出来"。
+- `test/audit-android.js`：34 项静态审计，把上面这些坑钉死防回归。
+
 ## v0.3.4 · 2026-10-23 —— 配置改不动 / 转写模型报 20012
 
 ### 修复

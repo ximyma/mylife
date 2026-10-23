@@ -154,6 +154,20 @@ img{max-width:100%;display:block}
 .rec-btn .dot{width:9px;height:9px;border-radius:50%;background:var(--danger);display:inline-block}
 .rec-btn.on .dot{background:#fff}
 .rec-state{font-size:12.5px;color:var(--muted)}
+/* 录完立刻能听：先确认录音本身没问题，再谈转文字 */
+.rec-play{display:flex;align-items:center;gap:10px;margin:-4px 0 14px;flex-wrap:wrap}
+.rec-play audio{flex:1;min-width:200px;height:38px}
+.rec-play .muted{font-size:12px}
+/* 转写失败详情：模型、接口地址、HTTP 状态、服务端原话 */
+.last-diag{border:1px solid var(--danger);border-radius:8px;background:#FDF3F2;
+  padding:10px 12px;margin:10px 0}
+.last-diag .diag-head{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;margin-bottom:6px;color:var(--danger);font-size:13px}
+.last-diag pre{margin:0;font-size:11.5px;line-height:1.7;white-space:pre-wrap;
+  word-break:break-word;color:var(--ink2);font-family:ui-monospace,Consolas,monospace}
+.mat audio{flex:0 0 100%;width:100%;height:34px;margin-top:6px}
+/* 播放器作为整行铺在材料下面，不要挤在右侧按钮区 */
+.mat{flex-wrap:wrap}
 .ask{background:var(--accent-soft);border-radius:8px;padding:12px 14px;margin:12px 0}
 .ask-label{font-size:11px;letter-spacing:2px;color:var(--accent)}
 .ask p{margin:4px 0 8px;font-size:14.5px;line-height:1.8}
