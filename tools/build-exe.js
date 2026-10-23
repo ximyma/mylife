@@ -15,6 +15,13 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
+// 版本号唯一来源：android/app/build.gradle 的 versionName（EXE/APK/备份包命名都用它）
+const VERSION_NAME = ((() => {
+  try {
+    return (fs.readFileSync(path.join(ROOT, 'android', 'app', 'build.gradle'), 'utf8')
+      .match(/versionName "([^"]+)"/) || [])[1] || '0.0.0';
+  } catch (e) { return '0.0.0'; }
+})());
 const OUT = path.join(ROOT, 'dist', 'win');
 const TMP = path.join(ROOT, 'tmp', 'sea');
 
@@ -139,23 +146,29 @@ console.log('  ' + exe + '  ' + Math.round(size / 1024 / 1024 * 10) / 10 + ' MB'
 
 /* ---- 6. 最新安卓包同步到 dist 根（版本命名，防止装到旧包） ---- */
 try {
+  const distRoot = path.dirname(OUT);
+  const arc = path.join(distRoot, 'archive');
+  fs.mkdirSync(arc, { recursive: true });
+  const vn = VERSION_NAME;
+
   const apkSrc = path.join(ROOT, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
-  const gradle = fs.readFileSync(path.join(ROOT, 'android', 'app', 'build.gradle'), 'utf8');
-  const vn = (gradle.match(/versionName "([^"]+)"/) || [])[1] || '0.0.0';
   if (fs.existsSync(apkSrc)) {
-    const distRoot = path.dirname(OUT);
     const apkOut = path.join(distRoot, 'MyLife-v' + vn + '-android.apk');
     fs.copyFileSync(apkSrc, apkOut);
-    const arc = path.join(distRoot, 'archive');
-    fs.mkdirSync(arc, { recursive: true });
-    for (const f of fs.readdirSync(distRoot)) {
-      if (/^MyLife-v.*-android\.apk$/.test(f) && f !== 'MyLife-v' + vn + '-android.apk') {
-        fs.renameSync(path.join(distRoot, f), path.join(arc, f));
-      }
-    }
     console.log('  ' + apkOut);
   }
-} catch (e) { console.log('  （安卓包未构建，跳过：' + e.message + '）'); }
+
+  const winOut = path.join(distRoot, 'MyLife-v' + vn + '-windows.exe');
+  fs.copyFileSync(exe, winOut);
+  console.log('  ' + winOut);
+
+  for (const f of fs.readdirSync(distRoot)) {
+    if (/^MyLife-v.*-(android\.apk|windows\.exe)$/.test(f) &&
+        f.indexOf('v' + vn + '-') < 0) {
+      fs.renameSync(path.join(distRoot, f), path.join(arc, f));
+    }
+  }
+} catch (e) { console.log('  （安装包同步跳过：' + e.message + '）'); }
 
 console.log('\n完成：');
 console.log('  目录：' + OUT);

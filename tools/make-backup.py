@@ -20,7 +20,7 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
     # 顶层说明
     info = (
         '我的人生档案 · The Story of My Life\n'
-        '版本 v0.2.0（2026-10-23 里程碑）\n'
+        f'版本 v{VER}（备份时间见下行）\n'
         'commit 16f17db + 打包时间 ' + time.strftime('%Y-%m-%d %H:%M') + '\n'
         '\n'
         '内容清单：\n'
