@@ -115,7 +115,7 @@ console.log('  resources/schema.sql');
 step(5, '写使用说明');
 const readme = [
   '我的人生档案 · The Story of My Life',
-  '版本 v0.2.0（2026-10-23 里程碑）',
+  '版本 v0.3.0（2026-10-23）',
   '',
   '怎么用：双击 MyLife.exe，会自动打开浏览器；黑窗口别关，关了就停了。',
   '',
@@ -135,6 +135,27 @@ const readme = [
 fs.writeFileSync(path.join(OUT, '使用说明.txt'), readme, 'utf8');
 
 const size = fs.statSync(exe).size;
-console.log('\n完成：');
 console.log('  ' + exe + '  ' + Math.round(size / 1024 / 1024 * 10) / 10 + ' MB');
+
+/* ---- 6. 最新安卓包同步到 dist 根（版本命名，防止装到旧包） ---- */
+try {
+  const apkSrc = path.join(ROOT, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+  const gradle = fs.readFileSync(path.join(ROOT, 'android', 'app', 'build.gradle'), 'utf8');
+  const vn = (gradle.match(/versionName "([^"]+)"/) || [])[1] || '0.0.0';
+  if (fs.existsSync(apkSrc)) {
+    const distRoot = path.dirname(OUT);
+    const apkOut = path.join(distRoot, 'MyLife-v' + vn + '-android.apk');
+    fs.copyFileSync(apkSrc, apkOut);
+    const arc = path.join(distRoot, 'archive');
+    fs.mkdirSync(arc, { recursive: true });
+    for (const f of fs.readdirSync(distRoot)) {
+      if (/^MyLife-v.*-android\.apk$/.test(f) && f !== 'MyLife-v' + vn + '-android.apk') {
+        fs.renameSync(path.join(distRoot, f), path.join(arc, f));
+      }
+    }
+    console.log('  ' + apkOut);
+  }
+} catch (e) { console.log('  （安卓包未构建，跳过：' + e.message + '）'); }
+
+console.log('\n完成：');
 console.log('  目录：' + OUT);
