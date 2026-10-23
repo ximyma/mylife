@@ -120,11 +120,16 @@ console.log('  resources/schema.sql');
 
 /* ---- 5. 启动说明 ---- */
 step(5, '写使用说明');
+// 版本号从 build.gradle 读，别再写死——原来硬编码 v0.3.0，改版本时漏了这里
+const MILE = VERSION_NAME.indexOf('0.4') === 0 ? '里程碑 2'
+  : VERSION_NAME.indexOf('0.2') === 0 ? '里程碑 1' : '';
 const readme = [
   '我的人生档案 · The Story of My Life',
-  '版本 v0.3.0（2026-10-23）',
+  '版本 v' + VERSION_NAME + (MILE ? '（' + MILE + '）' : '') + '    ' + new Date().toISOString().slice(0, 10),
   '',
-  '怎么用：双击 MyLife.exe，会自动打开浏览器；黑窗口别关，关了就停了。',
+  '════════ 一、Windows 版怎么用 ════════',
+  '',
+  '双击 MyLife.exe，会自动打开浏览器；黑窗口别关，关了就停了。',
   '',
   '文件说明：',
   '  MyLife.exe            主程序，界面已内置，**单文件即可分发**',
@@ -132,14 +137,54 @@ const readme = [
   '  data/                 你的档案、照片、录音都存在这里，只有这个目录需要备份',
   '',
   '换端口（比如 4321 被占）：',
-  '  在地址栏输入 cmd 回车，然后： set PORT=4401 && MyLife.exe',
+  '  在地址框输入 cmd 回车，然后： set PORT=4401 && MyLife.exe',
   '',
   '分发给别人：只拷 MyLife.exe 一个文件就能用；',
   '整本档案可以在首页「导出」成一个文件，对方「导入」即可还原。',
   '要彻底卸载，删掉整个文件夹即可，不会在别处留东西。',
   '',
+  '════════ 二、安卓版怎么装 ════════',
+  '',
+  '把 MyLife-v' + VERSION_NAME + '-android.apk 传到手机 → 点开安装。',
+  '提示"未知来源"时允许一次即可（不是应用商店的包）。',
+  '认准版本号 v' + VERSION_NAME + '：装完进「设置 → 关于」能核对，别再装到 dist/archive/ 里的旧包。',
+  '',
+  '首次使用：',
+  '  1. 打开后先注册：手机号 + 密码 + 验证码（演示版固定填 1234）',
+  '  2. 第一个注册的账号会自动接管电脑上导出的旧数据',
+  '  3. 设置 → 模型来源，填一个 API Key（不填也能用，只是不调 AI）',
+  '',
+  '录音：手机上用的是系统原生录音通道，不再依赖浏览器权限。',
+  '  点"点一下，开始说" → 说话 → 再点一下停下 → **先按播放条听一遍**',
+  '  听得到声音，再点「存为一条讲述」，最后点「转成文字」。',
+  '  若提示没声音：确认设置里麦克风权限是"仅使用期间允许"，',
+  '  并检查手机壳有没有挡住底部麦克风孔。设置页有「麦克风诊断」可自检。',
+  '',
+  '════════ 三、每个账号的数据在哪 ════════',
+  '',
+  'Windows：本文件夹下 data\\users\\<账号号>\\ （archive.db + files\\）',
+  '安卓：应用私有目录 files\\users\\<账号号>\\',
+  '',
+  '不同账号各有一个独立数据库，互相看不到。备份只需备份 data 目录（或直接用「导出」）。',
+  '',
 ].join('\n');
 fs.writeFileSync(path.join(OUT, '使用说明.txt'), readme, 'utf8');
+
+// dist 根目录的指路牌也自动生成，避免像原来那样写着 v0.3.0 一直没改
+try {
+  const distRoot0 = path.dirname(OUT);
+  fs.writeFileSync(path.join(distRoot0, '最新版本在这里.txt'), [
+    '最新安装包（每次构建后自动更新，认准文件名里的版本号）：',
+    '',
+    '  MyLife-v' + VERSION_NAME + '-windows.exe    Windows 单文件版',
+    '  MyLife-v' + VERSION_NAME + '-android.apk    安卓版',
+    '  win/MyLife.exe                              Windows 工作目录（含 data/、使用说明.txt）',
+    '',
+    '旧版本归档在 archive/ 子目录，别装那些。',
+    '当前版本：v' + VERSION_NAME + (MILE ? '（' + MILE + '）' : ''),
+    '',
+  ].join('\n'), 'utf8');
+} catch (e) { console.log('  （指路牌写入跳过：' + e.message + '）'); }
 
 /* ---- 6.5 单文件冒烟测试：拷到空目录独立启动，探活失败就终止构建 ---- */
 step(6.5, '单文件冒烟测试');

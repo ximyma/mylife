@@ -17,5 +17,9 @@ Thumbs.db
 .DS_Store
 *.log
 
+# Python 缓存（tools/*.py 会被 python 调用）
+__pycache__/
+*.pyc
+
 dist/
 tmp/
