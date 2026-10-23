@@ -146,3 +146,6 @@ CREATE TABLE IF NOT EXISTS ai_slots (
 INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('title', NULL, NULL);
 INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('vision', NULL, NULL);
 INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('asr', NULL, NULL);
+-- 图片生成 / 视频生成：功能接入前先把模型配置留着
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('img', NULL, NULL);
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('vid', NULL, NULL);

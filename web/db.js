@@ -165,8 +165,19 @@
         'SELECT a.*, ' +
         '(SELECT COUNT(*) FROM chapters c WHERE c.archive_id=a.id) AS chapter_count, ' +
         '(SELECT COUNT(*) FROM entries e WHERE e.archive_id=a.id) AS entry_count, ' +
-        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count ' +
-        'FROM archives a WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC', []);
+        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count, ' +
+        // 编辑档案时要挑封面，把照片清单一起带出来
+        '(SELECT json_group_array(json_object(\'id\',p.id,\'taken_year\',p.taken_year,\'event\',p.event)) ' +
+        'FROM photos p WHERE p.archive_id=a.id) AS photo_list_json ' +
+        'FROM archives a WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC', [])
+        .then(function (rows) {
+          for (var i = 0; i < rows.length; i++) {
+            try { rows[i].photo_list = JSON.parse(rows[i].photo_list_json || '[]'); }
+            catch (e) { rows[i].photo_list = []; }
+            delete rows[i].photo_list_json;
+          }
+          return rows;
+        });
     },
 
     nextNo: function () {
@@ -558,9 +569,38 @@
     /** 改档案封面上的几项 */
     updateArchive: function (id, f) {
       return API.exec(
-        'UPDATE archives SET subject_name=?, birth_year=?, death_year=?, hometown=?, intro=?, updated_at=? WHERE id=?',
+        'UPDATE archives SET subject_name=?, birth_year=?, death_year=?, hometown=?, intro=?, cover_photo_id=?, updated_at=? WHERE id=?',
         [String(f.name || '').trim(), f.birth || null, f.death || null,
-         String(f.hometown || '').trim(), String(f.intro || '').trim(), nowSql(), id]);
+         String(f.hometown || '').trim(), String(f.intro || '').trim(),
+         f.cover_photo_id || null, nowSql(), id]);
+    },
+
+    /**
+     * 删整本档案：章/条目/照片/讲述/媒体随外键级联清掉，
+     * 照片和录音的文件也要一起删，否则磁盘上留一堆孤儿。
+     */
+    deleteArchive: function (id) {
+      return Promise.all([
+        API.query('SELECT path FROM photos WHERE archive_id=?', [id]),
+        API.query('SELECT audio_path FROM segments WHERE archive_id=? AND audio_path IS NOT NULL', [id]),
+        API.query('SELECT path, poster FROM media WHERE archive_id=?', [id])
+      ]).then(function (r) {
+        const paths = [];
+        for (const p of r[0]) if (p.path) paths.push(p.path);
+        for (const s of r[1]) if (s.audio_path) paths.push(s.audio_path);
+        for (const m of r[2]) { if (m.path) paths.push(m.path); if (m.poster) paths.push(m.poster); }
+
+        return API.exec('DELETE FROM archives WHERE id=?', [id]).then(function (res) {
+          // 库记录已级联删除，文件慢慢清，失败不拦着
+          let chain = Promise.resolve();
+          for (const p of paths) {
+            chain = chain.then(function () {
+              return API.file({ op: 'del', path: p }).catch(function () {});
+            });
+          }
+          return chain.then(function () { return res; });
+        });
+      });
     },
 
     updateChapter: function (id, title, summary) {

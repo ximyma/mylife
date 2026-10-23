@@ -94,6 +94,39 @@
       var cards = '';
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
+
+        // 编辑态：整张卡变成表单
+        if (isEdit('archive', a.id)) {
+          cards += '<div class="arc-wrap"><div class="arc-card editing">' +
+            '<div class="arc-edit-form">' +
+            '<label>名字<input class="fi" id="ae-name" value="' + esc(a.subject_name) + '"></label>' +
+            '<div class="ae-row">' +
+            '<label>出生<input class="fi" id="ae-birth" type="number" value="' + esc(a.birth_year || '') + '"></label>' +
+            '<label>离世<input class="fi" id="ae-death" type="number" value="' + esc(a.death_year || '') + '"></label>' +
+            '</div>' +
+            '<label>籍贯<input class="fi" id="ae-home" value="' + esc(a.hometown || '') + '"></label>' +
+            '<label>封面一句话<input class="fi" id="ae-intro" value="' + esc(a.intro || '') + '"></label>' +
+            (a.photo_list && a.photo_list.length
+              ? '<label>封面照片<select class="fi" id="ae-cover">' +
+                '<option value="">自动（第一张）</option>' +
+                (function () {
+                  var o = '';
+                  for (var q = 0; q < a.photo_list.length; q++) {
+                    o += '<option value="' + a.photo_list[q].id + '"' +
+                      (String(a.cover_photo_id) === String(a.photo_list[q].id) ? ' selected' : '') + '>' +
+                      esc(a.photo_list[q].taken_year + ' · ' + a.photo_list[q].event) + '</option>';
+                  }
+                  return o;
+                })() + '</select></label>'
+              : '') +
+            '</div>' +
+            '<div class="mat-acts">' +
+            '<button class="btn tiny primary" data-arc-save="' + a.id + '">保存</button>' +
+            '<button class="btn tiny" data-edit-cancel="1">取消</button>' +
+            '</div></div></div>';
+          continue;
+        }
+
         cards += '<div class="arc-wrap">' +
           '<a class="arc-card" href="#/a/' + a.id + '">' +
           '<div class="arc-cover">' +
@@ -108,8 +141,11 @@
           '<div class="arc-stat">' + a.chapter_count + ' 章 · ' + a.entry_count + ' 条 · ' +
           a.photo_count + ' 张照片</div>' +
           '</div></a>' +
+          '<div class="arc-tools">' +
           '<button class="arc-export" data-export="' + a.id + '" title="把这本档案连照片带录音存成一个文件">导出</button>' +
-          '</div>';
+          '<button class="arc-export" data-arc-edit="' + a.id + '" title="改名字、生卒、封面">改</button>' +
+          '<button class="arc-export danger-t" data-arc-del="' + a.id + '" title="整本删除，含照片和录音">删</button>' +
+          '</div></div>';
       }
 
       var guide = list.length ? '' :
@@ -139,39 +175,90 @@
       var nb = document.getElementById('newBtn');
       if (nb) nb.onclick = askNew;
 
-      /* --- 导出：打包成单文件下载（安卓走原生存到下载目录） --- */
+      /* --- 导出 / 改 / 删 --- */
       var expHandler = function (ev) {
-        var b = ev.target.closest ? ev.target.closest('[data-export]') : null;
-        if (!b) return;
-        var aid = Number(b.getAttribute('data-export'));
-        b.disabled = true;
-        var old = b.textContent;
-        b.textContent = '打包中…';
-        DB.exportArchive(aid).then(function (pack) {
-          var fname = '档案-' + (pack.archive.subject_name || aid) + '-' +
-            new Date().toISOString().slice(0, 10) + '.mylife.json';
-          b.disabled = false;
-          b.textContent = old;
-          if (window.NativeIO && window.NativeIO.saveExport) {
-            // 安卓：交给原生写到下载目录
-            var ok = window.NativeIO.saveExport(JSON.stringify(pack), fname);
-            toast(ok ? '已存到手机 Download 目录' : '保存失败');
-          } else {
-            var blob = new Blob([JSON.stringify(pack)], { type: 'application/json' });
-            var a2 = document.createElement('a');
-            a2.href = URL.createObjectURL(blob);
-            a2.download = fname;
-            document.body.appendChild(a2);
-            a2.click();
-            document.body.removeChild(a2);
-            setTimeout(function () { URL.revokeObjectURL(a2.href); }, 2000);
-            toast('已导出 ' + fname);
-          }
-        }).catch(function (e) {
-          b.disabled = false;
-          b.textContent = old;
-          fail(e);
-        });
+        var t = ev.target.closest ? ev.target : null;
+        if (!t) return;
+        var b;
+
+        /* 导出 */
+        if ((b = t.closest('[data-export]'))) {
+          var aid = Number(b.getAttribute('data-export'));
+          b.disabled = true;
+          var old = b.textContent;
+          b.textContent = '打包中…';
+          DB.exportArchive(aid).then(function (pack) {
+            var fname = '档案-' + (pack.archive.subject_name || aid) + '-' +
+              new Date().toISOString().slice(0, 10) + '.mylife.json';
+            b.disabled = false;
+            b.textContent = old;
+            if (window.NativeIO && window.NativeIO.saveExport) {
+              var ok = window.NativeIO.saveExport(JSON.stringify(pack), fname);
+              toast(ok ? '已存到手机 Download 目录' : '保存失败');
+            } else {
+              var blob = new Blob([JSON.stringify(pack)], { type: 'application/json' });
+              var a2 = document.createElement('a');
+              a2.href = URL.createObjectURL(blob);
+              a2.download = fname;
+              document.body.appendChild(a2);
+              a2.click();
+              document.body.removeChild(a2);
+              setTimeout(function () { URL.revokeObjectURL(a2.href); }, 2000);
+              toast('已导出 ' + fname);
+            }
+          }).catch(function (e) {
+            b.disabled = false;
+            b.textContent = old;
+            fail(e);
+          });
+          return;
+        }
+
+        /* 进入编辑 */
+        if ((b = t.closest('[data-arc-edit]'))) {
+          editState = { type: 'archive', id: Number(b.getAttribute('data-arc-edit')) };
+          return route();
+        }
+        if ((b = t.closest('[data-edit-cancel]'))) {
+          clearEdit();
+          return route();
+        }
+
+        /* 保存编辑 */
+        if ((b = t.closest('[data-arc-save]'))) {
+          var sid = Number(b.getAttribute('data-arc-save'));
+          var g = function (sel) {
+            var el = document.getElementById(sel);
+            return el ? el.value : '';
+          };
+          DB.updateArchive(sid, {
+            name: g('ae-name'), birth: g('ae-birth') || null, death: g('ae-death') || null,
+            hometown: g('ae-home'), intro: g('ae-intro'),
+            cover_photo_id: g('ae-cover') || null,
+          }).then(function () {
+            clearEdit();
+            toast('改好了');
+            route();
+          }).catch(fail);
+          return;
+        }
+
+        /* 删除整本：话要说得足够重 */
+        if ((b = t.closest('[data-arc-del]'))) {
+          var did = Number(b.getAttribute('data-arc-del'));
+          var card = null;
+          for (var li = 0; li < list.length; li++) if (list[li].id === did) card = list[li];
+          if (!card) return;
+          var warn = '整本删除「' + card.subject_name + '」？\n\n' +
+            '包含 ' + card.chapter_count + ' 章、' + card.entry_count + ' 条内容、' +
+            card.photo_count + ' 张照片，照片和录音的文件也一起删掉。\n删了就找不回来了。';
+          if (!confirm(warn)) return;
+          DB.deleteArchive(did).then(function () {
+            toast('已删除整本档案');
+            route();
+          }).catch(fail);
+          return;
+        }
       };
       if (homeClickHandler) app.removeEventListener('click', homeClickHandler);
       homeClickHandler = expHandler;
@@ -1008,9 +1095,11 @@
         '<dt>看照片</dt><dd><code>deepseek-ai/DeepSeek-OCR</code> <span class="muted">0.3 秒</span></dd>' +
         '<dt>语音转文字</dt><dd><code>Qwen/Qwen3-ASR-1.7B</code> <span class="muted">0.4 秒</span></dd>' +
         '<dt>要更好文笔</dt><dd><code>Qwen/Qwen3-8B</code> <span class="muted">免费但慢些（会先思考）</span></dd>' +
+        '<dt>图片生成</dt><dd><code>Kwai-Kolors/Kolors</code> <span class="muted">免费，功能接入前可先配好</span></dd>' +
         '</dl>' +
         '<p class="hint dim">想让程序真正「看懂」照片场景而不只是认字，' +
-        '可以去智谱开个号用 <code>GLM-4.6V-Flash</code>，那是免费的多模态模型。</p>';
+        '可以去智谱开个号用 <code>GLM-4.6V-Flash</code>，那是免费的多模态模型。' +
+        '视频生成模型普遍较贵，等功能接入再配不迟。</p>';
 
       /* ---- 去哪拿 Key（常驻，不只在没配置时才出现） ---- */
       var links = '';
@@ -1033,8 +1122,8 @@
         html += '<div class="empty">还没有配置。点下面「添加」开始。</div>';
       }
 
-      // 三个环节。卡片上要显示"这条配置负责哪一环"，所以放在卡片之前。
-      // kind 决定模型下拉只列哪一类；rec 是一个 Key 就自动配好的推荐款
+      // 五个环节。kind 决定模型下拉只列哪一类；rec 是一个 Key 就自动配好的推荐款。
+      // img/vid 是给接下来的图片生成、视频生成功能预留的，功能上线前先配好不耽误事
       var SLOTS = [
         { k: 'title', label: '起章名 / 写简介', kind: 'text',
           rec: ['tencent/Hunyuan-MT-7B', 'Qwen/Qwen3-8B'],
@@ -1044,7 +1133,13 @@
           hint: '认老照片上的字和场景，必须用看图的模型' },
         { k: 'asr', label: '语音转文字', kind: 'asr',
           rec: ['Qwen/Qwen3-ASR-1.7B', 'FunAudioLLM/SenseVoiceSmall'],
-          hint: '录音转文字，必须用语音模型' }
+          hint: '录音转文字，必须用语音模型' },
+        { k: 'img', label: '图片生成（预留）', kind: 't2i',
+          rec: ['Kwai-Kolors/Kolors'],
+          hint: '文生图，功能快来了，先配好备用。Kolors 免费' },
+        { k: 'vid', label: '视频生成（预留）', kind: 't2v',
+          rec: [],
+          hint: '文生视频，模型普遍较贵，接入前不用配' }
       ];
 
       for (var p = 0; p < profiles.length; p++) {
@@ -1158,10 +1253,18 @@
         }
 
         html += '<div class="slot-row" data-slot="' + sl.k + '">' +
-          '<div class="slot-label"><b>' + esc(sl.label) + '</b><small>' + esc(sl.hint) + '</small></div>' +
+          '<div class="slot-label"><b>' + esc(sl.label) + '</b>' +
+          // 正在用什么模型，直接摆在明面上，不用去下拉里翻
+          (bound.model
+            ? '<small class="slot-now">当前：<code>' + esc(bound.model) + '</code>' +
+              (DB.isFreeModel(bound.model) ? '（免费）' : '（<b>付费</b>）') + '</small>'
+            : '') +
+          '<small>' + esc(sl.hint) + '</small></div>' +
           '<select class="slot-pick">' + opts + '</select>' +
           '<select class="slot-model">' + mopts + '</select>' +
-          '<button class="btn tiny" data-slot-test="' + sl.k + '">试一下</button>' +
+          (sl.k === 'title' || sl.k === 'vision' || sl.k === 'asr'
+            ? '<button class="btn tiny" data-slot-test="' + sl.k + '">试一下</button>'
+            : '') +
           '</div>';
       }
 
@@ -1443,10 +1546,24 @@
         default_model: document.getElementById('pfModel').value.trim() || null,
         enabled: 1
       };
-      DB.saveProfile(payload).then(function () {
-        toast('已保存');
+      DB.saveProfile(payload).then(function (r) {
         box.innerHTML = '';
-        renderSettings();
+        var newId = payload.id || (r && r.lastId);
+        // 保存完顺手拉一次模型清单、把空着的环节配好——
+        // 用户填一个 Key 点保存，就什么都不用再弄了
+        if (newId) {
+          toast('已保存，正在读模型清单…');
+          DB.pullModels(newId).then(function (pr) {
+            if (!pr.ok) { toast('已保存，但拉不到模型：' + (pr.message || '')); return renderSettings(); }
+            return DB.autoSetupSlots(newId).then(function (done) {
+              toast(done.length ? '已保存，并自动配好 ' + done.length + ' 个环节' : '已保存');
+              renderSettings();
+            });
+          }).catch(function () { renderSettings(); });
+        } else {
+          toast('已保存');
+          renderSettings();
+        }
       }).catch(function (e) { fail(e); btn.disabled = false; });
     };
 
