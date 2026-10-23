@@ -161,23 +161,14 @@
     /* ---------------- 档案 ---------------- */
 
     listArchives: function () {
+      // 不用 json_group_array/json_object：安卓系统 SQLite 没编译 JSON1 扩展
+      //（no such function），编辑档案时需要的照片清单改为打开编辑态时按需查询
       return API.query(
         'SELECT a.*, ' +
         '(SELECT COUNT(*) FROM chapters c WHERE c.archive_id=a.id) AS chapter_count, ' +
         '(SELECT COUNT(*) FROM entries e WHERE e.archive_id=a.id) AS entry_count, ' +
-        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count, ' +
-        // 编辑档案时要挑封面，把照片清单一起带出来
-        '(SELECT json_group_array(json_object(\'id\',p.id,\'taken_year\',p.taken_year,\'event\',p.event)) ' +
-        'FROM photos p WHERE p.archive_id=a.id) AS photo_list_json ' +
-        'FROM archives a WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC', [])
-        .then(function (rows) {
-          for (var i = 0; i < rows.length; i++) {
-            try { rows[i].photo_list = JSON.parse(rows[i].photo_list_json || '[]'); }
-            catch (e) { rows[i].photo_list = []; }
-            delete rows[i].photo_list_json;
-          }
-          return rows;
-        });
+        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count ' +
+        'FROM archives a WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC', []);
     },
 
     nextNo: function () {

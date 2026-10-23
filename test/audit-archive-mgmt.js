@@ -47,9 +47,11 @@ global.API = {
   ck('H2 生卒/籍贯生效', a2.birth_year === 1940 && a2.hometown === '新籍贯');
   ck('H3 封面照片指向成功', a2.cover_photo_id === photos[0].id);
 
-  // 3. listArchives 带 photo_list（封面下拉的数据源）
+  // 3. 编辑态封面下拉的数据源：按需查照片清单（listArchives 不再内联 json，安卓兼容）
   const lst = (await DB.listArchives()).filter(x => x.id === aid);
-  ck('H4 列表带照片清单', lst.length === 1 && lst[0].photo_list.length === 1);
+  ck('H4 列表正常返回', lst.length === 1);
+  const pl = await API.query('SELECT id, taken_year, event FROM photos WHERE archive_id=?', [aid]);
+  ck('H4b 照片清单按需可查', pl.length === 1 && pl[0].taken_year === 1958);
 
   // 4. 删：库记录级联 + 文件清理
   const fileExisted = (await API.file({ op: 'read', path: 'audio/del-audit.wav' })).ok;

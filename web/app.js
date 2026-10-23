@@ -95,8 +95,9 @@
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
 
-        // 编辑态：整张卡变成表单
+        // 编辑态：整张卡变成表单（照片清单在进入编辑时已拉好，见 data-arc-edit）
         if (isEdit('archive', a.id)) {
+          a.photo_list = (editState.photos || []);  // 进入编辑时已按需拉取
           cards += '<div class="arc-wrap"><div class="arc-card editing">' +
             '<div class="arc-edit-form">' +
             '<label>名字<input class="fi" id="ae-name" value="' + esc(a.subject_name) + '"></label>' +
@@ -118,7 +119,7 @@
                   }
                   return o;
                 })() + '</select></label>'
-              : '') +
+              : '<small class="muted">没有照片可选，封面将自动留空</small>') +
             '</div>' +
             '<div class="mat-acts">' +
             '<button class="btn tiny primary" data-arc-save="' + a.id + '">保存</button>' +
@@ -214,10 +215,16 @@
           return;
         }
 
-        /* 进入编辑 */
+        /* 进入编辑：先按需拉照片清单（封面下拉用），再渲染表单 */
         if ((b = t.closest('[data-arc-edit]'))) {
-          editState = { type: 'archive', id: Number(b.getAttribute('data-arc-edit')) };
-          return route();
+          var eid = Number(b.getAttribute('data-arc-edit'));
+          API.query('SELECT id, taken_year, event FROM photos WHERE archive_id=? ORDER BY taken_year', [eid])
+            .then(function (rows) {
+              editState = { type: 'archive', id: eid, photos: rows };
+              route();
+            })
+            .catch(fail);
+          return;
         }
         if ((b = t.closest('[data-edit-cancel]'))) {
           clearEdit();
@@ -1122,7 +1129,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.3.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.3.1';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
