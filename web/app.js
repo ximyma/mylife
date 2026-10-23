@@ -877,6 +877,8 @@
         return;
       }
       if (Number(out.peak) < 0.01) {
+        // 全静音的文件留着也是垃圾，让原生删掉
+        try { NATIVE.cancel(); } catch (e) {}
         recState.textContent = '这段全是静音。看看手机壳有没有挡到麦克风孔，再录一次';
         return;
       }
