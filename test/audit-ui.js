@@ -34,6 +34,8 @@ ck('首页有标题', h.indexOf('我的档案') >= 0);
 ck('首页有新建入口', h.indexOf('newBtn') >= 0);
 ck('首页有档案卡（张桂芬）', h.indexOf('张桂芬') >= 0);
 ck('档案卡带导出按钮', /data-export="\d+"/.test(h));
+ck('档案卡带改按钮', /data-arc-edit="\d+"/.test(h));
+ck('档案卡带删按钮', /data-arc-del="\d+"/.test(h));
 ck('有导入入口（有档案时）', h.indexOf('importFile') >= 0);
 
 console.log('[U2] 卷宗页');
@@ -68,6 +70,10 @@ ck('配置卡显示负责环节', h.indexOf('负责') >= 0);
 ck('环节绑定有模型下拉', /class="slot-model"/.test(h));
 ck('下拉有免费标注', h.indexOf('· 免费') >= 0);
 ck('有阅读偏好', h.indexOf('prefFont') >= 0);
+ck('有图片生成环节', h.indexOf('图片生成') >= 0);
+ck('有视频生成环节', h.indexOf('视频生成') >= 0);
+ck('视频下拉列出 Wan 模型', h.indexOf('Wan-AI/Wan2.2-T2V-A14B') >= 0);
+ck('环节显示当前模型', h.indexOf('当前：<code>') >= 0 || /当前：/.test(h));
 
 console.log('\nUI 审计: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);
