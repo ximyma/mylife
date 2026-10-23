@@ -916,11 +916,18 @@
         html += '<div class="empty">还没有配置。点下面「添加」开始。</div>';
       }
 
-      // 三个环节。卡片上要显示"这条配置负责哪一环"，所以放在卡片之前
+      // 三个环节。卡片上要显示"这条配置负责哪一环"，所以放在卡片之前。
+      // kind 决定模型下拉只列哪一类；rec 是一个 Key 就自动配好的推荐款
       var SLOTS = [
-        { k: 'title', label: '起章名 / 写简介', hint: '要一点文笔，建议用云端大模型' },
-        { k: 'vision', label: '看照片', hint: '给老照片认场景（多模态模型）' },
-        { k: 'asr', label: '语音转文字', hint: '需支持音频输入的服务' }
+        { k: 'title', label: '起章名 / 写简介', kind: 'text',
+          rec: ['tencent/Hunyuan-MT-7B', 'Qwen/Qwen3-8B'],
+          hint: '要一点文笔。填好 Key 会自动配好，不用动' },
+        { k: 'vision', label: '看照片', kind: 'vision',
+          rec: ['deepseek-ai/DeepSeek-OCR'],
+          hint: '认老照片上的字和场景，必须用看图的模型' },
+        { k: 'asr', label: '语音转文字', kind: 'asr',
+          rec: ['Qwen/Qwen3-ASR-1.7B', 'FunAudioLLM/SenseVoiceSmall'],
+          hint: '录音转文字，必须用语音模型' }
       ];
 
       for (var p = 0; p < profiles.length; p++) {
@@ -989,9 +996,54 @@
             (String(bound.profile_id) === String(profiles[q].id) ? ' selected' : '') + '>' +
             esc(profiles[q].name) + '</option>';
         }
+
+        // 模型下拉只列这一环节用得上的：给"看照片"选模型时，
+        // 纯文本模型压根不该出现在列表里——选了也调不通。
+        var slotModels = [];
+        var seen = {};
+        function pushModel(id) {
+          if (!id || seen[id]) return;
+          seen[id] = 1;
+          slotModels.push(id);
+        }
+        // 绑定的那条配置里拉到过的模型优先
+        if (bound.profile_id) {
+          for (var q2 = 0; q2 < profiles.length; q2++) {
+            if (String(profiles[q2].id) === String(bound.profile_id)) {
+              var ml = [];
+              try { ml = JSON.parse(profiles[q2].models_json || '[]'); } catch (e) {}
+              for (var m1 = 0; m1 < ml.length; m1++) {
+                if (DB.modelKind(ml[m1]) === sl.kind) pushModel(ml[m1]);
+              }
+            }
+          }
+        }
+        // 兜底：把所有配置里同类的模型也列上，跨家换着用不用来回改
+        for (var q3 = 0; q3 < profiles.length; q3++) {
+          var ml2 = [];
+          try { ml2 = JSON.parse(profiles[q3].models_json || '[]'); } catch (e2) {}
+          for (var m2 = 0; m2 < ml2.length; m2++) {
+            if (DB.modelKind(ml2[m2]) === sl.kind) pushModel(ml2[m2]);
+          }
+        }
+        // 连拉都没拉过：把写死的推荐款摆出来，照抄也能用
+        if (!slotModels.length && sl.rec) {
+          for (var r = 0; r < sl.rec.length; r++) pushModel(sl.rec[r]);
+        }
+
+        var mopts = '<option value="">' +
+          (bound.model ? '当前：' + esc(bound.model) : '自动（用默认）') + '</option>';
+        for (var m3 = 0; m3 < slotModels.length; m3++) {
+          var mid = slotModels[m3];
+          mopts += '<option value="' + esc(mid) + '"' +
+            (bound.model === mid ? ' selected' : '') + '>' +
+            esc(mid) + (DB.isFreeModel(mid) ? ' · 免费' : ' · 付费') + '</option>';
+        }
+
         html += '<div class="slot-row" data-slot="' + sl.k + '">' +
           '<div class="slot-label"><b>' + esc(sl.label) + '</b><small>' + esc(sl.hint) + '</small></div>' +
           '<select class="slot-pick">' + opts + '</select>' +
+          '<select class="slot-model">' + mopts + '</select>' +
           '<button class="btn tiny" data-slot-test="' + sl.k + '">试一下</button>' +
           '</div>';
       }
@@ -1096,8 +1148,15 @@
         t.textContent = '拉取中';
         DB.pullModels(lid).then(function (r) {
           if (r.ok) {
-            toast('拉到 ' + r.count + ' 个模型');
-            renderSettings();
+            // 拉完顺手把空着的环节配好——有了 Key 就不用再选
+            DB.autoSetupSlots(lid).then(function (done) {
+              if (done.length) {
+                toast('拉到 ' + r.count + ' 个模型，并已自动配好 ' + done.length + ' 个环节');
+              } else {
+                toast('拉到 ' + r.count + ' 个模型');
+              }
+              renderSettings();
+            });
           } else {
             toast(r.message || '拉不到');
             t.disabled = false;
@@ -1126,16 +1185,25 @@
     };
     document.addEventListener('click', settingsClickHandler);
 
-    /* --- 用途绑定 --- */
+    /* --- 用途绑定：换配置、换模型都会立即落库 --- */
     var rows = document.querySelectorAll('.slot-row');
     for (var i = 0; i < rows.length; i++) {
       (function (row) {
         var sel = row.querySelector('.slot-pick');
+        var msel = row.querySelector('.slot-model');
+        function slot() { return row.getAttribute('data-slot'); }
+
         sel.onchange = function () {
-          var slot = row.getAttribute('data-slot');
           var pid = sel.value ? Number(sel.value) : null;
-          DB.setSlot(slot, pid, null).then(function () {
+          DB.setSlot(slot(), pid, null).then(function () {
             toast(pid ? '已绑定' : '已改为按规则');
+            renderSettings();   // 重画：模型下拉要跟着换一家重列
+          }).catch(fail);
+        };
+        msel.onchange = function () {
+          var pid = sel.value ? Number(sel.value) : null;
+          DB.setSlot(slot(), pid, msel.value || null).then(function () {
+            toast(msel.value ? '已改用 ' + msel.value : '已恢复自动');
           }).catch(fail);
         };
       })(rows[i]);

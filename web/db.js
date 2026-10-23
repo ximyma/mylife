@@ -241,6 +241,81 @@
       });
     },
 
+    /* ---------------- 模型能力分类（防止给"看照片"绑一个文本模型） ---------------- */
+
+    /** 模型 ID -> 用途类别。看名字猜，各家命名虽乱但关键词稳定 */
+    modelKind: function (id) {
+      var s = String(id || '').toLowerCase();
+      if (/embedding|reranker/.test(s)) return 'embed';
+      if (/asr|whisper|sensevoice/.test(s)) return 'asr';
+      if (/tts|cosyvoice|speech/.test(s)) return 'tts';
+      if (/ocr|vl|vision/.test(s)) return 'vision';
+      if (/kolors|flux|cogview|qwen-image|z-image/.test(s)) return 't2i';
+      if (/cogvideo|seedance|video/.test(s)) return 't2v';
+      return 'text';
+    },
+
+    /** 2026-10 实测的免费档模型。不在名单里的按付费提示 */
+    isFreeModel: function (id) {
+      var s = String(id || '');
+      if (/^Pro\//.test(s)) return false;          // Pro 前缀是付费加速版
+      return /hunyuan-mt|qwen3-8b$|qwen3\.5-4b$|deepseek-ocr|qwen3-asr|glm-4-9b|kolors|cosyvoice|sensevoice|bge-|r1-0528-qwen3-8b/i.test(s);
+    },
+
+    /**
+     * 有了 Key 就不用再选模型：按环节把推荐模型自动绑上。
+     * 只绑「还空着」的环节，用户自己选过的一律不碰。
+     * 返回自动绑了哪些（用来提示用户）。
+     */
+    autoSetupSlots: function (profileId) {
+      var self = this;
+      return API.query('SELECT * FROM ai_profiles WHERE id=?', [profileId]).then(function (rows) {
+        if (!rows.length) return [];
+        var models = [];
+        try { models = JSON.parse(rows[0].models_json || '[]'); } catch (e) { models = []; }
+        if (!models.length) return [];
+
+        // 每个环节的推荐顺序：先挑实测过的免费款，再退而求其次挑同类的
+        var WANT = {
+          title: ['tencent/Hunyuan-MT-7B', 'Qwen/Qwen3-8B'],
+          vision: ['deepseek-ai/DeepSeek-OCR'],
+          asr: ['Qwen/Qwen3-ASR-1.7B', 'FunAudioLLM/SenseVoiceSmall']
+        };
+        var KIND = { title: 'text', vision: 'vision', asr: 'asr' };
+        var done = [];
+
+        return self.getSlots().then(function (slots) {
+          var map = {};
+          for (var i = 0; i < slots.length; i++) map[slots[i].slot] = slots[i];
+
+          var chain = Promise.resolve();
+          Object.keys(WANT).forEach(function (slot) {
+            var cur = map[slot];
+            if (cur && cur.profile_id) return;   // 用户已经配过，不动
+            var pick = null;
+            for (var w = 0; w < WANT[slot].length && !pick; w++) {
+              for (var m = 0; m < models.length; m++) {
+                if (String(models[m]).toLowerCase() === WANT[slot][w].toLowerCase()) { pick = models[m]; break; }
+              }
+            }
+            if (!pick) {
+              for (var m2 = 0; m2 < models.length && !pick; m2++) {
+                if (self.modelKind(models[m2]) === KIND[slot]) pick = models[m2];
+              }
+            }
+            if (pick) {
+              chain = chain.then(function () {
+                return self.setSlot(slot, profileId, pick).then(function () {
+                  done.push(slot);
+                });
+              });
+            }
+          });
+          return chain.then(function () { return done; });
+        });
+      });
+    },
+
     /* ---------------- 改动 / 删除（内容全可改可删） ---------------- */
 
     updateSegment: function (id, text) {

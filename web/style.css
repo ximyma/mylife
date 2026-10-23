@@ -245,6 +245,8 @@ img{max-width:100%;display:block}
 .slot-label b{display:block;font-size:14.5px;font-weight:500}
 .slot-label small{color:var(--muted);font-size:12px}
 .slot-pick{flex:1;min-width:140px;font-size:14px}
+.slot-model{flex:1.4;min-width:180px;font-size:13px;padding:7px 9px;
+  border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink)}
 .pref-row{display:flex;gap:12px;align-items:center;padding:11px 0;
   border-bottom:1px solid var(--line2);font-size:14px}
 .pref-row>span:first-child{flex:0 0 76px;color:var(--ink2)}
