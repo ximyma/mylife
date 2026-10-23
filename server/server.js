@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.2.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.3.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -53,35 +53,84 @@ const WEB = path.join(ROOT, 'web');
 const SCHEMA_FILE = sea ? path.join(BASE, 'schema.sql') : path.join(__dirname, 'schema.sql');
 const SCHEMA_EMBED = sea ? assetGet('schema.sql') : null;
 const DATA = process.env.DATA_DIR || (sea ? path.join(EXE_DIR, 'data') : path.join(ROOT, 'data'));
-const FILES = path.join(DATA, 'files');
 const PORT = Number(process.env.PORT || 4321);
 const HOST = process.env.HOST || '127.0.0.1';
 
 fs.mkdirSync(DATA, { recursive: true });
-for (const k of ['photo', 'audio', 'video']) fs.mkdirSync(path.join(FILES, k), { recursive: true });
 
-/* ---------------- 数据库 ---------------- */
+/* ---------------- 数据库：账号库 + 每用户一个业务库 ----------------
+ * auth.db 存"谁能登录"（users + sessions），全局一份。
+ * 业务库 data/users/<uid>/archive.db 登录后按需打开（LRU 缓存 20 个）。
+ * 业务库里的表结构与 v0.2 完全一致——schema 是幂等的，新库首次打开时执行。 */
 
-const DB_FILE = path.join(DATA, 'archive.db');
-const fresh = !fs.existsSync(DB_FILE);
-const db = new DatabaseSync(DB_FILE);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+const AUTH = require('./auth');
+AUTH.init(DATA, migrateLegacy);
+const SMS = require('./sms');
 
-// schema 里全是 IF NOT EXISTS / INSERT OR IGNORE，所以每次启动都跑一遍：
-// 加新表自动生效，不需要维护迁移器。
-{
+const { AsyncLocalStorage } = require('node:async_hooks');
+const RLS = new AsyncLocalStorage();
+const ctxDb = () => RLS.getStore().db;
+const ctxFiles = () => RLS.getStore().files;
+
+const userDbs = new Map();      // uid -> DatabaseSync
+const USER_DB_MAX = 20;
+
+function initSchemaOn(d) {
   const schema = SCHEMA_EMBED ? SCHEMA_EMBED.toString('utf8') : fs.readFileSync(SCHEMA_FILE, 'utf8');
   let ok = 0, all = 0;
   for (const stmt of schema.split(';')) {
     const clean = stmt.split('\n').filter(l => !l.trim().startsWith('--')).join('\n').trim();
     if (!clean) continue;
     all++;
-    try { db.exec(clean); ok++; }
+    try { d.exec(clean); ok++; }
     catch (e) { console.warn('[schema] 跳过：', clean.slice(0, 50), e.message); }
   }
-  console.log(`${fresh ? '新建' : '已有'}数据库，结构 ${ok}/${all} 条就绪`);
+  console.log(`  数据库结构 ${ok}/${all} 条就绪`);
 }
+
+function dbForUser(uid) {
+  if (userDbs.has(uid)) return userDbs.get(uid);
+  const userDir = path.join(DATA, 'users', String(uid));
+  fs.mkdirSync(path.join(userDir, 'files', 'photo'), { recursive: true });
+  fs.mkdirSync(path.join(userDir, 'files', 'audio'), { recursive: true });
+  fs.mkdirSync(path.join(userDir, 'files', 'video'), { recursive: true });
+  const d = new DatabaseSync(path.join(userDir, 'archive.db'));
+  d.exec('PRAGMA journal_mode = WAL');
+  d.exec('PRAGMA foreign_keys = ON');
+  initSchemaOn(d);
+  if (userDbs.size >= USER_DB_MAX) {
+    const oldest = userDbs.keys().next().value;
+    try { userDbs.get(oldest).close(); } catch (e) {}
+    userDbs.delete(oldest);
+  }
+  userDbs.set(uid, d);
+  return d;
+}
+
+/** v0.2 → v0.3 迁移：第一个注册的账号继承旧的单用户库（移动，不是复制）。 */
+function migrateLegacy(uid) {
+  const legacyDb = path.join(DATA, 'archive.db');
+  const legacyFiles = path.join(DATA, 'files');
+  if (!fs.existsSync(legacyDb)) return false;
+
+  const userDir = path.join(DATA, 'users', String(uid));
+  fs.mkdirSync(userDir, { recursive: true });
+  const targetDb = path.join(userDir, 'archive.db');
+  fs.rmSync(targetDb, { force: true });            // 删掉刚初始化的空库，让位给旧数据
+  for (const ext of ['-wal', '-shm']) {
+    const s = legacyDb + ext;
+    if (fs.existsSync(s)) { try { fs.renameSync(s, targetDb + ext); } catch (e) {} }
+  }
+  fs.renameSync(legacyDb, targetDb);
+  if (fs.existsSync(legacyFiles)) {
+    fs.renameSync(legacyFiles, path.join(userDir, 'files'));
+  }
+  userDbs.delete(uid);                             // 让缓存失效，下次请求重开
+  console.log('[迁移] v0.2 的档案已归属第一个注册的账号（uid=' + uid + '）');
+  return true;
+}
+
+/* 请求级上下文：业务函数里的 db / FILES 全部改从这取，保证并发请求不串库 */
 
 /* ---------------- HTTP 工具 ---------------- */
 
@@ -171,7 +220,7 @@ function bind(params) {
 }
 
 function apiQuery(body) {
-  const stmt = db.prepare(body.sql);
+  const stmt = ctxDb().prepare(body.sql);
   return stmt.all(...bind(body.params));
 }
 
@@ -180,25 +229,25 @@ function apiExec(body) {
   const low = sql.trim().toLowerCase();
   if (low.startsWith('select') || low.startsWith('pragma')) throw new Error('exec 不接受查询语句');
   if (/^(drop|alter|attach|create|vacuum)/.test(low)) throw new Error('exec 不允许改表结构');
-  const r = db.prepare(sql).run(...bind(body.params));
+  const r = ctxDb().prepare(sql).run(...bind(body.params));
   return { ok: true, changes: Number(r.changes || 0), lastId: Number(r.lastInsertRowid || 0) };
 }
 
 /* ---- AI：配置、拉模型、测试、对话 ---- */
 
 function profileById(id) {
-  return db.prepare('SELECT * FROM ai_profiles WHERE id=?').get(Number(id));
+  return ctxDb().prepare('SELECT * FROM ai_profiles WHERE id=?').get(Number(id));
 }
 
 function profileForSlot(slot) {
-  const row = db.prepare('SELECT profile_id, model FROM ai_slots WHERE slot=?').get(slot);
+  const row = ctxDb().prepare('SELECT profile_id, model FROM ai_slots WHERE slot=?').get(slot);
   if (!row || !row.profile_id) return null;
   const p = profileById(row.profile_id);
   return p ? { profile: p, model: row.model || p.default_model } : null;
 }
 
 function defaultProfile() {
-  return db.prepare('SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id LIMIT 1').get();
+  return ctxDb().prepare('SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id LIMIT 1').get();
 }
 
 /** 决定这次用哪条配置：显式 profileId > 用途槽位 > 第一条可用 */
@@ -256,7 +305,7 @@ async function apiAiModels(body) {
       const id = m && (m.id || m.name || m.model);
       if (id) ids.push(String(id));
     }
-    db.prepare('UPDATE ai_profiles SET models_json=? WHERE id=?').run(JSON.stringify(ids), p.id);
+    ctxDb().prepare('UPDATE ai_profiles SET models_json=? WHERE id=?').run(JSON.stringify(ids), p.id);
     return { ok: true, models: ids, count: ids.length };
   } catch (e) {
     return { ok: false, message: '连不上：' + (e.message || e) };
@@ -376,8 +425,9 @@ async function apiAsr(body) {
   const rel = safePath(body.path || '');
   if (!rel) return { ok: false, message: '没有指定音频' };
 
-  const abs = path.join(FILES, rel);
-  if (!abs.startsWith(FILES) || !fs.existsSync(abs)) {
+  const files = ctxFiles();
+  const abs = path.join(files, rel);
+  if (!abs.startsWith(files) || !fs.existsSync(abs)) {
     return { ok: false, message: '找不到这个音频文件' };
   }
 
@@ -450,7 +500,7 @@ function apiFile(body) {
     if (!buf.length) throw new Error('文件是空的');
     if (buf.length > 80 * 1024 * 1024) throw new Error('单个文件超过 80MB');
 
-    const dir = path.join(FILES, kind);
+    const dir = path.join(ctxFiles(), kind);
     fs.mkdirSync(dir, { recursive: true });
     const abs = path.join(dir, name);
     if (body.append) fs.appendFileSync(abs, buf);
@@ -460,19 +510,21 @@ function apiFile(body) {
   }
 
   if (op === 'read') {
-    const abs = path.join(FILES, safePath(body.path));
-    if (!abs.startsWith(FILES) || !fs.existsSync(abs)) throw new Error('文件不存在');
+    const files = ctxFiles();
+    const abs = path.join(files, safePath(body.path));
+    if (!abs.startsWith(files) || !fs.existsSync(abs)) throw new Error('文件不存在');
     return { ok: true, base64: fs.readFileSync(abs).toString('base64'), bytes: fs.statSync(abs).size };
   }
 
   if (op === 'del') {
-    const abs = path.join(FILES, safePath(body.path));
-    if (!abs.startsWith(FILES)) return { ok: false };
+    const files = ctxFiles();
+    const abs = path.join(files, safePath(body.path));
+    if (!abs.startsWith(files)) return { ok: false };
     try { fs.unlinkSync(abs); return { ok: true }; } catch { return { ok: false }; }
   }
 
   if (op === 'list') {
-    const dir = path.join(FILES, safe(body.kind));
+    const dir = path.join(ctxFiles(), safe(body.kind));
     if (!fs.existsSync(dir)) return { ok: true, items: [] };
     return {
       ok: true,
@@ -485,11 +537,82 @@ function apiFile(body) {
 
 /* ---------------- 服务 ---------------- */
 
+function cookieToken(req) {
+  const raw = req.headers.cookie || '';
+  const m = /(?:^|;\s*)mylife_token=([^;]+)/.exec(raw);
+  return m ? m[1] : null;
+}
+
+function bearerToken(req) {
+  const m = /^Bearer\s+(.+)$/.exec(String(req.headers.authorization || ''));
+  return m ? m[1].trim() : null;
+}
+
+function authUser(req) {
+  const t = bearerToken(req) || cookieToken(req);
+  const u = AUTH.verify(t);
+  console.log('[auth]', pathname_hint, 'token=' + (t ? t.slice(0, 8) + '...' : '无'), '->', u ? 'uid=' + u.uid : '无效');
+  return u;
+}
+let pathname_hint = '';
+
+async function handleAuth(req, res, pathname) {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': '*',
+      'access-control-allow-methods': 'POST,GET,OPTIONS',
+    });
+    return res.end();
+  }
+  try {
+    const body = await readBody(req);
+
+    if (pathname === '/api/auth/sms') {
+      SMS.send(body.phone, null);
+      return sendJson(res, 200, { ok: true, message: '验证码已发送（演示版固定 ' + AUTH.CODE_FIXED + '）' });
+    }
+    if (pathname === '/api/auth/register') {
+      const out = AUTH.register(body.phone, body.password, body.code, body.nickname);
+      res.setHeader('Set-Cookie',
+        'mylife_token=' + out.token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+      return sendJson(res, 200, {
+        ok: true, token: out.token, uid: out.uid, phone: out.phone,
+        migrated: out.migrated,
+        message: out.migrated ? '注册成功，v0.2 的旧档案已归属这个账号' : '注册成功',
+      });
+    }
+    if (pathname === '/api/auth/login') {
+      const out = AUTH.login(body.phone, body.password);
+      res.setHeader('Set-Cookie',
+        'mylife_token=' + out.token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
+      return sendJson(res, 200, { ok: true, token: out.token, uid: out.uid, phone: out.phone });
+    }
+
+    const user = authUser(req);
+    if (pathname === '/api/auth/me') {
+      if (!user) return sendJson(res, 401, { __auth: '需要登录' });
+      return sendJson(res, 200, { ok: true, uid: user.uid, phone: user.phone, nickname: user.nickname });
+    }
+    if (pathname === '/api/auth/logout') {
+      if (user) AUTH.logout(bearerToken(req) || cookieToken(req));
+      res.setHeader('Set-Cookie', 'mylife_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendJson(res, 404, { __error: '未知接口 ' + pathname });
+  } catch (e) {
+    return sendJson(res, 200, { ok: false, message: e.message || '操作失败' });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
   const pathname = decodeURIComponent(url.pathname);
+  pathname_hint = pathname;
 
   try {
+    if (pathname.startsWith('/api/auth/')) return await handleAuth(req, res, pathname);
+
     if (pathname.startsWith('/api/')) {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
@@ -499,23 +622,38 @@ const server = http.createServer(async (req, res) => {
         });
         return res.end();
       }
-      const body = await readBody(req);
-      let out;
-      if (pathname === '/api/query') out = apiQuery(body);
-      else if (pathname === '/api/exec') out = apiExec(body);
-      else if (pathname === '/api/ai') out = await apiAi(body);
-      else if (pathname === '/api/ai/models') out = await apiAiModels(body);
-      else if (pathname === '/api/ai/test') out = await apiAiTest(body);
-      else if (pathname === '/api/file') out = apiFile(body);
-      else if (pathname === '/api/asr') out = await apiAsr(body);
-      else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
-      return sendJson(res, 200, out);
+      const user = authUser(req);
+      if (!user) return sendJson(res, 401, { __auth: '需要登录' });
+
+      const udb = dbForUser(user.uid);
+      const files = path.join(DATA, 'users', String(user.uid), 'files');
+      return RLS.run({ uid: user.uid, db: udb, files: files }, async () => {
+        // 错误处理必须在这层里面——RLS.run 返回的 Promise 不会传回外层的 try
+        try {
+          const body = await readBody(req);
+          let out;
+          if (pathname === '/api/query') out = apiQuery(body);
+          else if (pathname === '/api/exec') out = apiExec(body);
+          else if (pathname === '/api/ai') out = await apiAi(body);
+          else if (pathname === '/api/ai/models') out = await apiAiModels(body);
+          else if (pathname === '/api/ai/test') out = await apiAiTest(body);
+          else if (pathname === '/api/file') out = apiFile(body);
+          else if (pathname === '/api/asr') out = await apiAsr(body);
+          else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
+          return sendJson(res, 200, out);
+        } catch (e) {
+          return sendJson(res, 200, { __error: e.message || String(e) });
+        }
+      });
     }
 
     if (pathname.startsWith('/files/')) {
+      const user = authUser(req);
+      if (!user) return sendText(res, 401, '需要登录');
+      const files = path.join(DATA, 'users', String(user.uid), 'files');
       const rel = pathname.slice(7).replace(/\.\./g, '');
-      const abs = path.join(FILES, rel);
-      if (!abs.startsWith(FILES)) return sendText(res, 404, 'not found');
+      const abs = path.join(files, rel);
+      if (!abs.startsWith(files)) return sendText(res, 404, 'not found');
       return sendFile(req, res, abs);
     }
 
@@ -579,10 +717,15 @@ server.on('error', (e) => {
 
 server.listen(PORT, HOST, () => {
   const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
+  const hasLegacy = fs.existsSync(path.join(DATA, 'archive.db'));
   console.log('');
   console.log('  我的人生档案 · The Story of My Life  ' + VERSION);
   console.log('  ' + addr);
   console.log('  数据目录：' + DATA);
+  if (hasLegacy) {
+    console.log('');
+    console.log('  ★ 检测到 v0.2 的旧数据。注册第一个账号时它会自动归属到该账号。');
+  }
   console.log('');
   console.log('  在这个黑窗口里按 Ctrl+C 或者关掉它就退出了。');
   console.log('');

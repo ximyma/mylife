@@ -262,6 +262,14 @@ img{max-width:100%;display:block}
 /* 麦克风选择：多输入设备（虚拟声卡抢默认位）时显示 */
 .mic-sel{width:100%;margin-top:8px;padding:8px 10px;border:1px solid var(--line);
   border-radius:7px;background:var(--paper);color:var(--ink);font-size:13px}
+/* 登录 / 注册页 */
+.auth-wrap{display:flex;justify-content:center}
+.auth-box{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:22px 20px;width:100%;max-width:360px;margin-top:26px}
+.auth-box .fld label{font-size:13px;color:var(--muted)}
+.auth-box .fld{margin-bottom:12px}
+.auth-box input{width:100%;padding:10px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--paper);color:var(--ink);font-size:15px;box-sizing:border-box}
 .slot-pick{flex:1;min-width:140px;font-size:14px}
 .slot-model{flex:1.4;min-width:180px;font-size:13px;padding:7px 9px;
   border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink)}

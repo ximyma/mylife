@@ -12,6 +12,8 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URLDecoder;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -36,16 +38,17 @@ public class LocalServer {
     private static final int MAX_BODY = 64 * 1024 * 1024;   // 单请求 64MB 上限
 
     private final Context ctx;
-    private final Db db;
+    private final Auth auth;
+    private final Map<Long, Db> userDbs = new HashMap<>();
     private final ExecutorService pool = Executors.newFixedThreadPool(6);
 
     private ServerSocket socket;
     private volatile boolean running = false;
     private int port = 0;
 
-    public LocalServer(Context ctx, Db db) {
+    public LocalServer(Context ctx, Auth auth) {
         this.ctx = ctx;
-        this.db = db;
+        this.auth = auth;
     }
 
     /** 绑 0 端口让系统分配，避免 8080 被别的 App 占 */
@@ -128,14 +131,16 @@ public class LocalServer {
             query = target.substring(qm + 1);
         }
 
-        // Range 头（视频拖动）
+        // Range 头（视频拖动）+ Authorization
         String range = null;
+        String authHeader = null;
         for (int i = 1; i < lines.length; i++) {
             String l = lines[i];
             int c = l.indexOf(':');
             if (c < 0) continue;
             String k = l.substring(0, c).trim().toLowerCase();
             if (k.equals("range")) range = l.substring(c + 1).trim();
+            if (k.equals("authorization")) authHeader = l.substring(c + 1).trim();
         }
 
         if ("OPTIONS".equals(method)) {
@@ -143,18 +148,79 @@ public class LocalServer {
             return;
         }
 
+        if (path.startsWith("/api/auth/")) {
+            writeJson(out, routeAuth(path, body, authHeader));
+            return;
+        }
+
         if (path.startsWith("/api/")) {
-            String json = routeApi(path, body);
+            Auth.User user = auth.verify(tokenOf(authHeader));
+            if (user == null) {
+                writeJson(out, "{\"__auth\":\"需要登录\"}");
+                return;
+            }
+            Db udb = dbForUser(user.uid);
+            String json = routeApi(path, body, udb, user.uid);
             writeJson(out, json);
             return;
         }
 
         if (path.startsWith("/files/")) {
-            serveFiles(out, path.substring(7), range);
+            Auth.User user = auth.verify(tokenOf(authHeader));
+            if (user == null) {
+                writeText(out, 401, "需要登录");
+                return;
+            }
+            serveFiles(out, path.substring(7), range, user.uid);
             return;
         }
 
         serveAsset(out, path);
+    }
+
+    private static String tokenOf(String authHeader) {
+        if (authHeader == null) return null;
+        return authHeader.replaceFirst("(?i)^Bearer\\s+", "").trim();
+    }
+
+    /** 用户库按需打开 + 缓存（本地单进程，20 个上限够用） */
+    private Db dbForUser(long uid) throws Exception {
+        synchronized (userDbs) {
+            Db d = userDbs.get(uid);
+            if (d != null) return d;
+            File dir = new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid));
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+            d = new Db(ctx, new File(dir, "archive.db"));
+            d.open();
+            userDbs.put(uid, d);
+            return d;
+        }
+    }
+
+    /** 注册 / 登录 / 验证码（免 token）；me / logout 带 token */
+    private String routeAuth(String path, byte[] body, String authHeader) {
+        try {
+            String json = new String(body, "UTF-8");
+            if (path.equals("/api/auth/register")) return auth.register(
+                    Json.str(json, "phone"), Json.str(json, "password"),
+                    Json.str(json, "code"), Json.str(json, "nickname"));
+            if (path.equals("/api/auth/login")) return auth.login(
+                    Json.str(json, "phone"), Json.str(json, "password"));
+            if (path.equals("/api/auth/sms")) return auth.sms(Json.str(json, "phone"));
+            if (path.equals("/api/auth/logout")) {
+                auth.logout(tokenOf(authHeader));
+                return "{\"ok\":true}";
+            }
+            if (path.equals("/api/auth/me")) {
+                Auth.User u = auth.verify(tokenOf(authHeader));
+                if (u == null) return "{\"__auth\":\"需要登录\"}";
+                return "{\"ok\":true,\"uid\":" + u.uid + ",\"phone\":\"" + Json.esc(u.phone) + "\"}";
+            }
+            return "{\"__error\":\"未知接口 " + path + "\"}";
+        } catch (Exception e) {
+            return "{\"ok\":false,\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}";
+        }
     }
 
     /** 读完整个请求。手机内存有限，所以有上限；超了直接截断，上层会报错。 */
@@ -209,29 +275,29 @@ public class LocalServer {
 
     /* ---------------- API ---------------- */
 
-    private String routeApi(String path, byte[] body) {
+    private String routeApi(String path, byte[] body, Db udb, long uid) {
         try {
             String json = new String(body, "UTF-8");
             if (path.equals("/api/query")) {
-                return db.query(Json.str(json, "sql"), Json.arr(json, "params"));
+                return udb.query(Json.str(json, "sql"), Json.arr(json, "params"));
             }
             if (path.equals("/api/exec")) {
-                return db.exec(Json.str(json, "sql"), Json.arr(json, "params"));
+                return udb.exec(Json.str(json, "sql"), Json.arr(json, "params"));
             }
             if (path.equals("/api/ai")) {
-                return Ai.chat(ctx, db, json);
+                return Ai.chat(ctx, udb, json);
             }
             if (path.equals("/api/ai/models")) {
-                return Ai.models(ctx, db, json);
+                return Ai.models(ctx, udb, json);
             }
             if (path.equals("/api/ai/test")) {
-                return Ai.test(ctx, db, json);
+                return Ai.test(ctx, udb, json);
             }
             if (path.equals("/api/asr")) {
-                return Ai.asr(ctx, db, json);
+                return Ai.asr(ctx, udb, json);
             }
             if (path.equals("/api/file")) {
-                return Files.op(ctx, json);
+                return Files.op(ctx, uid, json);
             }
             return "{\"__error\":\"未知接口 " + path + "\"}";
         } catch (Exception e) {
@@ -263,13 +329,13 @@ public class LocalServer {
 
     /* ---------------- 用户文件（files/） ---------------- */
 
-    private void serveFiles(OutputStream out, String rel, String range) throws Exception {
+    private void serveFiles(OutputStream out, String rel, String range, long uid) throws Exception {
         String decoded = URLDecoder.decode(rel, "UTF-8");
         if (decoded.contains("..")) {
             writeText(out, 404, "not found");
             return;
         }
-        File f = new File(new File(ctx.getFilesDir(), "files"), decoded);
+        File f = new File(new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid)), decoded);
         if (!f.isFile()) {
             writeText(out, 404, "not found");
             return;

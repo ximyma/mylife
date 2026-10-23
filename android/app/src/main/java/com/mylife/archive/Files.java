@@ -22,21 +22,23 @@ public final class Files {
 
     private Files() {}
 
-    public static String op(Context ctx, String json) {
+    public static String op(Context ctx, long uid, String json) {
         try {
+            File r = root(ctx, uid);
             String op = Json.str(json, "op", "save");
-            if ("save".equals(op)) return save(ctx, json);
-            if ("read".equals(op)) return read(ctx, json);
-            if ("del".equals(op)) return del(ctx, json);
-            if ("list".equals(op)) return list(ctx, json);
+            if ("save".equals(op)) return save(r, json);
+            if ("read".equals(op)) return read(r, json);
+            if ("del".equals(op)) return del(r, json);
+            if ("list".equals(op)) return list(r, json);
             return Json.err("未知操作 " + op);
         } catch (Exception e) {
             return Json.err(String.valueOf(e.getMessage()));
         }
     }
 
-    private static File root(Context ctx) {
-        File f = new File(ctx.getFilesDir(), "files");
+    /** 每个用户一套文件目录：filesDir/users/<uid>/files/<kind>/ */
+    private static File root(Context ctx, long uid) {
+        File f = new File(new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid)), "files");
         if (!f.exists()) {
             //noinspection ResultOfMethodCallIgnored
             f.mkdirs();
@@ -44,10 +46,10 @@ public final class Files {
         return f;
     }
 
-    private static File resolve(Context ctx, String kind, String name) {
+    private static File resolve(File rootDir, String kind, String name) {
         String k = safe(kind);
         String n = safe(name);
-        File dir = new File(root(ctx), k);
+        File dir = new File(rootDir, k);
         if (!dir.exists()) {
             //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
@@ -60,7 +62,7 @@ public final class Files {
         return s.replace("..", "").replace("/", "").replace("\\", "");
     }
 
-    private static String save(Context ctx, String json) throws Exception {
+    private static String save(File rootDir, String json) throws Exception {
         String kind = Json.str(json, "kind", "misc");
         String name = Json.str(json, "name", String.valueOf(System.currentTimeMillis()));
         String b64 = Json.str(json, "base64", "");
@@ -73,7 +75,7 @@ public final class Files {
         if (data.length == 0) return Json.err("文件是空的");
         if (data.length > MAX_ONE) return Json.err("单个文件超过 80MB");
 
-        File f = resolve(ctx, kind, name);
+        File f = resolve(rootDir, kind, name);
         if (Json.num(json, "append", 0) == 1) {
             FileOutputStream fo = new FileOutputStream(f, true);
             fo.write(data);
@@ -94,9 +96,9 @@ public final class Files {
         return r.toString();
     }
 
-    private static String read(Context ctx, String json) throws Exception {
+    private static String read(File rootDir, String json) throws Exception {
         String path = Json.str(json, "path", "");
-        File f = new File(root(ctx), path.replace("..", ""));
+        File f = new File(rootDir, path.replace("..", ""));
         if (!f.isFile()) return Json.err("文件不存在");
         FileInputStream is = new FileInputStream(f);
         ByteArrayOutputStream bo = new ByteArrayOutputStream();
@@ -111,18 +113,18 @@ public final class Files {
         return r.toString();
     }
 
-    private static String del(Context ctx, String json) throws Exception {
+    private static String del(File rootDir, String json) throws Exception {
         String path = Json.str(json, "path", "");
-        File f = new File(root(ctx), path.replace("..", ""));
+        File f = new File(rootDir, path.replace("..", ""));
         boolean ok = f.isFile() && f.delete();
         JSONObject r = new JSONObject();
         r.put("ok", ok);
         return r.toString();
     }
 
-    private static String list(Context ctx, String json) throws Exception {
+    private static String list(File rootDir, String json) throws Exception {
         String kind = Json.str(json, "kind", "misc");
-        File dir = new File(root(ctx), safe(kind));
+        File dir = new File(rootDir, safe(kind));
         org.json.JSONArray arr = new org.json.JSONArray();
         File[] fs = dir.listFiles();
         if (fs != null) {

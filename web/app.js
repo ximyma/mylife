@@ -1122,7 +1122,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.2.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.3.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1353,10 +1353,16 @@
         '<b id="prefRateVal">' + (Number(cfg['pref.rate']) || 0.95).toFixed(1) + '×</b></div>';
 
       /* ---- 关于 ---- */
+      var myPhone = '';
+      try { myPhone = localStorage.getItem('mylife.phone') || ''; } catch (e2) {}
       html += '<h2 class="set-h">关于</h2>' +
         '<p class="hint">我的人生档案 · The Story of My Life <b>' + esc(APP_VERSION) + '</b><br>' +
         '数据全部存在这台设备上，不会上传到任何地方。<br>' +
-        '只有你自己配了模型，生成时才会把章节标题发出去；照片只有在你点「看照片」时才会发。</p>';
+        '只有你自己配了模型，生成时才会把章节标题发出去；照片只有在你点「看照片」时才会发。</p>' +
+        (myPhone
+          ? '<div class="pref-row"><span>当前账号</span><b>' + esc(myPhone) + '</b>' +
+            '<button class="btn tiny" id="logoutBtn">退出登录</button></div>'
+          : '');
 
       html += '</main>';
       app.innerHTML = html;
@@ -1509,6 +1515,15 @@
     }
 
     var night = document.getElementById('prefNight');
+
+    var logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) logoutBtn.onclick = function () {
+      if (!confirm('退出登录？退出后要重新登录才能看到档案。')) return;
+      API.auth.logout().catch(function () {});
+      API.auth.setToken('');
+      try { localStorage.removeItem('mylife.phone'); } catch (e) {}
+      go('#/login');
+    };
     if (night) night.onchange = function () {
       DB.setPref('night', night.checked ? 1 : 0).then(function () {
         applyPrefs();
@@ -1650,8 +1665,92 @@
 
   /* ---------------- 路由 ---------------- */
 
+  /** 登录 / 注册页。v0.3 起先登录再用；验证码演示版固定 1234 */
+  function renderLogin() {
+    var mode = 'login';   // login | register
+    app.innerHTML = topbar() +
+      '<main class="wrap auth-wrap"><div class="auth-box">' +
+      '<h1 class="h1" style="text-align:center">我的人生档案</h1>' +
+      '<p class="muted" style="text-align:center">登录后开始使用</p>' +
+
+      '<div class="fld"><label>手机号</label>' +
+      '<input id="auPhone" type="tel" maxlength="11" placeholder="11 位手机号"></div>' +
+
+      '<div class="fld"><label>密码</label>' +
+      '<input id="auPass" type="password" placeholder="至少 6 位"></div>' +
+
+      '<div class="fld" id="auNickRow" hidden><label>昵称（选填）</label>' +
+      '<input id="auNick" placeholder="怎么称呼你"></div>' +
+
+      '<div class="fld" id="auCodeRow" hidden><label>短信验证码</label>' +
+      '<div style="display:flex;gap:8px">' +
+      '<input id="auCode" maxlength="6" placeholder="演示版固定 1234" style="flex:1">' +
+      '<button class="btn" id="auSms" type="button">发验证码</button></div></div>' +
+
+      '<button class="btn primary" id="auGo" style="width:100%;margin-top:6px">登录</button>' +
+      '<p class="muted" style="text-align:center;margin-top:12px">' +
+      '<a href="javascript:void 0" id="auToggle" style="color:var(--accent)">没有账号？注册一个</a></p>' +
+      '<p class="muted" id="auMsg" style="text-align:center;min-height:18px;color:var(--danger)"></p>' +
+      '</div></main>';
+
+    function msg(t) { document.getElementById('auMsg').textContent = t || ''; }
+    function isReg() { return mode === 'register'; }
+    function refreshMode() {
+      document.getElementById('auNickRow').hidden = !isReg();
+      document.getElementById('auCodeRow').hidden = !isReg();
+      document.getElementById('auGo').textContent = isReg() ? '注册并进入' : '登录';
+      document.getElementById('auToggle').textContent = isReg() ? '已有账号？去登录' : '没有账号？注册一个';
+      msg('');
+    }
+
+    document.getElementById('auToggle').onclick = function () {
+      mode = isReg() ? 'login' : 'register';
+      refreshMode();
+    };
+    document.getElementById('auSms').onclick = function () {
+      var phone = document.getElementById('auPhone').value.trim();
+      API.auth.sms(phone).then(function (r) {
+        msg(''); toast(r.message || '验证码已发送');
+      }).catch(function (e) { msg(e.message); });
+    };
+
+    function done(r) {
+      API.auth.setToken(r.token);
+      try { localStorage.setItem('mylife.phone', r.phone || ''); } catch (e) {}
+      toast(r.message || '欢迎回来');
+      go('#/');
+    }
+    document.getElementById('auGo').onclick = function () {
+      var btn = this;
+      var phone = document.getElementById('auPhone').value.trim();
+      var pass = document.getElementById('auPass').value;
+      btn.disabled = true;
+      var p;
+      if (isReg()) {
+        p = API.auth.register(phone, pass,
+          document.getElementById('auCode').value.trim(),
+          document.getElementById('auNick').value.trim());
+      } else {
+        p = API.auth.login(phone, pass);
+      }
+      p.then(done).catch(function (e) { msg(e.message); btn.disabled = false; });
+    };
+    // 回车直接提交
+    app.querySelector('#auPass').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') document.getElementById('auGo').click();
+    });
+  }
+
   function route() {
     var h = location.hash || '#/';
+    // 登录页带 token 直通：自动化测试与外部工具用，token 本就由持有者掌握
+    var tk = h.match(/[?&]token=([A-Za-z0-9]+)/);
+    if (tk) {
+      API.auth.setToken(tk[1]);
+      go(h.replace(/[?&]token=[A-Za-z0-9]+/, '') || '#/');
+      return;
+    }
+    if (h === '#/login') return renderLogin();
     var m;
 
     if ((m = /^#\/a\/(\d+)\/collect/.exec(h))) return renderCollect(m[1]);
@@ -1681,9 +1780,31 @@
   }
 
   function boot() {
+    // token 直通必须最先做——applyPrefs 会发请求，401 拦截会抢在正常流程前跳登录页
+    var h0 = location.hash || '';
+    var tk = h0.match(/[?&]token=([A-Za-z0-9]+)/);
+    if (tk) {
+      API.auth.setToken(tk[1]);
+      // 保留路径，只摘掉 token 参数
+      var clean0 = h0.replace(/[?&]token=[A-Za-z0-9]+/, '');
+      try { history.replaceState(null, '', location.pathname + location.search + '#' + clean0.replace(/^#/, '')); }
+      catch (e) { location.hash = clean0 || '#/'; }
+    }
     applyPrefs();   // 先把字号/夜间落到页面，避免闪一下
     bindTtsOnce();
-    route();
+    API.auth.onUnauthorized(function () {
+      try { localStorage.removeItem('mylife.token'); } catch (e) {}
+      go('#/login');
+    });
+    // 有 token 先验一下（过期了就地进登录页），没有直接进登录页
+    if (!API.auth.token()) { go('#/login'); return; }
+    API.auth.me().then(function (u) {
+      try { if (u && u.phone) localStorage.setItem('mylife.phone', u.phone); } catch (e2) {}
+      route();
+    }).catch(function (e) {
+      API.auth.setToken('');
+      go('#/login');
+    });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);

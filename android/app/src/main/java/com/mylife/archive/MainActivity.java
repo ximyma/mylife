@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -40,6 +41,41 @@ public class MainActivity extends Activity {
     private WebView web;
     private Db db;
     private LocalServer server;
+    private Auth auth;
+
+    /** v0.2 的旧单用户库还在吗（决定首个注册账号是否继承） */
+    public static boolean hasLegacyData(Context ctx) {
+        return new File(ctx.getDatabasePath("archive.db").getParentFile(), "archive.db").isFile();
+    }
+
+    /** 首个注册账号继承旧数据：移动（不是复制），避免两份数据分叉 */
+    public static void migrateLegacy(Context ctx, long uid) {
+        File base = ctx.getDatabasePath("archive.db").getParentFile();
+        File legacyDb = new File(base, "archive.db");
+        if (!legacyDb.isFile()) return;
+        File userDir = new File(new File(ctx.getFilesDir(), "users"), String.valueOf(uid));
+        //noinspection ResultOfMethodCallIgnored
+        userDir.mkdirs();
+        File targetDb = new File(userDir, "archive.db");
+        if (targetDb.isFile()) //noinspection ResultOfMethodCallIgnored
+            targetDb.delete();
+        for (String ext : new String[]{"-wal", "-shm"}) {
+            File s = new File(base, "archive.db" + ext);
+            if (s.isFile()) {
+                File t = new File(userDir, "archive.db" + ext);
+                //noinspection ResultOfMethodCallIgnored
+                s.renameTo(t);
+            }
+        }
+        //noinspection ResultOfMethodCallIgnored
+        legacyDb.renameTo(targetDb);
+        File legacyFiles = new File(ctx.getFilesDir(), "files");
+        if (legacyFiles.isDirectory()) {
+            //noinspection ResultOfMethodCallIgnored
+            legacyFiles.renameTo(new File(userDir, "files"));
+        }
+        Log.i("MainActivity", "v0.2 旧数据已归属 uid=" + uid);
+    }
     private Tts tts;
 
     private ValueCallback<Uri[]> fileCallback;
@@ -71,12 +107,9 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    say("正在打开档案库", 20);
-                    db = new Db(getApplicationContext());
-                    db.open();
-
                     say("正在启动本地服务", 55);
-                    server = new LocalServer(getApplicationContext(), db);
+                    auth = new Auth(getApplicationContext());
+                    server = new LocalServer(getApplicationContext(), auth);
                     final int port = server.start();
 
                     // TextToSpeech 必须在主线程构造

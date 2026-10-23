@@ -2,11 +2,15 @@
 global.window = {};
 global.btoa = s => Buffer.from(s, 'binary').toString('base64');
 const fs = require('fs'), http = require('http');
+const { startServer } = require('./_lib.js');
+const S = startServer('gen');
+let TOKEN = '';
 function post(p, b) {
   return new Promise((res, rej) => {
     const d = JSON.stringify(b);
-    const r = http.request({ hostname: '127.0.0.1', port: 4321, path: p, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(d) } },
+    const r = http.request(S.base + p, { method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(d) },
+        TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}) },
       x => { let o = ''; x.on('data', c => o += c); x.on('end', () => { try { res(JSON.parse(o)); } catch (e) { rej(new Error(o.slice(0, 200))); } }); });
     r.on('error', rej); r.write(d); r.end();
   });
@@ -18,6 +22,8 @@ global.API = {
 };
 
 (async () => {
+  await S.waitReady();
+  TOKEN = await S.register();
   eval(fs.readFileSync('web/db.js', 'utf8'));
   const DB = window.DB;
   const now = Date.now();
@@ -81,5 +87,6 @@ global.API = {
   ck('G11 审计数据已清', ((await API.query('SELECT count(*) n FROM archives WHERE id=?', [aid]))[0].n) === 0);
 
   console.log('\n生成逻辑: ' + pass + ' 通过 / ' + fail + ' 失败');
+  S.stop();
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('异常:', e.message); process.exit(2); });

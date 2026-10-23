@@ -6,15 +6,32 @@
  *
  * 刻意用 XMLHttpRequest 而不是 fetch：
  *   安卓 5/6 的 WebView 内核是 Chrome 37 左右，没有 fetch。
+ *
+ * v0.3 起要登录：每个请求带 Authorization 头；401 统一踢回登录页。
  */
 (function () {
   'use strict';
+
+  var TOKEN_KEY = 'mylife.token';
+  var onUnauthorized = null;   // app.js 注入：收到 401 时跳登录页
+
+  function token() {
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+  function setToken(t) {
+    try {
+      if (t) localStorage.setItem(TOKEN_KEY, t);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+  }
 
   function post(path, body, timeoutMs) {
     return new Promise(function (resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', path, true);
       xhr.setRequestHeader('Content-Type', 'application/json');
+      var t = token();
+      if (t) xhr.setRequestHeader('Authorization', 'Bearer ' + t);
       xhr.timeout = timeoutMs || 130000;
       xhr.onreadystatechange = function () {
         if (xhr.readyState !== 4) return;
@@ -24,6 +41,13 @@
           j = JSON.parse(xhr.responseText);
         } catch (e) {
           return reject(new Error('返回的不是 JSON：' + String(xhr.responseText).slice(0, 80)));
+        }
+        if (xhr.status === 401) {
+          setToken('');
+          if (onUnauthorized) onUnauthorized();
+          var err401 = new Error((j && (j.__auth || j.message)) || '需要登录');
+          err401.unauthorized = true;
+          return reject(err401);
         }
         if (j && j.__error) return reject(new Error(j.__error));
         if (xhr.status >= 400) return reject(new Error((j && j.message) || ('HTTP ' + xhr.status)));
@@ -65,6 +89,29 @@
 
     file: function (payload) {
       return post('/api/file', payload || {});
+    },
+
+    /* ---- 账号（v0.3） ---- */
+    auth: {
+      register: function (phone, password, code, nickname) {
+        return post('/api/auth/register', { phone: phone, password: password, code: code, nickname: nickname });
+      },
+      login: function (phone, password) {
+        return post('/api/auth/login', { phone: phone, password: password });
+      },
+      logout: function () {
+        return post('/api/auth/logout', {});
+      },
+      me: function () {
+        return post('/api/auth/me', {});
+      },
+      sms: function (phone) {
+        return post('/api/auth/sms', { phone: phone });
+      },
+      token: token,
+      setToken: setToken,
+      /** app.js 注入 401 跳转回调 */
+      onUnauthorized: function (fn) { onUnauthorized = fn; }
     }
   };
 })();

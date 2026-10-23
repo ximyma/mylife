@@ -32,14 +32,21 @@ public class Db {
     private static final String DB_NAME = "archive.db";
 
     private final Context ctx;
+    private final File dbFile;
     private SQLiteDatabase db;
 
     public Db(Context ctx) {
+        this(ctx, null);
+    }
+
+    /** 指定库文件路径（v0.3 每用户一库） */
+    public Db(Context ctx, File dbFile) {
         this.ctx = ctx;
+        this.dbFile = dbFile;
     }
 
     public void open() throws Exception {
-        File f = ctx.getDatabasePath(DB_NAME);
+        File f = dbFile != null ? dbFile : ctx.getDatabasePath(DB_NAME);
         File dir = f.getParentFile();
         if (dir != null && !dir.exists()) {
             //noinspection ResultOfMethodCallIgnored
