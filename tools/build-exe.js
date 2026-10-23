@@ -28,6 +28,20 @@ fs.mkdirSync(TMP, { recursive: true });
 
 /* ---- 1. SEA 配置 ---- */
 step(1, '生成 sea 配置');
+// web/ 和 schema.sql 直接打进 exe：分发时单文件即可。
+// 磁盘上的 resources/ 仍会生成，作为"改界面不用重打包"的覆盖层。
+const assets = {};
+function addDir(rel) {
+  const dir = path.join(ROOT, rel);
+  for (const f of fs.readdirSync(dir)) {
+    const fp = path.join(dir, f);
+    if (fs.statSync(fp).isFile()) assets[rel + '/' + f] = fp;
+  }
+}
+addDir('web');
+assets['schema.sql'] = path.join(ROOT, 'server', 'schema.sql');
+console.log('  内置资产 ' + Object.keys(assets).length + ' 个（web 前端 + schema）');
+
 const cfg = path.join(TMP, 'sea-config.json');
 fs.writeFileSync(cfg, JSON.stringify({
   main: path.join(ROOT, 'server', 'server.js'),
@@ -35,7 +49,7 @@ fs.writeFileSync(cfg, JSON.stringify({
   disableExperimentalSEAWarning: true,
   useSnapshot: false,
   useCodeCache: false,
-  assets: {},            // schema.sql / web/ 作为普通文件放在 exe 旁边，不塞进 blob，方便改界面不用重打包
+  assets: assets,
 }, null, 2));
 
 execFileSync(NODE_BIN, ['--experimental-sea-config', cfg], { stdio: 'inherit' });
@@ -105,14 +119,15 @@ const readme = [
   '怎么用：双击 MyLife.exe，会自动打开浏览器；黑窗口别关，关了就停了。',
   '',
   '文件说明：',
-  '  MyLife.exe            主程序（单文件，内含 Node 运行时）',
-  '  resources/            界面文件，改一次界面不用重新打包 exe',
+  '  MyLife.exe            主程序，界面已内置，**单文件即可分发**',
+  '  resources/            可选覆盖层：想临时改界面时把新文件放进来，不用重打包',
   '  data/                 你的档案、照片、录音都存在这里，只有这个目录需要备份',
   '',
   '换端口（比如 4321 被占）：',
   '  在地址栏输入 cmd 回车，然后： set PORT=4401 && MyLife.exe',
   '',
-  '整个文件夹可以拷到别的电脑上用，数据是跟着文件夹走的。',
+  '分发给别人：只拷 MyLife.exe 一个文件就能用；',
+  '整个文件夹一起拷也行（数据是跟着文件夹走的）。',
   '要彻底卸载，删掉整个文件夹即可，不会在别处留东西。',
   '',
 ].join('\n');

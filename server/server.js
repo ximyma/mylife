@@ -30,13 +30,26 @@ const { DatabaseSync } = require('node:sqlite');
 let sea = false;
 try { sea = require('node:sea').isSea(); } catch (e) { sea = false; }
 
+/* 打包时 web/ 和 schema.sql 也被塞进了 exe（SEA assets）。
+ * 磁盘上的 resources/ 仍然优先——改完界面不用重新打包 exe；
+ * resources/ 不在（单文件分发）就退回内置版本。 */
+let assetKeys = null;
+if (sea) {
+  try { assetKeys = new Set(require('node:sea').getAssetKeys()); } catch (e) { assetKeys = null; }
+}
+function assetGet(key) {
+  if (!assetKeys || !assetKeys.has(key)) return null;
+  try { return Buffer.from(require('node:sea').getAsset(key)); } catch (e) { return null; }
+}
+
 const EXE_DIR = path.dirname(process.execPath);        // 打包后的基准目录
 const BASE = sea ? path.join(EXE_DIR, 'resources') : path.join(__dirname, '..');
 
 const ROOT = BASE;
 const WEB = path.join(ROOT, 'web');
-// 开发时 schema.sql 就躺在 server/ 里；打包后才挪到 resources/
+// 开发时 schema.sql 就躺在 server/ 里；打包后先进了 exe，resources/ 里的是可选覆盖
 const SCHEMA_FILE = sea ? path.join(BASE, 'schema.sql') : path.join(__dirname, 'schema.sql');
+const SCHEMA_EMBED = sea ? assetGet('schema.sql') : null;
 const DATA = process.env.DATA_DIR || (sea ? path.join(EXE_DIR, 'data') : path.join(ROOT, 'data'));
 const FILES = path.join(DATA, 'files');
 const PORT = Number(process.env.PORT || 4321);
@@ -56,7 +69,7 @@ db.exec('PRAGMA foreign_keys = ON');
 // schema 里全是 IF NOT EXISTS / INSERT OR IGNORE，所以每次启动都跑一遍：
 // 加新表自动生效，不需要维护迁移器。
 {
-  const schema = fs.readFileSync(SCHEMA_FILE, 'utf8');
+  const schema = SCHEMA_EMBED ? SCHEMA_EMBED.toString('utf8') : fs.readFileSync(SCHEMA_FILE, 'utf8');
   let ok = 0, all = 0;
   for (const stmt of schema.split(';')) {
     const clean = stmt.split('\n').filter(l => !l.trim().startsWith('--')).join('\n').trim();
@@ -506,10 +519,30 @@ const server = http.createServer(async (req, res) => {
 
     // 静态文件（web/）
     const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-    const abs = path.join(WEB, rel.replace(/\.\./g, ''));
+    const clean = rel.replace(/\.\./g, '');
+
+    // 内置 assets：resources/ 磁盘上没有的文件，从 exe 里取（单文件分发模式）
+    if (sea) {
+      const key = ('web/' + clean).replace(/\\/g, '/');
+      const buf = assetGet(key);
+      if (buf) {
+        const type = MIME[path.extname(key).toLowerCase()] || 'application/octet-stream';
+        res.writeHead(200, { 'content-type': type, 'content-length': buf.length, 'cache-control': 'no-cache' });
+        return res.end(buf);
+      }
+    }
+
+    const abs = path.join(WEB, clean);
     if (!abs.startsWith(WEB)) return sendText(res, 404, 'not found');
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
-      // 单页应用：未知路径回 index.html
+      // 单页应用：未知路径回 index.html（内置的也要兜住）
+      if (sea && !fs.existsSync(path.join(WEB, 'index.html'))) {
+        const idx = assetGet('web/index.html');
+        if (idx) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': idx.length, 'cache-control': 'no-cache' });
+          return res.end(idx);
+        }
+      }
       return sendFile(req, res, path.join(WEB, 'index.html'), 'no-cache');
     }
     return sendFile(req, res, abs, 'no-cache');
@@ -520,12 +553,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// 打包后 resources/ 是必须的，缺失时早一点说清楚，别让用户对着白屏猜
-if (sea && !fs.existsSync(WEB)) {
+// 打包后前端有两种来源：resources/ 磁盘（可随时改界面）或 exe 内置 assets（单文件分发）。
+// 只有两边都没有才值得报错。
+if (sea && !fs.existsSync(WEB) && !assetKeys) {
   console.error('');
-  console.error('找不到 resources/web 目录。');
-  console.error('请把 MyLife.exe 和它旁边的 resources 文件夹放在同一个目录下。');
-  console.error('当前 exe 位置：' + EXE_DIR);
+  console.error('找不到界面文件（resources/web 或内置资源都不在）。');
+  console.error('请重新运行打包：node tools/build-exe.js');
   process.exit(1);
 }
 
