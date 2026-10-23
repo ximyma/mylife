@@ -241,6 +241,197 @@
       });
     },
 
+    /* ---------------- 导出 / 导入（档案随身带走） ---------------- */
+
+    /**
+     * 导出一本档案：所有文字 + 照片/录音（base64）打包成一个 JSON。
+     * 媒体读失败不拦着——文字先保住，缺图会在导入时如实留空。
+     */
+    exportArchive: function (id) {
+      return Promise.all([
+        API.query('SELECT * FROM archives WHERE id=?', [id]),
+        API.query('SELECT * FROM chapters WHERE archive_id=? ORDER BY seq', [id]),
+        API.query('SELECT * FROM entries WHERE archive_id=? ORDER BY seq', [id]),
+        API.query('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year', [id]),
+        API.query('SELECT * FROM segments WHERE archive_id=? ORDER BY id', [id]),
+        API.query('SELECT * FROM media WHERE archive_id=?', [id])
+      ]).then(function (r) {
+        var pack = {
+          format: 'mylife-archive', version: 1,
+          exported_at: new Date().toISOString(),
+          archive: r[0][0] || null,
+          chapters: r[1], entries: r[2], photos: r[3], segments: r[4], media: r[5]
+        };
+        if (!pack.archive) return Promise.reject(new Error('找不到这本档案'));
+
+        function readB64(path) {
+          return API.file({ op: 'read', path: path }).then(function (f) { return f.base64; },
+            function () { return null; });
+        }
+        var reads = [];
+        for (var i = 0; i < pack.photos.length; i++) {
+          (function (p) {
+            reads.push(readB64(p.path).then(function (b) { p.b64 = b; }));
+          })(pack.photos[i]);
+        }
+        for (var j = 0; j < pack.segments.length; j++) {
+          (function (s) {
+            if (s.audio_path) reads.push(readB64(s.audio_path).then(function (b) { s.b64 = b; }));
+          })(pack.segments[j]);
+        }
+        for (var k = 0; k < pack.media.length; k++) {
+          (function (m) {
+            reads.push(readB64(m.path).then(function (b) { m.b64 = b; }));
+            if (m.poster) reads.push(readB64(m.poster).then(function (b) { m.poster_b64 = b; }));
+          })(pack.media[k]);
+        }
+        return Promise.all(reads).then(function () { return pack; });
+      });
+    },
+
+    /**
+     * 导入一本档案：所有 id 重新分配，媒体落成新文件。
+     * 引用关系（条目→照片/媒体、封面、章）按导出时的旧 id 一一映射回去。
+     */
+    importArchive: function (pack) {
+      if (!pack || pack.format !== 'mylife-archive' || !pack.archive) {
+        return Promise.reject(new Error('这不是本程序导出的档案文件'));
+      }
+      var self = this;
+      var a = pack.archive;
+      var stamp = Date.now();
+      var seq = 0;
+      function newName(ext) {
+        seq++;
+        return 'imp-' + stamp + '-' + seq + '.' + (ext || 'bin');
+      }
+      // dataURL 或裸 base64 -> 存盘，返回新 path
+      function saveMedia(b64, kind, ext) {
+        if (!b64) return Promise.resolve(null);
+        var raw = String(b64);
+        var comma = raw.indexOf(',');
+        if (raw.indexOf('data:') === 0 && comma > 0) raw = raw.slice(comma + 1);
+        return API.file({ op: 'save', kind: kind, name: newName(ext), base64: raw })
+          .then(function (r) { return r.path; }, function () { return null; });
+      }
+      function extOf(path, fallback) {
+        var m = /\.([a-z0-9]{2,5})$/i.exec(String(path || ''));
+        return m ? m[1] : fallback;
+      }
+
+      return API.exec(
+        'INSERT INTO archives (subject_name,birth_year,death_year,hometown,intro,status,archive_no,created_at,updated_at) ' +
+        'VALUES (?,?,?,?,?,?,?,?,?)',
+        [a.subject_name || '未命名', a.birth_year || null, a.death_year || null,
+         a.hometown || null, a.intro || null, 'ready', a.archive_no || null, nowSql(), nowSql()]
+      ).then(function (ar) {
+        var newAid = ar.lastId;
+        var chapterMap = {}, photoMap = {}, mediaMap = {}, segmentMap = {};
+
+        // 章
+        var chapterChain = Promise.resolve();
+        for (var ci = 0; ci < (pack.chapters || []).length; ci++) {
+          (function (c) {
+            chapterChain = chapterChain.then(function () {
+              return API.exec(
+                'INSERT INTO chapters (archive_id,seq,title,year_from,year_to,stage,quote,summary) VALUES (?,?,?,?,?,?,?,?)',
+                [newAid, c.seq || 10, c.title || null, c.year_from || null, c.year_to || null,
+                 c.stage || null, c.quote || null, c.summary || null]
+              ).then(function (r) { chapterMap[c.id] = r.lastId; });
+            });
+          })(pack.chapters[ci]);
+        }
+
+        return chapterChain.then(function () {
+          // 照片。导出时就没读到内容的（文件丢了），跳过而不是插一条空壳
+          var photoChain = Promise.resolve();
+          for (var pi = 0; pi < (pack.photos || []).length; pi++) {
+            (function (p) {
+              photoChain = photoChain.then(function () {
+                return saveMedia(p.b64, 'photo', extOf(p.path, 'jpg')).then(function (np) {
+                  if (!np) return null;
+                  return API.exec(
+                    'INSERT INTO photos (archive_id,path,taken_year,taken_month,taken_day,place,event,chapter_id,match_score,match_reason) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    [newAid, np, p.taken_year || null, p.taken_month || null, p.taken_day || null,
+                     p.place || '', p.event || '', p.chapter_id ? (chapterMap[p.chapter_id] || null) : null,
+                     p.match_score || null, p.match_reason || null]
+                  ).then(function (r) { photoMap[p.id] = r.lastId; });
+                });
+              });
+            })(pack.photos[pi]);
+          }
+
+          return photoChain.then(function () {
+            // 讲述（含录音）
+            var segChain = Promise.resolve();
+            for (var si = 0; si < (pack.segments || []).length; si++) {
+              (function (s) {
+                segChain = segChain.then(function () {
+                  return saveMedia(s.b64, 'audio', extOf(s.audio_path, 'wav')).then(function (np) {
+                    return API.exec(
+                      'INSERT INTO segments (archive_id,raw_text,audio_path,year_hint) VALUES (?,?,?,?)',
+                      [newAid, s.raw_text || '', np, s.year_hint || null]
+                    ).then(function (r) { segmentMap[s.id] = r.lastId; });
+                  });
+                });
+              })(pack.segments[si]);
+            }
+
+            return segChain.then(function () {
+              // 随文媒体
+              var mediaChain = Promise.resolve();
+              for (var mi = 0; mi < (pack.media || []).length; mi++) {
+                (function (m) {
+                  mediaChain = mediaChain.then(function () {
+                    return saveMedia(m.b64, m.kind || 'photo', extOf(m.path, 'bin')).then(function (np) {
+                      if (!np) return;
+                      return saveMedia(m.poster_b64, 'photo', 'jpg').then(function (nposter) {
+                        return API.exec(
+                          'INSERT INTO media (archive_id,kind,path,mime,bytes,caption,duration_ms,poster) VALUES (?,?,?,?,?,?,?,?)',
+                          [newAid, m.kind || 'photo', np, m.mime || null, m.bytes || null,
+                           m.caption || null, m.duration_ms || null, nposter]
+                        ).then(function (r) { mediaMap[m.id] = r.lastId; });
+                      });
+                    });
+                  });
+                })(pack.media[mi]);
+              }
+
+              return mediaChain.then(function () {
+                // 条目：引用全部重映射
+                var entryChain = Promise.resolve();
+                for (var ei = 0; ei < (pack.entries || []).length; ei++) {
+                  (function (e) {
+                    entryChain = entryChain.then(function () {
+                      return API.exec(
+                        'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,photo_id,media_id,segment_id,origin,edited) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                        [newAid,
+                         e.chapter_id ? (chapterMap[e.chapter_id] || null) : null,
+                         e.seq || 10, e.kind || 'text', e.text || null,
+                         e.photo_id ? (photoMap[e.photo_id] || null) : null,
+                         e.media_id ? (mediaMap[e.media_id] || null) : null,
+                         e.segment_id ? (segmentMap[e.segment_id] || null) : null,
+                         e.origin || 'ai', e.edited || 0]
+                      );
+                    });
+                  })(pack.entries[ei]);
+                }
+
+                return entryChain.then(function () {
+                  // 封面照片重映射
+                  var cover = a.cover_photo_id ? (photoMap[a.cover_photo_id] || null) : null;
+                  return API.exec('UPDATE archives SET cover_photo_id=? WHERE id=?', [cover, newAid])
+                    .then(function () { return { archiveId: newAid }; });
+                });
+              });
+            });
+          });
+        });
+      });
+    },
+
+    /* ---------------- 导出 / 导入结束 ---------------- */
+
     /* ---------------- 模型能力分类（防止给"看照片"绑一个文本模型） ---------------- */
 
     /** 模型 ID -> 用途类别。看名字猜，各家命名虽乱但关键词稳定 */
@@ -414,6 +605,51 @@
             };
           })(paths[i]));
         }
+        return chain;
+      });
+    },
+
+    /**
+     * 「传」：往某一段后面塞一张图 / 一段视频 / 一条录音。
+     * 存文件 -> 记 media -> 建一个 kind='media' 的条目排在卷宗里。
+     * chapterId 为 null 时先进「待归档」，下次生成会尝试归位。
+     */
+    addMediaEntry: function (archiveId, chapterId, kind, base64, mime, caption, ext) {
+      if (!base64) return Promise.reject(new Error('没有收到内容'));
+      var raw = String(base64);
+      var comma = raw.indexOf(',');
+      if (raw.indexOf('data:') === 0 && comma > 0) raw = raw.slice(comma + 1);
+      var name = 'up-' + Date.now() + '-' + Math.floor(Math.random() * 1000) + '.' + (ext || 'bin');
+
+      return API.file({ op: 'save', kind: kind, name: name, base64: raw }).then(function (saved) {
+        return API.exec(
+          'INSERT INTO media (archive_id,kind,path,mime,bytes,caption) VALUES (?,?,?,?,?,?)',
+          [archiveId, kind, saved.path, mime || null, saved.bytes || null, caption || null]
+        ).then(function (mr) {
+          var mid = mr.lastId;
+          // 排到该章最后；没章就归待归档
+          var seqQ = chapterId
+            ? API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE chapter_id=?', [chapterId])
+            : Promise.resolve([{ s: 10 }]);
+          return seqQ.then(function (r) {
+            return API.exec(
+              'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,media_id,origin,edited) VALUES (?,?,?,?,?,?,?,1)',
+              [archiveId, chapterId || null, r[0].s, 'media', caption || null, mid, 'user']
+            );
+          });
+        });
+      });
+    },
+
+    /** 删一个媒体型条目：条目和它引用的媒体一起清掉 */
+    deleteMediaEntry: function (entryId) {
+      var self = this;
+      return API.query('SELECT media_id FROM entries WHERE id=?', [entryId]).then(function (rows) {
+        var mid = rows.length ? rows[0].media_id : null;
+        var chain = API.exec('DELETE FROM entries WHERE id=?', [entryId]);
+        if (mid) chain = chain.then(function (r) {
+          return self.deleteMedia(mid).then(function () { return r; });
+        });
         return chain;
       });
     },

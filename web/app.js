@@ -94,7 +94,8 @@
       var cards = '';
       for (var i = 0; i < list.length; i++) {
         var a = list[i];
-        cards += '<a class="arc-card" href="#/a/' + a.id + '">' +
+        cards += '<div class="arc-wrap">' +
+          '<a class="arc-card" href="#/a/' + a.id + '">' +
           '<div class="arc-cover">' +
           (a.cover_path ? '<img src="/files/' + esc(a.cover_path) + '" alt="">' :
             '<span class="arc-empty">档案</span>') +
@@ -106,7 +107,9 @@
           (a.hometown ? ' · ' + esc(a.hometown) : '') + '</div>' +
           '<div class="arc-stat">' + a.chapter_count + ' 章 · ' + a.entry_count + ' 条 · ' +
           a.photo_count + ' 张照片</div>' +
-          '</div></a>';
+          '</div></a>' +
+          '<button class="arc-export" data-export="' + a.id + '" title="把这本档案连照片带录音存成一个文件">导出</button>' +
+          '</div>';
       }
 
       var guide = list.length ? '' :
@@ -126,10 +129,73 @@
         '<section class="arc-grid">' + cards +
         '<button class="arc-new" id="newBtn"><span>＋</span><b>新建档案</b>' +
         '<small>写下他的名字就能开始</small></button>' +
-        '</section>' + guide + '</main>';
+        '</section>' +
+        (list.length
+          ? '<div class="row end"><label class="btn tiny ghost" id="importBtn">导入档案' +
+            '<input type="file" id="importFile" accept=".json,application/json" hidden></label></div>'
+          : '') +
+        guide + '</main>';
 
       var nb = document.getElementById('newBtn');
       if (nb) nb.onclick = askNew;
+
+      /* --- 导出：打包成单文件下载（安卓走原生存到下载目录） --- */
+      var expHandler = function (ev) {
+        var b = ev.target.closest ? ev.target.closest('[data-export]') : null;
+        if (!b) return;
+        var aid = Number(b.getAttribute('data-export'));
+        b.disabled = true;
+        var old = b.textContent;
+        b.textContent = '打包中…';
+        DB.exportArchive(aid).then(function (pack) {
+          var fname = '档案-' + (pack.archive.subject_name || aid) + '-' +
+            new Date().toISOString().slice(0, 10) + '.mylife.json';
+          b.disabled = false;
+          b.textContent = old;
+          if (window.NativeIO && window.NativeIO.saveExport) {
+            // 安卓：交给原生写到下载目录
+            var ok = window.NativeIO.saveExport(JSON.stringify(pack), fname);
+            toast(ok ? '已存到手机 Download 目录' : '保存失败');
+          } else {
+            var blob = new Blob([JSON.stringify(pack)], { type: 'application/json' });
+            var a2 = document.createElement('a');
+            a2.href = URL.createObjectURL(blob);
+            a2.download = fname;
+            document.body.appendChild(a2);
+            a2.click();
+            document.body.removeChild(a2);
+            setTimeout(function () { URL.revokeObjectURL(a2.href); }, 2000);
+            toast('已导出 ' + fname);
+          }
+        }).catch(function (e) {
+          b.disabled = false;
+          b.textContent = old;
+          fail(e);
+        });
+      };
+      if (homeClickHandler) app.removeEventListener('click', homeClickHandler);
+      homeClickHandler = expHandler;
+      app.addEventListener('click', homeClickHandler);
+
+      /* --- 导入：选文件 → 解析 → 入库 → 跳过去看 --- */
+      var fin = document.getElementById('importFile');
+      if (fin) fin.onchange = function () {
+        var f = fin.files && fin.files[0];
+        if (!f) return;
+        if (f.size > 200 * 1024 * 1024) return toast('这个文件超过 200MB，先删掉一些再导');
+        var reader = new FileReader();
+        reader.onload = function () {
+          var pack;
+          try { pack = JSON.parse(String(reader.result)); }
+          catch (e) { return toast('文件读不出来，不是完整的导出文件'); }
+          toast('正在导入……');
+          DB.importArchive(pack).then(function (r) {
+            toast('导入完成，去验收');
+            go('#/a/' + r.archiveId);
+          }).catch(fail);
+        };
+        reader.readAsText(f);
+      };
     }).catch(function (e) {
       app.innerHTML = topbar() + '<main class="wrap"><div class="empty">读不出来：' +
         esc(e.message) + '</div></main>';
@@ -333,6 +399,11 @@
         }).catch(fail);
         return;
       }
+      if ((b = t.closest('[data-entry-upload]'))) {
+        var ch = b.getAttribute('data-ch');
+        uploadToEntry(id, ch ? Number(ch) : null, route);
+        return;
+      }
       if ((b = t.closest('[data-ch-edit]'))) {
         var chid = Number(b.getAttribute('data-ch-edit'));
         var el = document.querySelector('[data-ch-title="' + chid + '"]');
@@ -349,8 +420,42 @@
     app.addEventListener('click', archiveClickHandler);
   }
 
-  function renderEntry(e) {
-    if (e.kind === 'photo') {
+  /**
+   * 「传」的公共流程：选图片/视频/录音 → 存盘 → 记 media → 插一条媒体条目。
+   * 图片压到 1600px 再存，视频录音原样收（上限 80MB）。
+   */
+  function uploadToEntry(aid, chapterId, done) {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*,video/*,audio/*';
+    inp.onchange = function () {
+      var f = inp.files && inp.files[0];
+      if (!f) return;
+      var kind = /^image/.test(f.type) ? 'photo'
+        : /^video/.test(f.type) ? 'video'
+        : /^audio/.test(f.type) ? 'audio' : null;
+      if (!kind) return toast('只能传图片、视频或录音');
+
+      if (kind === 'photo') {
+        compress(f, function (dataUrl) {
+          DB.addMediaEntry(aid, chapterId, 'photo', dataUrl, 'image/jpeg', f.name, 'jpg')
+            .then(function () { toast('传好了'); done(); }).catch(fail);
+        });
+        return;
+      }
+      if (f.size > 80 * 1024 * 1024) return toast('超过 80MB，传不动，换小一点的');
+      var reader = new FileReader();
+      reader.onload = function () {
+        var ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'bin';
+        DB.addMediaEntry(aid, chapterId, kind, String(reader.result), f.type, f.name, ext)
+          .then(function () { toast('传好了，正在排进档案'); done(); }).catch(fail);
+      };
+      reader.readAsDataURL(f);
+    };
+    inp.click();
+  }
+
+  function renderEntry(e) {    if (e.kind === 'photo') {
       return '<figure class="ph">' +
         '<img src="/files/' + esc(e.photo_path || '') + '" alt="" loading="lazy">' +
         '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
@@ -373,7 +478,7 @@
       return '<div class="md">' + inner +
         (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') + '</div>';
     }
-    // 文字条目：可就地改，可删
+    // 文字条目：可就地改，可删，还能往后面传图片/视频/录音
     if (isEdit('entry', e.id)) {
       return '<div class="en editing">' +
         '<textarea class="say mini" data-entry-text="' + e.id + '">' + esc(e.text) + '</textarea>' +
@@ -384,6 +489,8 @@
     return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
       '<div class="en-acts">' +
       '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
+      '<button class="linkbtn" data-entry-upload="' + e.id + '" data-ch="' +
+        (e.chapter_id || '') + '">传</button>' +
       '<button class="linkbtn danger-t" data-entry-del="' + e.id + '">删</button>' +
       '</div></div>';
   }
@@ -431,6 +538,7 @@
               (pending ? '转成文字' : '再转一次') + '</button>'
             : '') +
           '<button class="btn tiny" data-seg-edit="' + s.id + '">改</button>' +
+          '<button class="btn tiny" data-seg-upload="' + s.id + '">传</button>' +
           '<button class="btn tiny danger" data-seg-del="' + s.id + '">删</button>' +
           '</div></div>';
       }
@@ -744,6 +852,14 @@
         DB.deleteSegment(dseg).then(function () { toast('已删除'); route(); }).catch(fail);
         return;
       }
+      /* 采集页的「传」：媒体先进待归档，生成档案时归位 */
+      if ((b = t.closest('[data-seg-upload]'))) {
+        uploadToEntry(id, null, function () {
+          toast('传好了，生成档案时会排进卷宗');
+          route();
+        });
+        return;
+      }
       if ((b = t.closest('[data-ph-del]'))) {
         var dph = Number(b.getAttribute('data-ph-del'));
         if (!confirm('删掉这张照片？删了就找不回来了。')) return;
@@ -858,6 +974,7 @@
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
   var archiveClickHandler = null;    // 同上，卷宗页的改与删
+  var homeClickHandler = null;       // 同上，首页的导出
 
   /* 就地编辑：哪一条正在被改。type 为 seg / photo / entry / chapter，null 表示没在改 */
   var editState = { type: null, id: null };

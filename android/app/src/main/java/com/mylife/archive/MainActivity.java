@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
@@ -196,6 +197,47 @@ public class MainActivity extends Activity {
         });
 
         web.addJavascriptInterface(new TtsBridge(), "NativeTTS");
+        web.addJavascriptInterface(new NativeIO(), "NativeIO");
+    }
+
+    /* ---------------- 导出桥 ---------------- */
+
+    /** 档案导出：JS 把整包 JSON 递过来，落到手机的 Download 目录，文件管理器里能直接看到 */
+    public class NativeIO {
+
+        @JavascriptInterface
+        public boolean saveExport(String json, String filename) {
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename);
+                    cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json");
+                    Uri uri = getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) return false;
+                    java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+                    os.write(json.getBytes("UTF-8"));
+                    os.flush();
+                    os.close();
+                    toastIt("已保存到 Download/" + filename);
+                    return true;
+                }
+                File dir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                File f = new File(dir, filename);
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                fos.write(json.getBytes("UTF-8"));
+                fos.flush();
+                fos.close();
+                toastIt("已保存到 " + f.getAbsolutePath());
+                return true;
+            } catch (Exception e) {
+                Log.w("NativeIO", "saveExport 失败", e);
+                toastIt("保存失败：" + e.getMessage());
+                return false;
+            }
+        }
     }
 
     @Override
