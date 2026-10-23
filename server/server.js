@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.3.3';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.3.4';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -477,14 +477,78 @@ async function apiAiModels(body) {
 }
 
 /** 测试连通性：发一句最短的话 */
+/** 1 秒静音 WAV（16k 单声道 16bit）：只用来探测转写接口通不通，内容不重要 */
+function tinyWav(seconds) {
+  const rate = 16000;
+  const n = Math.round(rate * (seconds || 1));
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0, 'ascii');
+  buf.writeUInt32LE(36 + n * 2, 4);
+  buf.write('WAVE', 8, 'ascii');
+  buf.write('fmt ', 12, 'ascii');
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36, 'ascii');
+  buf.writeUInt32LE(n * 2, 40);
+  return buf;
+}
+
+/** 转写模型报"不存在"时，给一句能照着做的建议 */
+function asrModelHint(model) {
+  const m = String(model || '');
+  if (/siliconflow/i.test(m) || /qwen3-asr|qwen.*asr/i.test(m)) {
+    return '这个模型不支持转写接口。硅基流动免费能转写的只有 FunAudioLLM/SenseVoiceSmall 和 TeleAI/TeleSpeechASR，换成它们。';
+  }
+  return '换个语音模型试试：硅基流动 FunAudioLLM/SenseVoiceSmall（免费）、TeleAI/TeleSpeechASR（免费）、智谱 glm-asr-2512、Groq whisper-large-v3-turbo。';
+}
+
+/** 语音环节的真实试跑：发 1 秒静音到 /audio/transcriptions，HTTP 200 即通过 */
+async function testAsr(profile, useModel, t0) {
+  const form = new FormData();
+  form.set('file', new Blob([tinyWav(1)], { type: 'audio/wav' }), 'probe.wav');
+  form.set('model', useModel);
+  try {
+    const r = await fetchJson(endpointOf(profile) + '/audio/transcriptions', {
+      method: 'POST',
+      headers: profile.api_key ? { authorization: 'Bearer ' + profile.api_key } : {},
+      body: form,
+    }, 60000);
+    const ms = Date.now() - t0;
+    if (!r.ok) {
+      const body0 = String(r.text || '').slice(0, 200);
+      const missing = /20012|does not exist|model[_ ]?not[_ ]?found|invalid model/i.test(body0);
+      return {
+        ok: false, ms, status: r.status, model: useModel,
+        message: `HTTP ${r.status}：${body0}` + (missing ? '\n→ ' + asrModelHint(useModel) : ''),
+      };
+    }
+    return {
+      ok: true, ms, model: useModel,
+      reply: '转写接口可用（发了一段静音测试音）',
+    };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, message: '连不上：' + (e.message || e) };
+  }
+}
+
 async function apiAiTest(body) {
   const pick = pickProfile(body);
   if (!pick) return { ok: false, message: '还没有可用的模型配置' };
   const { profile, model } = pick;
-  const useModel = model || profile.default_model;
+  const useModel = body.model || model || profile.default_model;
   if (!useModel) return { ok: false, message: '这条配置还没选模型' };
 
   const t0 = Date.now();
+
+  // 语音模型不能用对话接口试——ASR 模型在 /chat/completions 上必然报
+  // "Model does not exist"，看起来像配置错了，其实是用错了接口。
+  // 这里真发一段 1 秒静音 WAV 到 /audio/transcriptions：HTTP 200 就算通。
+  if (body.slot === 'asr') return await testAsr(profile, useModel, t0);
   try {
     const r = await fetchJson(endpointOf(profile) + '/chat/completions', {
       method: 'POST',
@@ -598,7 +662,8 @@ async function apiAsr(body) {
   const pick = pickProfile({ slot: 'asr', profileId: body.profileId });
   if (!pick) return { ok: false, message: '没有可用的语音模型。去设置里给「语音转文字」绑一条配置。' };
   const { profile, model } = pick;
-  const useModel = model || body.model || profile.default_model;
+  // body.model 优先：前端在"模型不存在"时会显式换一个模型重试
+  const useModel = body.model || model || profile.default_model;
   if (!useModel) return { ok: false, message: '这条配置还没选模型' };
 
   // 超过 25MB 的服务端通常不接受，提前说清楚而不是让人干等
@@ -631,7 +696,12 @@ async function apiAsr(body) {
     const ms = Date.now() - t0;
 
     if (!r.ok) {
-      return { ok: false, ms, message: `HTTP ${r.status}：${String(r.text).slice(0, 200)}` };
+      const body0 = String(r.text || '').slice(0, 200);
+      const missing = /20012|does not exist|model[_ ]?not[_ ]?found|invalid model/i.test(body0);
+      return {
+        ok: false, ms, model: useModel,
+        message: `HTTP ${r.status}：${body0}` + (missing ? '\n→ ' + asrModelHint(useModel) : ''),
+      };
     }
     const text = (r.json && (r.json.text || r.json.transcript)) || '';
     if (!String(text).trim()) {

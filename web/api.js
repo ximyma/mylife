@@ -59,9 +59,36 @@
     });
   }
 
+  /**
+   * 安卓端 SQLite 读出来的每一列都是字符串（Cursor.getString），
+   * 电脑端 node:sqlite 给的是数字。于是 profiles[i].id === 1 这种比较
+   * 在手机上永远是 false——「改配置」「删档案」点了没反应就是这么来的。
+   *
+   * 与其在每个调用点写 String()，不如在唯一入口把数字型的列还原成数字：
+   * 两边数据形状一致，后面就不会再踩同一个坑。
+   */
+  var NUM_FIELD = /^(id|uid|seq|sort|enabled|.*_id|.*_count|.*_year|year|year_from|year_to|taken_year|birth_year|death_year|width|height|bytes|size)$/;
+
+  function normalizeRows(rows) {
+    if (!Array.isArray(rows)) return rows;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r || typeof r !== 'object') continue;
+      for (var k in r) {
+        if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+        if (!NUM_FIELD.test(k)) continue;
+        var v = r[k];
+        if (typeof v !== 'string' || v === '') continue;
+        if (/^-?\d+$/.test(v)) { r[k] = Number(v); continue; }
+        if (/^-?\d+\.\d+$/.test(v)) r[k] = Number(v);
+      }
+    }
+    return rows;
+  }
+
   window.API = {
     query: function (sql, params) {
-      return post('/api/query', { sql: sql, params: params || [] });
+      return post('/api/query', { sql: sql, params: params || [] }).then(normalizeRows);
     },
     exec: function (sql, params) {
       return post('/api/exec', { sql: sql, params: params || [] });

@@ -191,6 +191,28 @@ public final class Ai {
 
     /* ================= 测试 ================= */
 
+    /** 1 秒静音 WAV（16k 单声道 16bit）：只用来探转写接口通不通，内容无所谓 */
+    private static byte[] tinyWav(int seconds) {
+        int rate = 16000;
+        int n = rate * Math.max(1, seconds);
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(44 + n * 2);
+        b.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put("RIFF".getBytes());
+        b.putInt(36 + n * 2);
+        b.put("WAVE".getBytes());
+        b.put("fmt ".getBytes());
+        b.putInt(16);
+        b.putShort((short) 1);
+        b.putShort((short) 1);
+        b.putInt(rate);
+        b.putInt(rate * 2);
+        b.putShort((short) 2);
+        b.putShort((short) 16);
+        b.put("data".getBytes());
+        b.putInt(n * 2);
+        return b.array();
+    }
+
     public static String test(Context ctx, Db db, String payload) {
         long t0 = System.currentTimeMillis();
         try {
@@ -199,6 +221,36 @@ public final class Ai {
             if (p == null) return msg(false, "还没有可用的模型配置");
             String model = modelOf(p);
             if (model.length() == 0) return msg(false, "这条配置还没选模型");
+
+            // 语音模型不能拿对话接口试：ASR 模型在 /chat/completions 上一律
+            // "Model does not exist"，看着像配置错，其实是接口用错了。
+            // 这里真发 1 秒静音 WAV 到 /audio/transcriptions，HTTP 200 就算通。
+            if ("asr".equals(in.optString("slot", ""))) {
+                JSONObject fields = new JSONObject();
+                fields.put("model", model);
+                JSONObject r2 = callMultipart(base(p) + "/audio/transcriptions",
+                        p.optString("api_key", ""), tinyWav(1), "file", "probe.wav",
+                        "audio/wav", fields, T_TEST);
+                long ms2 = System.currentTimeMillis() - t0;
+                int st2 = r2.optInt("status", -1);
+                if (st2 != 200) {
+                    String body2 = shorten(r2.optString("text"), 200);
+                    String hint = "";
+                    if (body2.matches("(?s).*(20012|does not exist|model_not_found|invalid model).*")) {
+                        hint = "\n→ 这个模型不支持转写接口。硅基流动免费能转写的只有 "
+                                + "FunAudioLLM/SenseVoiceSmall 和 TeleAI/TeleSpeechASR。";
+                    }
+                    JSONObject o = msgObj(false, "HTTP " + st2 + "：" + body2 + hint);
+                    o.put("ms", ms2);
+                    return o.toString();
+                }
+                JSONObject o = msgObj(true, "转写接口可用");
+                o.put("ms", ms2);
+                o.put("model", model);
+                o.put("profile", p.optString("name", ""));
+                o.put("reply", "转写接口可用（发了一段静音测试音）");
+                return o.toString();
+            }
 
             JSONObject body = new JSONObject();
             body.put("model", model);

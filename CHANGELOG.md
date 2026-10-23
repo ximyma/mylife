@@ -2,6 +2,28 @@
 
 格式参考「Keep a Changelog」；版本号：主.次.修订。
 
+## v0.3.4 · 2026-10-23 —— 配置改不动 / 转写模型报 20012
+
+### 修复
+- **安卓端「改」配置按钮点了没反应（删了重加才行）**：安卓 SQLite 读出来的每一列都是字符串
+  （`Cursor.getString`），电脑端 `node:sqlite` 给的是数字。于是 `profiles[i].id === 1` 在手机上
+  永远为 false，点了什么都不会发生。现在在 `API.query` 这唯一入口把数值列还原成数字，两端数据
+  形状一致；比较也改为比字符串兜底。**同一个坑还压着「删除整本档案」**（`list[li].id === did`
+  不中 → 直接 return），一并修好。
+- **语音转文字报 `HTTP 400 {"code":20012,"message":"Model does not exist"}`**：硅基流动的
+  `Qwen/Qwen3-ASR-1.7B` 确实挂在模型列表里，但 `/v1/audio/transcriptions` 只收
+  `FunAudioLLM/SenseVoiceSmall` 和 `TeleAI/TeleSpeechASR`——自动配环节时按关键词选中了前者，
+  于是怎么点都转不出来。现在：
+  - 转写遇到"模型不存在"会自动在同一家配置里换一个能用的转写模型重试一次，并在提示里说明换成了哪个；
+  - 设置页对这类模型直接显示红字警告 + 「改用 SenseVoice（免费）」一键按钮；
+  - 自动配环节的语音候选顺序改成按"转写接口真能收"来排，Qwen3-ASR 垫底。
+- **语音环节的「试一下」永远报 400**：以前拿 `/chat/completions` 去测 ASR 模型，接口本身就接不了。
+  改为真发 1 秒静音 WAV 到 `/audio/transcriptions`，HTTP 200 即通过；失败时给出可照做的建议。
+
+### 新增
+- 平台预设增加 **智谱 bigmodel**（`glm-asr-2512`，≤30 秒/25MB）与 **Groq**（`whisper-large-v3-turbo`，免费 8 小时/天）；
+- 语音转文字提示里直接写明哪几个模型能走转写接口。
+
 ## v0.3.3 · 2026-10-23 —— 安卓录音改走原生，麦克风"没权限"根治
 
 ### 修复

@@ -156,6 +156,48 @@
     return { score: score, reason: why.join('；') };
   }
 
+  /* ---------------- 语音转文字：模型可用性判断 ---------------- */
+
+  /**
+   * 转写接口不认这个模型（硅基流动的 Qwen3-ASR 就是这种：
+   * 模型列表里有，但它只在别的接口上；/audio/transcriptions 只收
+   * FunAudioLLM/SenseVoiceSmall 和 TeleAI/TeleSpeechASR）。
+   */
+  function isModelMissing(r) {
+    var s = String((r && (r.message || r.text)) || '');
+    return /20012|does not exist|model[_ ]?not[_ ]?found|invalid model|不存在的模型|模型不存在/i.test(s);
+  }
+
+  /** 转写模型优先级：免费的、实测能走 /audio/transcriptions 的排前面 */
+  var ASR_RANK = [
+    /sensevoice/i,
+    /teleaaisr|telespeech/i,
+    /whisper-large-v3-turbo/i,
+    /whisper/i,
+    /glm-asr/i,
+    /paraformer|funasr/i,
+    /qwen3-asr/i
+  ];
+
+  function asrScore(id) {
+    var s = String(id || '');
+    for (var i = 0; i < ASR_RANK.length; i++) if (ASR_RANK[i].test(s)) return i;
+    return 99;
+  }
+
+  /** 从一串候选里挑最可能能用的转写模型（排除当前失败的那个） */
+  function asrFallbackOf(models, current) {
+    var best = null, bestScore = 999;
+    for (var i = 0; i < models.length; i++) {
+      var id = String(models[i] || '');
+      if (!id || id === current) continue;
+      if (!/asr|whisper|sensevoice|teleai|telespeech|paraformer|funasr/i.test(id)) continue;
+      var sc = asrScore(id);
+      if (sc < bestScore) { bestScore = sc; best = id; }
+    }
+    return best;
+  }
+
   var DB = {
 
     /* ---------------- 档案 ---------------- */
@@ -454,7 +496,7 @@
     isFreeModel: function (id) {
       var s = String(id || '');
       if (/^Pro\//.test(s)) return false;          // Pro 前缀是付费加速版
-      return /hunyuan-mt|qwen3-8b$|qwen3\.5-4b$|deepseek-ocr|qwen3-asr|glm-4-9b|kolors|cosyvoice|sensevoice|bge-|r1-0528-qwen3-8b/i.test(s);
+      return /hunyuan-mt|qwen3-8b$|qwen3\.5-4b$|deepseek-ocr|qwen3-asr|glm-4-9b|kolors|cosyvoice|sensevoice|teleai|telespeech|whisper|glm-asr|bge-|r1-0528-qwen3-8b/i.test(s);
     },
 
     /**
@@ -474,7 +516,12 @@
         var WANT = {
           title: ['tencent/Hunyuan-MT-7B', 'Qwen/Qwen3-8B'],
           vision: ['deepseek-ai/DeepSeek-OCR'],
-          asr: ['Qwen/Qwen3-ASR-1.7B', 'FunAudioLLM/SenseVoiceSmall']
+          // 转写接口能收的模型很少：硅基流动只有 SenseVoiceSmall / TeleSpeechASR。
+          // Qwen3-ASR 虽然挂在模型列表里，但 /audio/transcriptions 会报
+          // "Model does not exist"（v0.3.4 实测），所以排到最后。
+          asr: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR',
+                'whisper-large-v3-turbo', 'whisper-large-v3', 'glm-asr-2512',
+                'Qwen/Qwen3-ASR-1.7B']
         };
         var KIND = { title: 'text', vision: 'vision', asr: 'asr' };
         var done = [];
@@ -696,17 +743,51 @@
      * 原来存放的占位文本（"待转写"）会被替换掉；已经有字的则拼在后面。
      */
     transcribe: function (segId, opts) {
+      var o = opts || {};
       return API.query('SELECT * FROM segments WHERE id=?', [segId]).then(function (rows) {
         if (!rows.length) return Promise.reject(new Error('找不到这段讲述'));
         var seg = rows[0];
         if (!seg.audio_path) return Promise.reject(new Error('这段没有录音可以转'));
 
-        return API.asr({
-          path: seg.audio_path,
-          slot: 'asr',        // 默认用「语音转文字」绑的那条；显式 profileId 时以它为准
-          profileId: (opts && opts.profileId) || null,
-          model: (opts && opts.model) || null,
-          language: (opts && opts.language) || null,
+        function call(model, pid) {
+          return API.asr({
+            path: seg.audio_path,
+            slot: 'asr',      // 默认用「语音转文字」绑的那条；显式 model/profileId 时以它们为准
+            profileId: pid || o.profileId || null,
+            model: model || o.model || null,
+            language: o.language || null,
+          });
+        }
+
+        /** 同一家配置里换一个转写模型：硅基流动的 Qwen3-ASR 在转写接口上不存在 */
+        function fallback() {
+          return API.query(
+            'SELECT p.id, p.name, p.base_url, p.models_json FROM ai_slots s ' +
+            'JOIN ai_profiles p ON p.id = s.profile_id WHERE s.slot=?', ['asr'])
+            .then(function (ps) {
+              if (!ps.length) return null;
+              var ms = [];
+              try { ms = JSON.parse(ps[0].models_json || '[]'); } catch (e) { ms = []; }
+              var fb = asrFallbackOf(ms, o.model || '');
+              // 拉过模型清单就按清单挑；没拉过（或清单里没语音模型）时，
+              // 硅基流动就认准这一个——它家的免费转写一直是 SenseVoiceSmall
+              if (!fb && /siliconflow/i.test(String(ps[0].base_url || ''))) {
+                fb = 'FunAudioLLM/SenseVoiceSmall';
+              }
+              return fb ? { model: fb, profileId: ps[0].id, name: ps[0].name } : null;
+            });
+        }
+
+        return call(null).then(function (r) {
+          if (r && r.ok) return r;
+          if (!isModelMissing(r)) return r;
+          return fallback().then(function (fb) {
+            if (!fb) return r;
+            return call(fb.model, fb.profileId).then(function (r2) {
+              if (r2 && r2.ok) { r2.switched = fb.model; return r2; }
+              return r;      // 换了也不行，报原来的错更有参考价值
+            });
+          });
         }).then(function (r) {
           if (!r.ok) return r;
           var old = String(seg.raw_text || '');
@@ -714,7 +795,7 @@
           var merged = isPlaceholder ? r.text : old + '\n' + r.text;
           return API.exec('UPDATE segments SET raw_text=?, year_hint=? WHERE id=?',
             [merged, findYear(merged) || seg.year_hint, segId]).then(function () {
-            return { ok: true, ms: r.ms, model: r.model, text: r.text, merged: merged };
+            return { ok: true, ms: r.ms, model: r.model, text: r.text, merged: merged, switched: r.switched || null };
           });
         });
       });

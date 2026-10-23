@@ -254,7 +254,7 @@
         if ((b = t.closest('[data-arc-del]'))) {
           var did = Number(b.getAttribute('data-arc-del'));
           var card = null;
-          for (var li = 0; li < list.length; li++) if (list[li].id === did) card = list[li];
+          for (var li = 0; li < list.length; li++) if (String(list[li].id) === String(did)) card = list[li];
           if (!card) return;
           var warn = '整本删除「' + card.subject_name + '」？\n\n' +
             '包含 ' + card.chapter_count + ' 章、' + card.entry_count + ' 条内容、' +
@@ -1083,7 +1083,8 @@
             b.textContent = label;
             return;
           }
-          toast('转好了（' + (r.ms / 1000).toFixed(1) + 's）：' + String(r.text).slice(0, 20));
+          toast('转好了（' + (r.ms / 1000).toFixed(1) + 's' +
+            (r.switched ? '，已自动改用 ' + r.switched : '') + '）：' + String(r.text).slice(0, 20));
           route();   // 重画整页，把转出来的文字显示出来
         }).catch(function (e) {
           toast(e.message || '转不出来');
@@ -1238,6 +1239,8 @@
     { k: 'openai', label: 'OpenAI 兼容', base: 'https://api.openai.com/v1', key: true },
     { k: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com/v1', key: true },
     { k: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1', key: true },
+    { k: 'zhipu', label: '智谱 bigmodel', base: 'https://open.bigmodel.cn/api/paas/v4', key: true },
+    { k: 'groq', label: 'Groq（需外网）', base: 'https://api.groq.com/openai/v1', key: true },
     { k: 'ollama', label: '本机 Ollama', base: 'http://127.0.0.1:11434/v1', key: false },
     { k: 'custom', label: '自定义 / 内网', base: '', key: true }
   ];
@@ -1246,7 +1249,7 @@
   // 后面各家是实测能领到免费额度、且接口与本项目兼容的。
   var SIGNUP = [
     { name: '硅基流动', url: 'https://cloud.siliconflow.cn/i/oSZ7RcMc',
-      note: '免费档常驻模型：DeepSeek-OCR（看图）、Qwen3-ASR-1.7B（转文字）、Hunyuan-MT-7B（写稿）、Qwen3-8B', star: true },
+      note: '免费档常驻模型：SenseVoiceSmall / TeleSpeechASR（语音转文字）、DeepSeek-OCR（看图）、Hunyuan-MT-7B（写稿）、Qwen3-8B', star: true },
     { name: '腾讯云混元', url: 'https://curl.qcloud.com/ofeR1Flf',
       note: '首次开通送 100 万 tokens（含 hunyuan-turbos-vision 等多模态），有效期 1 年；hunyuan-lite 永久免费' },
     { name: '智谱 bigmodel', url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
@@ -1258,7 +1261,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.3.3';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.3.4';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1335,8 +1338,8 @@
           rec: ['deepseek-ai/DeepSeek-OCR'],
           hint: '认老照片上的字和场景，必须用看图的模型' },
         { k: 'asr', label: '语音转文字', kind: 'asr',
-          rec: ['Qwen/Qwen3-ASR-1.7B', 'FunAudioLLM/SenseVoiceSmall'],
-          hint: '录音转文字，必须用语音模型' },
+          rec: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR', 'glm-asr-2512', 'whisper-large-v3-turbo'],
+          hint: '能走转写接口的模型不多：SenseVoiceSmall、TeleSpeechASR（硅基流动免费）、glm-asr-2512、whisper-large-v3' },
         { k: 'img', label: '图片生成（预留）', kind: 't2i',
           rec: ['Kwai-Kolors/Kolors'],
           hint: '文生图，功能快来了，先配好备用。Kolors 免费' },
@@ -1455,6 +1458,17 @@
             esc(mid) + (DB.isFreeModel(mid) ? ' · 免费' : ' · 付费') + '</option>';
         }
 
+        // 硅基流动的 Qwen3-ASR 挂在模型列表里，但 /audio/transcriptions 不认它
+        // （实测报 20012 Model does not exist）。光看下拉是发现不了这件事的，
+        // 所以直接把警告和"一键换掉"摆在当前模型旁边。
+        var asrWarn = '';
+        if (sl.k === 'asr' && bound.model && /qwen3-asr|omni/i.test(bound.model)) {
+          asrWarn = '<small class="slot-warn" style="display:block;color:#c0392b;margin-top:4px">' +
+            '这个模型在转写接口上会报「Model does not exist」' +
+            '<button class="btn tiny" data-asr-fix="' + esc(String(bound.profile_id || '')) + '">' +
+            '改用 SenseVoice（免费）</button></small>';
+        }
+
         html += '<div class="slot-row" data-slot="' + sl.k + '">' +
           '<div class="slot-label"><b>' + esc(sl.label) + '</b>' +
           // 正在用什么模型，直接摆在明面上，不用去下拉里翻
@@ -1462,7 +1476,7 @@
             ? '<small class="slot-now">当前：<code>' + esc(bound.model) + '</code>' +
               (DB.isFreeModel(bound.model) ? '（免费）' : '（<b>付费</b>）') + '</small>'
             : '') +
-          '<small>' + esc(sl.hint) + '</small></div>' +
+          '<small>' + esc(sl.hint) + '</small>' + asrWarn + '</div>' +
           '<select class="slot-pick">' + opts + '</select>' +
           '<select class="slot-model">' + mopts + '</select>' +
           (sl.k === 'title' || sl.k === 'vision' || sl.k === 'asr'
@@ -1528,12 +1542,16 @@
       if ((t = ev.target.closest('[data-edit]'))) {
         var id = Number(t.getAttribute('data-edit'));
         for (var i = 0; i < profiles.length; i++) {
-          if (profiles[i].id === id) {
+          // 比字符串：安卓端读出来的 id 曾是字符串，用 === 比数字永远不中，
+          // 表现就是「点改没反应」
+          if (String(profiles[i].id) === String(id)) {
             editing = profiles[i];
             showProfileForm(profiles[i]);
             return;
           }
         }
+        toast('没找到这条配置，刷新一下再试');
+        return;
       }
 
       if ((t = ev.target.closest('[data-del]'))) {
@@ -1598,6 +1616,30 @@
             t.textContent = '拉模型';
           }
         }).catch(function (e) { fail(e); t.disabled = false; t.textContent = '拉模型'; });
+        return;
+      }
+
+      if ((t = ev.target.closest('[data-asr-fix]'))) {
+        var fpid = Number(t.getAttribute('data-asr-fix')) || null;
+        t.disabled = true;
+        t.textContent = '正在换…';
+        DB.listProfiles().then(function (ps) {
+          var want = 'FunAudioLLM/SenseVoiceSmall';
+          for (var i = 0; i < ps.length; i++) {
+            if (fpid && String(ps[i].id) !== String(fpid)) continue;
+            var ml = [];
+            try { ml = JSON.parse(ps[i].models_json || '[]'); } catch (e) {}
+            for (var j = 0; j < ml.length; j++) {
+              if (/sensevoice/i.test(ml[j])) { want = ml[j]; break; }
+            }
+          }
+          return DB.setSlot('asr', fpid, want).then(function () { return want; });
+        }).then(function (w) {
+          toast('已改用 ' + w);
+          renderSettings();
+        }).catch(function (e) {
+          fail(e); t.disabled = false; t.textContent = '改用 SenseVoice（免费）';
+        });
         return;
       }
 
