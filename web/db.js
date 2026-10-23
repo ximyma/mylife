@@ -205,11 +205,17 @@
     listArchives: function () {
       // 不用 json_group_array/json_object：安卓系统 SQLite 没编译 JSON1 扩展
       //（no such function），编辑档案时需要的照片清单改为打开编辑态时按需查询
+      // cover_path 之前漏查了，首页档案卡一直显示占位文字「档案」；
+      // 优先用用户指定的封面照，没指定就退回最早的那张。
       return API.query(
         'SELECT a.*, ' +
         '(SELECT COUNT(*) FROM chapters c WHERE c.archive_id=a.id) AS chapter_count, ' +
         '(SELECT COUNT(*) FROM entries e WHERE e.archive_id=a.id) AS entry_count, ' +
-        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count ' +
+        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count, ' +
+        'COALESCE(' +
+        '(SELECT p.path FROM photos p WHERE p.id=a.cover_photo_id), ' +
+        '(SELECT p.path FROM photos p WHERE p.archive_id=a.id ORDER BY p.taken_year LIMIT 1)' +
+        ') AS cover_path ' +
         'FROM archives a WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC', []);
     },
 

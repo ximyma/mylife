@@ -1,10 +1,11 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.4.0 · 里程碑 2**（2026-10-23）
+**当前版本 v0.4.1 · 里程碑 2**（2026-10-23）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)
 
-> **里程碑 1（v0.2）**：一个人在一台电脑上把档案做出来。>   
+> **里程碑 1（v0.2）**：一个人在一台电脑上把档案做出来。
+>   
 > **里程碑 2（v0.4）**：换到手机上也能完整走完，而且一家人各用各的 —— **已在小米 9、荣耀 50 两台真机全链路实测通过。**
 
 一个人，一本档案。老人把一生讲出来，系统自动排成有封面、有目录、有时间轴的卷宗。
@@ -15,7 +16,8 @@
 
 - **手机号注册登录**，每个账号一个独立数据库（`data/users/<uid>/archive.db`），**数据物理隔离**，换账号看不到别人的
 - 讲述、照片、条目、章、整本档案**全可改可删**
-- **录音 → 试听 → 转文字**：安卓走原生 `AudioRecord`（绕开 WebView 权限问题），网页走 `getUserMedia`；    
+- **录音 → 试听 → 转文字**：安卓走原生 `AudioRecord`（绕开 WebView 权限问题），网页走 `getUserMedia`；
+    
   转写走免费语音模型，模型不存在会**自动换一个**
 - 一键**导出 / 导入**：整本档案装进一个 `.mylife.json`，换机、备份、分享都靠它
 - 每段后面可**传**图片 / 视频 / 录音，直接排进卷宗
@@ -36,12 +38,14 @@ dist/win/
 └── 使用说明.txt
 ```
 
-**分发给别人：只拷 `MyLife.exe` 一个文件就能用**（界面已内置）。  
+**分发给别人：只拷 `MyLife.exe` 一个文件就能用**（界面已内置）。
+  
 端口被占时换一个：`set PORT=4401 && MyLife.exe`。卸载就是删文件夹。
 
 ### 安卓
 
-装 `dist/MyLife-v0.4.0-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。  
+装 `dist/MyLife-v0.4.1-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。
+  
 首次打开会申请麦克风权限；登录后一切在本地跑，不联网也能用（除了调模型）。
 
 ### 改代码
@@ -119,7 +123,8 @@ ANDROID_HOME D:\androidsdk\android-sdk-windows
 GRADLE_HOME  D:\gradle-8.7
 ```
 
-> 内存紧张时 Gradle 会报 `os::commit_memory failed`。构建期间别同时开无头浏览器审计，>   
+> 内存紧张时 Gradle 会报 `os::commit_memory failed`。构建期间别同时开无头浏览器审计，
+>   
 > 并给 Gradle 小堆：`-Xmx512m -XX:MaxMetaspaceSize=256m -XX:+UseSerialGC`。
 
 ---
@@ -147,7 +152,8 @@ SQL 写死在 `web/db.js` 里，前端只传参数值，全部走 `?` 绑定。�
 
 ### 3. 数据隔离靠物理分库，不靠 WHERE
 
-每个用户在磁盘上有自己的一套 `archive.db` + `files/`，请求进来先验 token 拿 `uid`，  
+每个用户在磁盘上有自己的一套 `archive.db` + `files/`，请求进来先验 token 拿 `uid`，
+  
 再用 `AsyncLocalStorage`（Node）/ `Map<Long, Db>`（安卓）把**当前请求该用哪个库**注入进去。
 
 业务 SQL 里**一句 `WHERE user_id=?` 都没有**——漏写一个条件就把数据串了，靠物理隔离才安全。
@@ -159,7 +165,8 @@ if (window.NativeTTS) window.NativeTTS.speak(text, 0.95);
 else speechSynthesis.speak(...);
 ```
 
-WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所以安卓端用原生 `TextToSpeech`。  
+WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所以安卓端用原生 `TextToSpeech`。
+  
 录音同理：安卓端优先走 `NativeRec`（原生 `AudioRecord`），开不了才回退 `getUserMedia`。
 
 ### 5. 生成同步做，不要任务队列
@@ -174,11 +181,14 @@ WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所�
 
 ## 数据表
 
-`archives` 档案 · `chapters` 章 · `entries` 条目 · `photos` 照片 ·  
-`segments` 讲述原文 · `media` 随文素材 · `shares` 分享 · `settings` · `ai_profiles` · `ai_slots` ·  
+`archives` 档案 · `chapters` 章 · `entries` 条目 · `photos` 照片 ·
+  
+`segments` 讲述原文 · `media` 随文素材 · `shares` 分享 · `settings` · `ai_profiles` · `ai_slots` ·
+  
 `users` · `sessions`
 
-见 `server/schema.sql`。两端共用同一份，每次打开库都幂等执行一遍（`ensureSchema`），  
+见 `server/schema.sql`。两端共用同一份，每次打开库都幂等执行一遍（`ensureSchema`），
+  
 所以**任何旧版本的库都能被当前版本打开**。
 
 ---
@@ -211,8 +221,10 @@ WebView 里的 `speechSynthesis` 在国产机上经常没有中文音色，所�
 | 本机 Ollama   | `http://127.0.0.1:11434/v1`            | 不用 Key，跑在自己电脑上                    |
 | 自定义 / 内网    | 你自己填                                   | vLLM、中转站等                         |
 
-每条配置的操作：**测试**、**拉模型**（GET `/models`）、**编辑**、**删除**；可停用/启用。  
-「测试」对语音环节会**真发 1 秒静音到 `/audio/transcriptions`**，200 才算通——  
+每条配置的操作：**测试**、**拉模型**（GET `/models`）、**编辑**、**删除**；可停用/启用。
+  
+「测试」对语音环节会**真发 1 秒静音到 `/audio/transcriptions`**，200 才算通——
+  
 用对话接口去测 ASR 模型必然 400，那样测不出真假。
 
 > ⚠️ **本机模型的提醒**：标着「本机」的配置（Ollama 等）点「测试」会把模型整个加载进内存——7B 模型约 5–6GB。**没有独立显卡的电脑很慢（单次 20–60 秒）且会把系统压很卡**，日常建议用云端服务；「拉模型」只读清单，几乎不占资源。
@@ -244,17 +256,22 @@ API Key 只存在本地 `settings` 表，**永远不下发到前端**；请求�
 
 录完音不会立刻转——**你点「转成文字」才转**，避免为了一段废话白花钱。转写结果直接回填成讲述原文，并按内容重新识别出年份。
 
-后端 `POST /api/asr {path, model}`，两端各自实现，接口一致：  
+后端 `POST /api/asr {path, model}`，两端各自实现，接口一致：
+  
 Node 走 `fetch` + `FormData`；安卓走 `Ai.asr` 手写的 multipart（**固定长度，不用 chunked**）。
 
 三条设计：
 
-1. **模型不存在自动换**：命中 `20012 / Model does not exist` 时，在同一家配置里换一个     
-   真正支持转写的模型重试，成功后告诉你「已自动改用 XXX」。优先级：     
+1. **模型不存在自动换**：命中 `20012 / Model does not exist` 时，在同一家配置里换一个
+     
+   真正支持转写的模型重试，成功后告诉你「已自动改用 XXX」。优先级：
+     
    `sensevoice > teleasr > whisper > glm-asr > qwen3-asr`。
-2. **失败要能看见**：失败后展开红色详情面板，列出 HTTP 状态、接口地址、用的配置、     
+2. **失败要能看见**：失败后展开红色详情面板，列出 HTTP 状态、接口地址、用的配置、
+     
    模型名、音频文件与大小、服务端原话。不再把「网络不通」和「模型不存在」混成一句「转不出来」。
-3. **录音先能听**：每段都有「试听」，刚录完也立刻弹播放条。先确认录音本身没问题，     
+3. **录音先能听**：每段都有「试听」，刚录完也立刻弹播放条。先确认录音本身没问题，
+     
    再谈转文字——把「平台问题还是程序问题」分开。
 
 > 语音转写出来的年份常常是**中文数字**（「一九五八年」）。`findYear` 同时认「1958」和「一九五八」，不会出现「转出来有年份、档案里却没编上」的情况。
@@ -307,5 +324,6 @@ node test/audit-android.js         # 34 项 安卓静态审计（防回归）
 node test/audit-ui.js              # 38 项 界面审计（无头浏览器）
 ```
 
-合计 **197 项**。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑  
+合计 **197 项**。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
+  
 （`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。

@@ -156,6 +156,9 @@ img{max-width:100%;display:block}
 .rec-state{font-size:12.5px;color:var(--muted)}
 /* 录完立刻能听：先确认录音本身没问题，再谈转文字 */
 .rec-play{display:flex;align-items:center;gap:10px;margin:-4px 0 14px;flex-wrap:wrap}
+/* 没录音时要真隐藏：上面这行 display:flex 会盖掉 [hidden] 的默认 display:none，
+   结果是刚进页面就挂着一个 0:00/0:00 的空播放器 */
+.rec-play[hidden]{display:none}
 .rec-play audio{flex:1;min-width:200px;height:38px}
 .rec-play .muted{font-size:12px}
 /* 转写失败详情：模型、接口地址、HTTP 状态、服务端原话 */
@@ -176,6 +179,9 @@ img{max-width:100%;display:block}
 .mat-text{flex:1;min-width:0;color:var(--ink2);line-height:1.7;word-break:break-word}
 .mat-side{flex:0 0 auto;font-size:11.5px;color:var(--muted)}
 .mat-acts{flex:0 0 auto;display:flex;gap:6px;flex-wrap:wrap}
+/* 讲述条目的操作有五个（试听/转文字/改/传/删），原来 flex:0 0 auto 不肯收缩，
+   在手机窄屏上把正文挤成一字一行。让操作组整体换到第二行并靠右。 */
+.mat-acts{flex:1 1 100%;justify-content:flex-end}
 .mat-thumb{width:44px;height:44px;object-fit:cover;border-radius:6px;flex:0 0 auto}
 /* 就地编辑：整条变成表单，看清在改哪一条 */
 .mat.editing{display:block;border:1px solid var(--accent);border-radius:10px;
@@ -194,7 +200,9 @@ img{max-width:100%;display:block}
 .ch-title:hover .ch-edit{opacity:1}
 .danger-t{color:var(--danger)}
 /* 首页档案卡右下角的操作组：导出 / 改 / 删 */
-.arc-wrap{position:relative;display:flex}
+/* 用 block 而不是 flex：flex 下卡片按内容宽收缩，右下的按钮组会顶到卡片外面 */
+.arc-wrap{position:relative;display:block}
+.arc-card{width:100%}
 .arc-tools{position:absolute;right:8px;bottom:8px;display:flex;gap:5px}
 .arc-export{font-size:12px;color:var(--accent);
   background:var(--card);border:1px solid var(--line);border-radius:7px;
