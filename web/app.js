@@ -1122,6 +1122,7 @@
     return k;
   }
 
+  var APP_VERSION = 'v0.2.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1353,7 +1354,7 @@
 
       /* ---- 关于 ---- */
       html += '<h2 class="set-h">关于</h2>' +
-        '<p class="hint">我的人生档案 · The Story of My Life<br>' +
+        '<p class="hint">我的人生档案 · The Story of My Life <b>' + esc(APP_VERSION) + '</b><br>' +
         '数据全部存在这台设备上，不会上传到任何地方。<br>' +
         '只有你自己配了模型，生成时才会把章节标题发出去；照片只有在你点「看照片」时才会发。</p>';
 

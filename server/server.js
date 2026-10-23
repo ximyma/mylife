@@ -18,6 +18,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
+const VERSION = 'v0.2.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+
 /*
  * 两种跑法：
  *   开发：node server/server.js        —— web/ 在上一级，数据在 ROOT/data
@@ -578,7 +580,7 @@ server.on('error', (e) => {
 server.listen(PORT, HOST, () => {
   const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
   console.log('');
-  console.log('  我的人生档案 · The Story of My Life');
+  console.log('  我的人生档案 · The Story of My Life  ' + VERSION);
   console.log('  ' + addr);
   console.log('  数据目录：' + DATA);
   console.log('');
