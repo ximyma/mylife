@@ -747,30 +747,50 @@
     };
 
     function startRec() {
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      // AudioContext 必须在点击手势里创建并确认运行——
+      // 在 getUserMedia 回调里才创建的话，Chrome 会把它挂起：
+      // 回调照常触发、文件照常生成，但里面全是接近全零的低频噪声，
+      // 转写服务返回空，界面上就成了"录音是空的"。
+      var AC = window.AudioContext || window.webkitAudioContext;
+      var ctx = new AC();
+      var kick = (ctx.state === 'suspended') ? ctx.resume() : Promise.resolve();
+      kick.then(function () {
+        return navigator.mediaDevices.getUserMedia({ audio: true });
+      }).then(function (stream) {
         rec.chunks = [];
         rec.path = '';
         rec.started = Date.now();
-        var AC = window.AudioContext || window.webkitAudioContext;
-        var ctx = new AC();
+        rec.peak = 0;                 // 全程最大瞬时音量，停的时候用来判断"到底录没录上"
         var src = ctx.createMediaStreamSource(stream);
-        // ScriptProcessor 虽老但稳：安卓 5 的 WebView（Chrome 37）也认它
         var proc = ctx.createScriptProcessor(4096, 1, 1);
+        var mute = ctx.createGain();  // 采到的声音不能外放出去（会啸叫），接个零增益
+        mute.gain.value = 0;
         proc.onaudioprocess = function (e) {
           if (!recording) return;
-          rec.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+          var d = e.inputBuffer.getChannelData(0);
+          rec.chunks.push(new Float32Array(d));
+          // 实时算峰值，让用户看得见"有没有录上"
+          var pk = 0;
+          for (var i = 0; i < d.length; i++) { var v = d[i] < 0 ? -d[i] : d[i]; if (v > pk) pk = v; }
+          if (pk > rec.peak) rec.peak = pk;
+          var db = pk > 0 ? Math.round(20 * Math.log(pk) / Math.LN10 * 10) / 10 : -99;
+          recState.textContent = '正在听… 音量 ' + db + ' dB' +
+            (pk < 0.01 ? '（几乎没有声音，检查麦克风）' : '');
           // 12 分钟上限：WAV 到 25MB 附近，转写服务就不收了
           if (rec.chunks.length * 4096 / ctx.sampleRate > 720) stopRec();
         };
         src.connect(proc);
-        proc.connect(ctx.destination);   // 不接 destination 回调不跑
-        rec.ctx = ctx; rec.src = src; rec.proc = proc; rec.stream = stream;
+        proc.connect(mute);
+        mute.connect(ctx.destination);   // ScriptProcessor 必须接到输出才会跑
+        rec.ctx = ctx; rec.src = src; rec.proc = proc; rec.stream = stream; rec.mute = mute;
 
         recording = true;
         recBtn.className = 'btn rec-btn on';
         recBtn.innerHTML = '<span class="dot"></span> <b>正在录 · 点这里停下</b>';
-        recState.textContent = '正在听……';
-      }).catch(function () {
+        recState.textContent = ctx.state === 'running'
+          ? '正在听……'
+          : '音频通道没就绪（' + ctx.state + '），重试一次';
+      }).catch(function (e) {
         recState.textContent = '没有拿到麦克风权限，可以直接打字';
       });
     }
@@ -810,8 +830,17 @@
       recording = false;
       try { if (rec.proc) rec.proc.disconnect(); } catch (e) {}
       try { if (rec.src) rec.src.disconnect(); } catch (e) {}
+      try { if (rec.mute) rec.mute.disconnect(); } catch (e) {}
       try { if (rec.stream) rec.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
       try { if (rec.ctx) rec.ctx.close(); } catch (e) {}
+
+      // 全程峰值都接近零＝根本没录上声音，别浪费一次转写
+      if (rec.peak < 0.01) {
+        recBtn.className = 'btn rec-btn';
+        recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
+        recState.textContent = '这段全是静音。到系统设置里确认麦克风设备可用、音量没被拉到 0，再录一次';
+        return;
+      }
 
       var rate = rec.ctx ? rec.ctx.sampleRate : 48000;
       var buf = buildWav(rec.chunks, rate, 16000);
