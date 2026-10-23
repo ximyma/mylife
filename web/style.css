@@ -259,6 +259,9 @@ img{max-width:100%;display:block}
 .slot-now{display:block;margin:2px 0}
 .slot-now code{background:var(--accent-soft);color:var(--accent);
   padding:1px 5px;border-radius:4px;font-size:11.5px}
+/* 麦克风选择：多输入设备（虚拟声卡抢默认位）时显示 */
+.mic-sel{width:100%;margin-top:8px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:7px;background:var(--paper);color:var(--ink);font-size:13px}
 .slot-pick{flex:1;min-width:140px;font-size:14px}
 .slot-model{flex:1.4;min-width:180px;font-size:13px;padding:7px 9px;
   border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink)}

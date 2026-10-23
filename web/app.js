@@ -679,6 +679,7 @@
         '<div class="rec">' +
         '<button class="btn rec-btn" id="recBtn"><span class="dot"></span> <b>点一下，开始说</b></button>' +
         '<span class="rec-state" id="recState"></span></div>' +
+        '<select id="micSel" hidden class="mic-sel"></select>' +
         '<div class="row end"><button class="btn primary" id="saveSeg">存为一条讲述</button></div>' +
         '</section>' +
 
@@ -746,6 +747,37 @@
       startRec();
     };
 
+    /**
+     * 麦克风选择：装了 ToDesk 这类远控软件后，系统会多出一个虚拟声卡，
+     * Chrome 默认抓的输入设备很可能不是你以为的那个——录出来全是静音。
+     * 把设备列出来让用户自己挑，选一次就记住。
+     */
+    function fillMicList() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      navigator.mediaDevices.enumerateDevices().then(function (ds) {
+        var sel = document.getElementById('micSel');
+        if (!sel) return;
+        var saved = localStorage.getItem('mylife.mic') || '';
+        var html = '', n = 0;
+        for (var i = 0; i < ds.length; i++) {
+          if (ds[i].kind !== 'audioinput') continue;
+          n++;
+          var label = ds[i].label || ('麦克风 ' + n);
+          html += '<option value="' + esc(ds[i].deviceId) + '"' +
+            (ds[i].deviceId === saved ? ' selected' : '') + '>' + esc(label) + '</option>';
+        }
+        sel.innerHTML = html;
+        sel.hidden = n < 2;   // 只有一个设备就不摆出来添乱
+      }).catch(function () {});
+    }
+    fillMicList();
+
+    var micSel = document.getElementById('micSel');
+    if (micSel) micSel.onchange = function () {
+      localStorage.setItem('mylife.mic', micSel.value);
+      toast('已切换麦克风：' + (micSel.options[micSel.selectedIndex] || {}).text);
+    };
+
     function startRec() {
       // AudioContext 必须在点击手势里创建并确认运行——
       // 在 getUserMedia 回调里才创建的话，Chrome 会把它挂起：
@@ -755,7 +787,11 @@
       var ctx = new AC();
       var kick = (ctx.state === 'suspended') ? ctx.resume() : Promise.resolve();
       kick.then(function () {
-        return navigator.mediaDevices.getUserMedia({ audio: true });
+        // 用用户选过的麦克风；没选过就让系统定（选错设备是"录出来全静音"的头号原因）
+        var cons = { audio: true };
+        var savedMic = localStorage.getItem('mylife.mic');
+        if (savedMic) cons.audio = { deviceId: { exact: savedMic } };
+        return navigator.mediaDevices.getUserMedia(cons);
       }).then(function (stream) {
         rec.chunks = [];
         rec.path = '';
@@ -838,7 +874,7 @@
       if (rec.peak < 0.01) {
         recBtn.className = 'btn rec-btn';
         recBtn.innerHTML = '<span class="dot"></span> <b>点一下，开始说</b>';
-        recState.textContent = '这段全是静音。到系统设置里确认麦克风设备可用、音量没被拉到 0，再录一次';
+        recState.textContent = '这段全是静音。多半是抓错了麦克风——从上面「麦克风」下拉里换一个设备（选真实麦克风阵列，别选 ToDesk 虚拟声卡），再录一次';
         return;
       }
 
