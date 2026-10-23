@@ -103,7 +103,8 @@
     for (var k = 0; k < cands.length; k++) {
       if (!cands[k].first) return cands[k].t;
     }
-    return '';
+    // 整章只有一句话时，唯一的候选就是首句——宁可用它也不让金句空着
+    return cands.length ? cands[0].t : '';
   }
 
   /** 章名：取首个有画面感的短句。年份已经在章名前面了，这里要去掉，否则会「1958年 · 1958年我九岁」 */
@@ -570,7 +571,9 @@
     updateEntry: function (id, text) {
       var t = String(text || '').trim();
       if (!t) return Promise.reject(new Error('内容不能是空的'));
-      return API.exec('UPDATE entries SET text=? WHERE id=?', [t, id]);
+      // 必须同时把归属改成 user：生成时只清 origin='ai' 的条目，
+      // 不改这个标记，用户手改过的段落下一次生成会被静默冲掉
+      return API.exec('UPDATE entries SET text=?, origin=\'user\', edited=1 WHERE id=?', [t, id]);
     },
 
     /** 删条目。章里一条不剩就把章也收走，免得留下空标题 */
