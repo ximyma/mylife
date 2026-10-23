@@ -141,7 +141,13 @@ public class Db {
                 || s.startsWith("create") || s.startsWith("vacuum")) {
             throw new Exception("exec 不允许改表结构");
         }
-        db.execSQL(sql, toArgs(params));
+        // execSQL 的绑定数组里有 Java null 会直接抛异常——
+        // 而业务 SQL 大量字段本来就允许空（死亡年、籍贯、default_model...）。
+        // 必须用 compileStatement + bindNull 才能正确写 NULL。
+        android.database.sqlite.SQLiteStatement st = db.compileStatement(sql);
+        bindArgs(st, params);
+        st.executeInsert();
+        st.close();
         JSONObject r = new JSONObject();
         r.put("ok", true);
         r.put("changes", scalar("SELECT changes()"));
@@ -161,7 +167,22 @@ public class Db {
     }
 
     /** rawQuery 只认 String[]，SQLite 会把它们按 TEXT 绑定；数字列靠 SQLite 的亲和性转换 */
-    private static String[] toArgs(JSONArray p) {
+    /** 绑定参数：null -> bindNull；数字 -> bindDouble（保住 INTEGER 列类型）；其余 -> bindString。
+     *  注意 rawQuery 的 String[] 同样不收 Java null——query 侧参数永远非 null（业务保证）。 */
+    private static void bindArgs(android.database.sqlite.SQLiteProgram st, org.json.JSONArray p) throws Exception {
+        if (p == null) return;
+        for (int i = 0; i < p.length(); i++) {
+            int idx = i + 1;
+            if (p.isNull(i)) { st.bindNull(idx); continue; }
+            Object v = p.opt(i);
+            if (v instanceof Number) st.bindDouble(idx, ((Number) v).doubleValue());
+            else if (v instanceof Boolean) st.bindLong(idx, ((Boolean) v) ? 1 : 0);
+            else st.bindString(idx, String.valueOf(v));
+        }
+    }
+
+    private static String[] toArgs(org.json.JSONArray p) {
+        // 仅用于 rawQuery（query 侧，参数永不为 null）；null 在这里会被 Android 拒绝
         if (p == null) return new String[0];
         String[] a = new String[p.length()];
         for (int i = 0; i < p.length(); i++) {

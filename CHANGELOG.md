@@ -2,6 +2,15 @@
 
 格式参考「Keep a Changelog」；版本号：主.次.修订。
 
+## v0.3.2 · 2026-10-23 —— 安卓写入修复
+
+### 修复
+- 安卓端所有"保存"失败（新建档案 / 添加配置 / 任何含空字段的写入）：
+  `SQLiteDatabase.execSQL` 的绑定数组里有 Java null 会直接抛异常，而业务字段
+  （死亡年份、籍贯、default_model……）本来就允许空。
+  改为 `compileStatement + bindNull/bindDouble/bindString` 正确绑定。
+  网页端 Node 支持 null 绑定，所以只有安卓炸——又是两端差异。
+
 ## v0.3.1 · 2026-10-23 —— 安卓兼容补丁
 
 ### 修复
