@@ -375,6 +375,7 @@
         '<button class="btn tiny" data-aid="' + id + '" data-export-open="1">导出文档</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="chat">AI 助手</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="song">主题曲</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="script">剧本</button>' +
         (d.chapters.length ? '<button class="btn tiny" data-read-all="1">从头朗读</button>' : '') +
         '</div></section>';
 
@@ -600,6 +601,7 @@
     }
     return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
       '<div class="en-acts">' +
+      '<button class="linkbtn" data-polish="' + e.id + '" title="AI 润色，原文不动">润</button>' +
       '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
       '<button class="linkbtn" data-entry-upload="' + e.id + '" data-ch="' +
         (e.chapter_id || '') + '">传</button>' +
@@ -1375,7 +1377,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.6.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.7.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2211,6 +2213,7 @@
     if ((m = /^#\/a\/(\d+)\/timeline/.exec(h))) return renderTimeline(m[1]);
     if ((m = /^#\/a\/(\d+)\/chat/.exec(h))) return renderChat(m[1]);
     if ((m = /^#\/a\/(\d+)\/song/.exec(h))) return renderSong(m[1]);
+    if ((m = /^#\/a\/(\d+)\/script/.exec(h))) return renderScript(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
@@ -2220,6 +2223,12 @@
     app.innerHTML = topbar({ back: '#/a/' + id }) +
       '<main class="wrap"><div class="boot">正在排时间轴……</div></main>';
     window.TimelineUI.render(app, Number(id));
+  }
+
+  function renderScript(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在排场次……</div></main>';
+    window.ScriptUI.render(app, Number(id));
   }
 
   function renderSong(id) {
@@ -2261,6 +2270,11 @@
       if (gt) {
         var id2 = Number(gt.getAttribute('data-aid'));
         go('#/a/' + id2 + '/' + gt.getAttribute('data-goto'));
+        return;
+      }
+      var pw = t.closest('[data-polish]');
+      if (pw) {
+        window.PolishUI.open(Number(pw.getAttribute('data-polish')), function () { route(); });
         return;
       }
       var ex = t.closest('[data-export-open]');

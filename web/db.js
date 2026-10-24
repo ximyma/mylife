@@ -1301,6 +1301,209 @@
         .then(function () { return API.exec('DELETE FROM ai_threads WHERE id=?', [threadId]); });
     },
 
+
+    /* ================= v0.7：润色（原文只读） ================= */
+
+    POLISH_STYLES: {
+      keep: { n: '保留口语', tip: '只修重复、口误和跑题，句子还是她自己的话' },
+      written: { n: '书面化', tip: '改成通顺的书面语，仍保留原意与细节' },
+      literary: { n: '文学化', tip: '稍微讲究一点用词，但不添加原文没有的东西' },
+      dialect: { n: '保留方言', tip: '保留方言词与说法，只把听不清的地方理顺' },
+      short: { n: '精简', tip: '压掉重复，留下信息，篇幅约减三分之一' },
+    },
+
+    /**
+     * 润色一段原文。铁律：**不覆盖原文**，结果只进 entry_versions，
+     * 采纳与否由人点。这是这本档案能活几十年的前提。
+     */
+    polishEntry: function (entryId, style) {
+      var st = DB.POLISH_STYLES[style] || DB.POLISH_STYLES.keep;
+      return API.query('SELECT * FROM entries WHERE id=?', [entryId]).then(function (rows) {
+        if (!rows.length) throw new Error('找不到这段内容');
+        var e = rows[0];
+        var text = String(e.text || '').trim();
+        if (text.length < 8) throw new Error('这段太短了，不值得润色');
+
+        var sys = '你是一位资深口述史编辑。规则：' +
+          '① 只修重复、口误、跑题，不添加原文没有的事实、人名、地名、数字；' +
+          '② 保留说话人的语气与用词习惯，不把口语改成公文；' +
+          '③ 不抒情、不总结、不加评论；' +
+          '④ 直接输出润色后的正文，不要任何解释、标题或引号。' +
+          '本次风格：' + st.n + '——' + st.tip + '。';
+
+        return API.ai({
+          messages: [{ role: 'system', content: sys }, { role: 'user', content: text }],
+          temperature: 0.3,
+        }).then(function (r) {
+          if (!r || !r.ok) throw new Error((r && r.message) || '模型没回话');
+          var out = String(r.text || '').trim();
+          if (!out) throw new Error('模型回了空内容');
+          return DB.addVersion(entryId, e.archive_id, 'polish', style, out, r.model).then(function (res) {
+            return { id: res.lastId, text: out, model: r.model, profile: r.profile };
+          });
+        });
+      });
+    },
+
+    rejectVersion: function (versionId) {
+      return API.exec("UPDATE entry_versions SET status='rejected' WHERE id=?", [versionId]);
+    },
+
+    /** 把这条条目退回某个版本（通常是 original） */
+    restoreVersion: function (versionId) {
+      return API.query('SELECT * FROM entry_versions WHERE id=?', [versionId]).then(function (rows) {
+        if (!rows.length) throw new Error('找不到这个版本');
+        var v = rows[0];
+        return API.exec('UPDATE entries SET text=?, edited=1 WHERE id=?', [String(v.text || ''), v.entry_id])
+          .then(function () { return API.exec("UPDATE entry_versions SET status='restored' WHERE id=?", [versionId]); });
+      });
+    },
+
+    /* ================= v0.7：剧本 ================= */
+
+    SCRIPT_SYS: '你是一位写实风格的编剧，正在把一位老人的口述整理成分场剧本。\n' +
+      '规则：只能使用用户给的材料，不得虚构人名、时间、地点、事件；缺的细节写 [待考]，不要自己编。\n' +
+      '严格按下面的格式输出，不要任何额外说明：\n' +
+      '【场 1】内景 · 车间 · 日 / 1956 年春\n' +
+      '人物：桂芳、孙师傅\n' +
+      '△ 一句话写动作或环境。\n' +
+      '孙师傅：台词写在这里。\n' +
+      '桂芳：（小声）带情绪的台词这样写。\n' +
+      '（每个场景之间空一行；对白一行一句；旁白用「旁白：」开头。）',
+
+    generateScript: function (archiveId, chapterId) {
+      var chP = chapterId
+        ? API.query('SELECT * FROM chapters WHERE id=?', [chapterId])
+        : Promise.resolve([]);
+      return Promise.all([chP, API.query('SELECT * FROM archives WHERE id=?', [archiveId])]).then(function (r) {
+        var ch = r[0][0] || null;
+        var a = r[1][0];
+        if (!a) throw new Error('找不到这本档案');
+
+        var q = chapterId
+          ? API.query('SELECT text FROM entries WHERE chapter_id=? ORDER BY sort_key, seq', [chapterId])
+          : API.query('SELECT text FROM entries WHERE archive_id=? ORDER BY sort_key, seq LIMIT 30', [archiveId]);
+
+        return q.then(function (rows) {
+          var material = rows.map(function (x) { return String(x.text || '').trim(); })
+            .filter(function (t) { return t.length > 4; }).join('\n');
+          if (!material) throw new Error('这一章还没有内容，先讲几段再来');
+
+          var head = '档案主角：' + a.subject_name + (a.birth_year ? '，' + a.birth_year + ' 年生' : '') +
+            (a.hometown ? '，' + a.hometown + '人' : '') + '。\n' +
+            (ch ? '本场取材自：' + (ch.title || '') + (ch.year_from ? '（' + ch.year_from + '—' + (ch.year_to || ch.year_from) + '）' : '') + '\n' : '');
+
+          return API.ai({
+            messages: [
+              { role: 'system', content: DB.SCRIPT_SYS },
+              { role: 'user', content: head + '\n材料（原话）：\n' + material + '\n\n请整理成 3 到 6 场戏。' },
+            ],
+            temperature: 0.5,
+          }).then(function (out) {
+            if (!out || !out.ok) throw new Error((out && out.message) || '模型没回话');
+            var raw = String(out.text || '').trim();
+            if (!raw) throw new Error('模型回了空内容');
+            var parsed = DB.parseScript(raw);
+            if (!parsed.length) throw new Error('这次没排成场次，换个模型再试');
+            return API.exec(
+              'INSERT INTO scripts (archive_id, chapter_id, title, json) VALUES (?,?,?,?)',
+              [archiveId, chapterId || null, (ch && ch.title) || a.subject_name + ' · 剧本',
+                JSON.stringify({ raw: raw, scenes: parsed })]
+            ).then(function (res) {
+              return { id: res.lastId, scenes: parsed, raw: raw };
+            });
+          });
+        });
+      });
+    },
+
+    /** 把模型输出的剧本文本拆成场次。模型偶尔不守格式，所以解析要宽进严出 */
+    parseScript: function (raw) {
+      var lines = String(raw || '').replace(/\r/g, '').split('\n');
+      var scenes = [], cur = null;
+
+      function push() {
+        if (cur && (cur.dialogue.length || cur.action.length || cur.slug)) scenes.push(cur);
+        cur = null;
+      }
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+        var head = /^【?\s*场\s*(\d+)\s*】?\s*(.*)$/.exec(line);
+        if (head) {
+          push();
+          cur = { no: Number(head[1]) || scenes.length + 1, slug: head[2] || '', time: '', place: '',
+            chars: [], action: [], dialogue: [] };
+          continue;
+        }
+        if (!cur) {
+          cur = { no: scenes.length + 1, slug: line, time: '', place: '', chars: [], action: [], dialogue: [] };
+          continue;
+        }
+        var who = /^人物[：:]\s*(.+)$/.exec(line);
+        if (who) {
+          cur.chars = who[1].split(/[、,，\s]+/).filter(Boolean);
+          continue;
+        }
+        if (line.charAt(0) === '△' || line.charAt(0) === '▲') {
+          cur.action.push(line.slice(1).trim());
+          continue;
+        }
+        var say = /^([^：:]{1,12})[：:]\s*(.+)$/.exec(line);
+        if (say && cur.chars.length && cur.chars.indexOf(say[1].trim()) < 0 && say[1].length <= 12) {
+          cur.dialogue.push({ who: say[1].trim(), line: say[2].trim() });
+          continue;
+        }
+        if (say) {
+          cur.dialogue.push({ who: say[1].trim(), line: say[2].trim() });
+          continue;
+        }
+        cur.action.push(line);
+      }
+      push();
+      return scenes;
+    },
+
+    listScripts: function (archiveId) {
+      return API.query('SELECT * FROM scripts WHERE archive_id=? ORDER BY id DESC', [archiveId]);
+    },
+
+    getScript: function (id) {
+      return API.query('SELECT * FROM scripts WHERE id=?', [id]).then(function (rows) {
+        if (!rows.length) throw new Error('找不到这份剧本');
+        var row = rows[0];
+        var obj = {};
+        try { obj = JSON.parse(row.json || '{}'); } catch (e) { obj = {}; }
+        row.parsed = obj;
+        return row;
+      });
+    },
+
+    deleteScript: function (id) {
+      return API.exec('DELETE FROM scripts WHERE id=?', [id]);
+    },
+
+    /** 剧本导出成纯文本：这是编剧与演员真正会用的格式 */
+    scriptToText: function (row) {
+      var obj = row.parsed || {};
+      var scenes = obj.scenes || [];
+      var out = [];
+      out.push((row.title || '剧本'));
+      out.push('');
+      for (var i = 0; i < scenes.length; i++) {
+        var s = scenes[i];
+        out.push('【场 ' + (s.no || i + 1) + '】' + (s.slug || ''));
+        if (s.chars && s.chars.length) out.push('人物：' + s.chars.join('、'));
+        for (var a = 0; a < (s.action || []).length; a++) out.push('△ ' + s.action[a]);
+        for (var d = 0; d < (s.dialogue || []).length; d++) {
+          out.push(s.dialogue[d].who + '：' + s.dialogue[d].line);
+        }
+        out.push('');
+      }
+      return out.join('\n');
+    },
+
     /* ---------------- 工具 ---------------- */
 
     yearLabel: function (a, b) {

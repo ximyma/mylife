@@ -521,3 +521,36 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .song-lyr:empty::before{content:"还没有词。点下面「生成歌词」，或者直接在这里写。";color:var(--muted);font-size:13px}
 .song-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)}
 .song-read{position:absolute;left:-9999px;top:0}
+
+/* ---------- 润色 ---------- */
+.pw-styles{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.pw-cols{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:640px){.pw-cols{grid-template-columns:1fr 1fr}}
+.pw-col{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.pw-h{font-size:11.5px;letter-spacing:2px;color:var(--muted);margin-bottom:6px}
+.pw-h em{font-style:normal;letter-spacing:0;margin-left:4px}
+.pw-body{font-size:14.5px;line-height:1.9;max-height:38vh;overflow:auto;white-space:pre-wrap;word-break:break-word}
+mark.d-del{background:#F7D9D4;color:#8C2F22;text-decoration:line-through}
+mark.d-add{background:#DFF0DC;color:#2F5D2A}
+.pw-hist{margin-top:14px;border-top:1px solid var(--line2);padding-top:10px}
+.pw-v{display:flex;gap:8px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px dotted var(--line2)}
+.pw-vk{color:var(--ink2);flex:0 0 68px}
+.pw-vs{font-size:10.5px;padding:0 6px;border-radius:10px;background:var(--paper);color:var(--muted)}
+.pw-vs.accepted{background:#DFF0DC;color:#2F5D2A}
+.pw-vs.kept{background:#F1EDE4;color:#6B6155}
+.pw-vt{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- 剧本 ---------- */
+.sc-bar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.sc-list{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 16px}
+.sc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:12px}
+.sc-head b{font-family:var(--serif);font-size:17px}
+.sc-ops{display:flex;gap:6px}
+.sc-card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-bottom:12px}
+.sc-slug{font-weight:500;font-size:14px;padding-bottom:6px;border-bottom:1px solid var(--line2);margin-bottom:8px}
+.sc-slug span{color:var(--accent);margin-right:8px;font-size:12px;letter-spacing:1px}
+.sc-chars{font-size:12px;color:var(--muted);margin-bottom:6px}
+.sc-act{font-size:13.5px;color:var(--ink2);margin:4px 0 4px 10px;line-height:1.8}
+.sc-line{font-size:14px;margin:5px 0 5px 29px;text-indent:-29px;line-height:1.8}
+.sc-line b{display:inline-block;min-width:25px;margin-right:4px;color:var(--ink)}
