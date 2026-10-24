@@ -100,6 +100,7 @@
   window.ML = {
     esc: esc, fsrc: fsrc, toast: toast, fail: fail, go: go,
     topbar: topbar, bytes: bytes,
+    safeName: function (s) { return String(s || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60); },
   };
 
   /* ---------------- 首页 ---------------- */
@@ -377,6 +378,8 @@
         '<button class="btn tiny" data-aid="' + id + '" data-goto="song">主题曲</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="script">剧本</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="art">插图</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="comic">漫画</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="movie">短片</button>' +
         (d.chapters.length ? '<button class="btn tiny" data-read-all="1">从头朗读</button>' : '') +
         '</div></section>';
 
@@ -1378,7 +1381,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.8.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2216,6 +2219,8 @@
     if ((m = /^#\/a\/(\d+)\/song/.exec(h))) return renderSong(m[1]);
     if ((m = /^#\/a\/(\d+)\/script/.exec(h))) return renderScript(m[1]);
     if ((m = /^#\/a\/(\d+)\/art/.exec(h))) return renderArt(m[1]);
+    if ((m = /^#\/a\/(\d+)\/comic/.exec(h))) return renderComic(m[1]);
+    if ((m = /^#\/a\/(\d+)\/movie/.exec(h))) return renderMovie(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
@@ -2225,6 +2230,18 @@
     app.innerHTML = topbar({ back: '#/a/' + id }) +
       '<main class="wrap"><div class="boot">正在排时间轴……</div></main>';
     window.TimelineUI.render(app, Number(id));
+  }
+
+  function renderMovie(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在架机位……</div></main>';
+    window.MovieUI.render(app, Number(id));
+  }
+
+  function renderComic(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在裁纸……</div></main>';
+    window.ComicUI.render(app, Number(id));
   }
 
   function renderArt(id) {

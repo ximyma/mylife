@@ -177,6 +177,11 @@
       return post('/api/image', opts || {}, 200000);
     },
 
+    /** 短片分镜：规则生成，不调模型 -> { frames, seconds, missing } */
+    moviePlan: function (opts) {
+      return post('/api/movie/plan', opts || {}, 60000);
+    },
+
     /** 渲染能力探测：ffmpeg 在不在 */
     renderProbe: function () {
       return post('/api/render/probe', {}, 30000);

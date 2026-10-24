@@ -1514,6 +1514,118 @@
       return out.join('\n');
     },
 
+
+    /* ================= v0.8：漫画（P6-T66~T68） ================= */
+
+    /**
+     * 把一个章节排成漫画分镜。
+     *
+     * 刻意不用模型：分镜是结构活，规则能做到「可预期、可重排、不花钱」。
+     * 文字来自己有的讲述，图来自已有的插图或照片；缺图的格子留白，
+     * 页面上标出来，让用户自己去补——这比让模型瞎编画面诚实得多。
+     */
+    buildComic: function (archiveId, chapterId, perPage) {
+      var pp = Number(perPage) || 4;
+      var qa = [
+        API.query('SELECT * FROM archives WHERE id=?', [archiveId]),
+        API.query('SELECT * FROM chapters WHERE id=?', [chapterId]),
+        API.query('SELECT * FROM entries WHERE chapter_id=? ORDER BY sort_key, seq', [chapterId]),
+        API.query('SELECT * FROM photos WHERE chapter_id=? ORDER BY taken_year, taken_month, id', [chapterId]),
+        API.query("SELECT v FROM settings WHERE k=?", ['art.persona.' + archiveId]),
+      ];
+      return Promise.all(qa).then(function (r) {
+        var a = r[0][0], ch = r[1][0], entries = r[2], photos = r[3];
+        if (!a) throw new Error('找不到这本档案');
+        if (!entries.length) throw new Error('这一章还没有讲述，先攒几段再来排漫画');
+
+        // 图池：先按条目自带的 photo_id 精准匹配，剩下的按年份顺序轮着用
+        var byId = {};
+        for (var i = 0; i < photos.length; i++) byId[photos[i].id] = photos[i];
+        var pool = photos.slice();
+        var used = {};
+
+        var panels = [];
+        for (var e = 0; e < entries.length; e++) {
+          var en = entries[e];
+          var text = String(en.text || '').trim();
+          if (!text) continue;
+
+          var ph = en.photo_id ? byId[en.photo_id] : null;
+          if (!ph) {
+            // 找一张还没用过的、年份最接近的
+            for (var k = 0; k < pool.length; k++) {
+              if (!used[pool[k].id]) { ph = pool[k]; break; }
+            }
+          }
+          if (ph) used[ph.id] = 1;
+
+          panels.push({
+            text: text,
+            short: text.length > 70 ? text.slice(0, 70) : text,
+            year: en.at_year || (ch && ch.year_from) || null,
+            photo: ph ? ph.path : null,
+            entryId: en.id,
+          });
+        }
+
+        var pages = [];
+        for (var p = 0; p < panels.length; p += pp) {
+          pages.push({
+            no: pages.length + 1,
+            panels: panels.slice(p, p + pp),
+          });
+        }
+
+        var json = {
+          perPage: pp,
+          layout: pp === 6 ? '2x3' : (pp === 2 ? '1x2' : '2x2'),
+          title: (ch && ch.title) || a.subject_name,
+          name: a.subject_name,
+          archiveNo: a.archive_no || '',
+          years: (ch && ch.year_from) ? (ch.year_from + (ch.year_to && ch.year_to !== ch.year_from ? '—' + ch.year_to : '')) : '',
+          persona: (r[4][0] && r[4][0].v) || '',
+          pages: pages,
+        };
+
+        return API.exec(
+          'INSERT INTO storyboards (archive_id, chapter_id, layout, json) VALUES (?,?,?,?)',
+          [archiveId, chapterId, json.layout, JSON.stringify(json)]
+        ).then(function (res) {
+          json.id = res.lastId;
+          return json;
+        });
+      });
+    },
+
+    listComics: function (archiveId) {
+      return API.query('SELECT * FROM storyboards WHERE archive_id=? ORDER BY id DESC', [archiveId]);
+    },
+
+    getComic: function (id) {
+      return API.query('SELECT * FROM storyboards WHERE id=?', [id]).then(function (rows) {
+        if (!rows.length) throw new Error('找不到这本漫画');
+        var row = rows[0];
+        try { row.parsed = JSON.parse(row.json || '{}'); } catch (e) { row.parsed = {}; }
+        return row;
+      });
+    },
+
+    /** 改一格的气泡文字。只改 json，不动原文——原文是档案，漫画是作品 */
+    updateComicPanel: function (comicId, pageNo, idx, text) {
+      return DB.getComic(comicId).then(function (row) {
+        var j = row.parsed || {};
+        var pg = (j.pages || [])[pageNo - 1];
+        if (!pg || !pg.panels[idx]) throw new Error('找不到这一格');
+        pg.panels[idx].short = String(text || '').slice(0, 200);
+        return API.exec('UPDATE storyboards SET json=? WHERE id=?', [JSON.stringify(j), comicId])
+          .then(function () { return j; });
+      });
+    },
+
+    deleteComic: function (id) {
+      return API.exec('DELETE FROM storyboards WHERE id=?', [id]);
+    },
+
     /* ---------------- 工具 ---------------- */
 
     yearLabel: function (a, b) {

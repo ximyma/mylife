@@ -468,7 +468,7 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .tl-cap{font-size:12.5px;color:var(--ink2)}
 .tl-ops{display:flex;gap:2px;justify-content:flex-end;margin-top:2px}
 .tl-ops .linkbtn{margin-left:0}
-.linkbtn{border:none;background:none;padding:2px 6px;font-size:12px;color:var(--muted);cursor:pointer}
+.linkbtn{border:none;background:none;padding:2px 6px;font-size:12px;color:#7A6F60;cursor:pointer}
 .linkbtn.danger-t{color:var(--danger)}
 
 /* ---------- AI 助手 ---------- */
@@ -574,3 +574,63 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .art-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
 .art-thumb{display:block;aspect-ratio:1/1;border-radius:6px;overflow:hidden;background:var(--paper)}
 .art-thumb img{width:100%;height:100%;object-fit:cover}
+
+/* ---------- 漫画 ---------- */
+.cm-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.cm-book{display:flex;flex-direction:column;gap:18px;align-items:center}
+.cm-page{width:100%;max-width:520px;border-radius:6px;overflow:hidden;
+  box-shadow:0 2px 14px rgba(60,48,32,.16);background:#FBF7EE}
+.cm-page .comic-svg{display:block;width:100%;height:auto}
+.cm-page .panel{cursor:pointer}
+.cm-page .panel:hover image,.cm-page .panel:hover rect{filter:brightness(.97)}
+@media print{
+  body{background:#fff}
+  .top,.cm-bar,.tl-hd,.art-set{display:none !important}
+  .cm-page{break-after:page;page-break-after:always;max-width:none;box-shadow:none;border-radius:0;margin:0}
+  @page{size:720px 1080px;margin:0}
+}
+
+/* ---------- 短片 ---------- */
+.tip-warn{font-size:12.5px;line-height:1.75;color:#8C5A22;background:#FBF1E0;
+  border:1px solid #EFDDBE;border-radius:8px;padding:10px 12px;margin:10px 0}
+.mv-bar{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 10px}
+.mv-bar b{font-family:var(--serif);font-size:17px}
+.mv-ck{font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:6px}
+.mv-list{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.mv-frame{display:flex;gap:10px;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:9px 11px;align-items:flex-start}
+.mv-thumb{flex:0 0 62px;width:62px;height:110px;border-radius:5px;overflow:hidden;
+  background:var(--paper);display:flex;align-items:center;justify-content:center;
+  font-size:10.5px;color:var(--muted)}
+.mv-thumb img{width:100%;height:100%;object-fit:cover}
+.mv-meta{flex:1;min-width:0}
+.mv-text{width:100%;font-size:13.5px;line-height:1.6;border:1px solid var(--line2);
+  border-radius:6px;padding:6px 8px;background:var(--card);color:var(--ink);
+  resize:vertical;font-family:inherit}
+.mv-line{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px;flex-wrap:wrap}
+.mv-line input[type=number]{width:64px;border:1px solid var(--line2);border-radius:5px;
+  padding:2px 6px;background:var(--card);color:var(--ink);font-family:inherit}
+.job-box{background:var(--card);border:1px solid var(--line);border-radius:9px;
+  padding:12px 14px;margin-top:12px}
+.job-stage{font-size:13px;color:var(--ink2);margin-bottom:8px}
+.job-bar{height:6px;border-radius:4px;background:var(--paper);overflow:hidden}
+.job-bar i{display:block;height:100%;background:var(--accent);width:2%;
+  transition:width .4s ease}
+.job-box .linkbtn{margin-top:6px}
+.mv-done{margin-top:12px}
+.mv-video{width:100%;max-width:320px;border-radius:10px;display:block;background:#000;
+  box-shadow:0 4px 18px rgba(0,0,0,.18)}
+.mv-hist{margin-bottom:18px}
+.mv-hist-list{display:flex;gap:10px;overflow-x:auto;padding:2px 0 6px}
+.mv-hist-item{flex:0 0 108px}
+.mv-hist-item video{width:108px;height:192px;border-radius:7px;background:#000;object-fit:cover}
+.mv-hist-item .mv-line{margin-top:4px;justify-content:space-between}
+
+/* 短片表单：别让 .fi 的 width:100% 把整行撑坏 */
+.mv-ck{display:flex;align-items:flex-start;gap:9px;width:100%;font-size:13px;
+  color:var(--ink2);line-height:1.6}
+.mv-ck input{flex:0 0 auto;width:17px;height:17px;margin:2px 0 0}
+.mv-ck .muted{display:block;font-size:11.5px;line-height:1.5}
+.mv-f{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
+.mv-f .fi{width:auto;min-width:132px;margin:0;padding:7px 9px;font-size:13.5px}
+.mv-f.short .fi{width:74px;min-width:0}

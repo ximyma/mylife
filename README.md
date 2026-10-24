@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.8.0 · 里程碑 3 / 第四阶段**（2026-10-24）
+**当前版本 v0.9.0 · 里程碑 3 / 第五阶段**（2026-10-24）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
 里程碑 3 任务表见 [docs/TASKS-v0.5-PROGRESS.md](docs/TASKS-v0.5-PROGRESS.md)｜功能方案见 [docs/PLAN-v0.5-FEATURES.md](docs/PLAN-v0.5-FEATURES.md)
@@ -37,6 +37,10 @@
 - **插图**：按条目画那个年代的画面（硅基流动 Kolors 实测 4–5 秒一张），六种画风 +
   **人物设定卡**保持前后一致；生成的图带「AI 生成」标识，满意就一键存进档案
 - **内置 ffmpeg**：渲染引擎随 exe 一起分发（146MB 单文件），首次用到自动解到 `data/bin/`
+- **漫画**：一章讲述按讲述顺序排成竖版分页（2/4/6 格），气泡就是原话、点一下就能改，
+  缺图的格子留虚线框；可导出网页版（单文件带走）/ 逐页图片 / 打印
+- **短片**：一章排成分镜 → 配音（可选）+ 程序化和弦垫 → 烧字幕 → 竖屏 1080×1920 mp4，
+  走任务队列、可看进度可取消，关掉页面也在后台跑
 - Windows 版**单文件分发**：`MyLife.exe` 拷给别人就能用
 
 ## 直接跑起来
@@ -115,6 +119,8 @@ mylife1/
 │   ├── polish.js   润色（字符级 diff / 原文存档 / 可退回）
 │   ├── script.js   剧本（分场 / 解析 / 打印与 txt）
 │   ├── art.js      插图（六种画风 / 人物设定卡）
+│   ├── comic.js    漫画（分格 / 中文气泡换行 / 三种导出）
+│   ├── movie.js    短片（分镜编辑 / 进度 / 播放下载）
 │   ├── mixer.js    配乐（六套程序化氛围 / 自动避让）
 │   └── vendor/     docx 与 pptxgenjs（构建期依赖，运行时零安装）
 ├── server/
@@ -134,7 +140,7 @@ mylife1/
 │   ├── sync.js          把 web/ 同步进安卓 assets
 │   ├── build-exe.js     出单文件 EXE + 冒烟测试 + 产物版本命名
 │   └── make-backup.py   出全量备份包
-├── test/                14 个审计脚本，385 项
+├── test/                16 个审计脚本，435 项
 ├── docs/                升级方案与里程碑存档
 └── build-apk.bat        一条命令出 APK
 ```
@@ -336,6 +342,8 @@ Node 走 `fetch` + `FormData`；安卓走 `Ai.asr` 手写的 multipart（**固�
 - 网页端前端刻意 ES5，因此代码风格偏旧（这是为老 WebView 的取舍，不是疏忽）
 - **安卓端的云端音色还没接**（`/api/tts` 只在 Node 端）：手机上固定用系统 TextToSpeech，
   离线可用、免费；任务队列与流式对话已在 v0.6.0 补齐
+- **安卓上不能合成短片**：没有 ffmpeg，WebView 也扛不住长时间编码。短片页会明确禁用并提示去电脑上做；
+  漫画可以排、可以预览，导出走浏览器下载
 - **一键 PDF 只在桌面端**：需要本机装了 Chrome 或 Edge；没有就改用「印刷版」按 Ctrl+P 另存为 PDF
 - 时间轴排序是「上移 / 下移」按钮，不是拖拽（手机上拖拽误触太多，等分镜编辑器一起做手势）
 - 插图 / 配音 / 音乐 / 短片（P5–P7）还没接：网关与槽位已留好，模型配置里能看到对应环节
@@ -359,9 +367,11 @@ node test/audit-v06.js             # 18 项 语音合成与缓存
 node test/audit-ui-v06.js          # 17 项 混音器 / 设置页 / 主题曲页
 node test/audit-ui-v07.js          # 26 项 润色（diff/采纳/原文留存）与剧本（解析/导出）
 node test/audit-v08.js             # 16 项 插图（临时 URL 落盘 / 缓存）与 ffmpeg 解包
+node test/audit-v09.js             # 23 项 分镜规则 + 真合成一条短片（验竖屏/音轨/ftyp）
+node test/audit-ui-v08.js          # 27 项 漫画排版与短片分镜（CDP 真点真改）
 ```
 
-合计 **385 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
+合计 **435 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
 并校验 docx / pptx / pdf 的包结构与文件头）。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
   
 （`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。

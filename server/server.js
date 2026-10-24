@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.8.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1163,6 +1163,348 @@ function apiRenderProbe() {
   }
 }
 
+
+/* ---------------- 短片合成（P7）：ffmpeg 管线 ----------------
+ *
+ * 一条片子怎么出来的（每帧都带音轨，这样 concat 不会挑三拣四）：
+ *   图 → 竖屏裁切 + 缓慢运镜 → 与配音（或静音）合成一段 mp4
+ *   → concat 拼起来 → 烧字幕（ASS）+ 混 BGM → 成片
+ *
+ * 两个刻意的选择：
+ *   ① **不用 AI 动态画面**。静态图 + 运镜 + 字幕 + 配音已经有片子的感觉，
+ *      成本为零；真调视频模型一秒 0.5–2 元，三分钟片子几百块，不值。
+ *   ② **字幕烧进画面**，不挂外挂字幕。发微信、发抖音的人不会去加载 srt。
+ */
+
+const MOVIE_W = 1080, MOVIE_H = 1920, MOVIE_FPS = 25;
+
+function runFfmpeg(bin, args, opts) {
+  const o = opts || {};
+  return new Promise(function (resolve, reject) {
+    const { spawn } = require('child_process');
+    let p;
+    try {
+      p = spawn(bin, args, { windowsHide: true, cwd: o.cwd });
+    } catch (e) { return reject(e); }
+    let err = '';
+    if (p.stderr) p.stderr.on('data', function (d) {
+      err += String(d);
+      if (err.length > 12000) err = err.slice(-6000);
+    });
+    const timer = setTimeout(function () {
+      try { p.kill(); } catch (e) {}
+      reject(new Error('渲染超时' + (o.what ? '（' + o.what + '）' : '')));
+    }, o.timeout || 300000);
+    p.on('error', function (e) { clearTimeout(timer); reject(e); });
+    p.on('close', function (code) {
+      clearTimeout(timer);
+      if (code === 0) return resolve(true);
+      const tail = String(err).split('\n').filter(Boolean).slice(-3).join(' | ');
+      reject(new Error('ffmpeg 失败（' + code + '）：' + tail.slice(0, 300)));
+    });
+  });
+}
+
+/**
+ * 图片能不能解。
+ *
+ * 必须单独检一遍，不能只靠 existsSync：ffmpeg 的 image2 是按**扩展名**选解码器的，
+ * 一张 .jpg 里装着 PNG 数据时，mjpeg 解码器会一直等后续字节——既不报错也不出帧，
+ * 整个任务就挂在那儿。宁可多花几十毫秒，也不要用户盯着进度条停在 28%。
+ */
+function imageOk(bin, file) {
+  try {
+    const r = require('child_process').spawnSync(bin,
+      ['-hide_banner', '-v', 'error', '-i', file, '-frames:v', '1', '-f', 'null', '-'],
+      { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    return r.status === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 读一段媒体的时长（秒）。没有 ffprobe，就从 ffmpeg 的 stderr 里抠 */function mediaSeconds(bin, file) {
+  try {
+    const r = require('child_process').spawnSync(bin, ['-hide_banner', '-i', file],
+      { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(String(r.stderr || ''));
+    if (!m) return 0;
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  } catch (e) { return 0; }
+}
+
+/** ASS 的时间是「时:分:秒.百分秒」——毫秒必须除 10，写成 .500 会被当成 5 秒 */
+function assTime(sec) {
+  const t = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const whole = Math.floor(s);
+  const cs = Math.round((s - whole) * 100);
+  const pad = function (n, w) { return String(n).padStart(w || 2, '0'); };
+  return h + ':' + pad(m) + ':' + pad(whole) + '.' + pad(cs === 100 ? 99 : cs);
+}
+
+/** 服务端也要一份换行：libass 对超宽长句的自动换行不可靠，得自己插 \N */
+function wrapSub(text, perLine) {
+  const src = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!src) return '';
+  const lines = [];
+  let cur = '', w = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src.charAt(i);
+    const cw = /[\x00-\xff]/.test(ch) ? 0.55 : 1;
+    if (w + cw > perLine + 0.001) { lines.push(cur); cur = ''; w = 0; }
+    cur += ch; w += cw;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 4).join('\\N');
+}
+
+function buildAss(title, frames) {
+  const head = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: ' + MOVIE_W,
+    'PlayResY: ' + MOVIE_H,
+    'WrapStyle: 2',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
+      'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, ' +
+      'Alignment, MarginL, MarginR, MarginV, Encoding',
+    'Style: Main,Microsoft YaHei,58,&H00FFFFFF,&H00FFFFFF,&H00202020,&H80000000,' +
+      '0,0,0,0,100,100,1,0,1,3,2,2,70,70,300,1',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ];
+  let t = 0;
+  for (const f of frames) {
+    const d = Number(f.sec) || 3;
+    if (f.text) {
+      head.push('Dialogue: 0,' + assTime(t) + ',' + assTime(t + d) + ',Main,,0,0,0,,' + wrapSub(f.text, 13));
+    }
+    t += d;
+  }
+  return head.join('\n') + '\n';
+}
+
+/** 每帧的运镜。奇偶交替推/拉，节奏上比一路推近耐看 */
+function zoomExpr(i) {
+  if (i % 2 === 0) return "z='min(zoom+0.00055,1.13)'";
+  return "z='if(eq(on,1),1.13,max(zoom-0.00055,1.0))'";
+}
+
+/**
+ * 分镜规划。规则决定，不花模型的钱：
+ * 一句讲述 = 一格；时长按字数走（念得完为准）；图取条目自带的照片，没有就按章内顺序轮。
+ */
+function apiMoviePlan(body) {
+  const aid = Number(body.archiveId);
+  const chId = Number(body.chapterId);
+  if (!aid || !chId) throw new Error('要指定档案和章节');
+  const a = ctxDb().prepare('SELECT * FROM archives WHERE id=?').get(aid);
+  const ch = ctxDb().prepare('SELECT * FROM chapters WHERE id=?').get(chId);
+  if (!a) throw new Error('找不到这本档案');
+
+  const entries = ctxDb().prepare(
+    'SELECT * FROM entries WHERE chapter_id=? ORDER BY sort_key, seq').all(chId)
+    .filter(function (e) { return String(e.text || '').trim().length > 0; });
+  if (!entries.length) throw new Error('这一章还没有讲述，先攒几段再来');
+
+  const photos = ctxDb().prepare(
+    'SELECT * FROM photos WHERE chapter_id=? ORDER BY taken_year, taken_month, id').all(chId);
+  const byId = {};
+  for (const ph of photos) byId[ph.id] = ph;
+  const used = {};
+  let cursor = 0;
+
+  const cover = ctxDb().prepare(
+    'SELECT p.path FROM photos p WHERE p.id=?').get(a.cover_photo_id || -1);
+
+  const frames = [];
+  if (cover && cover.path) {
+    frames.push({
+      image: cover.path,
+      text: a.subject_name + (a.birth_year ? ' · ' + a.birth_year : ''),
+      sec: 2.6, kind: 'title',
+    });
+  }
+
+  entries.forEach(function (en, i) {
+    const text = String(en.text || '').trim().replace(/\s+/g, ' ');
+    let ph = en.photo_id ? byId[en.photo_id] : null;
+    if (!ph) {
+      while (cursor < photos.length && used[photos[cursor].id]) cursor++;
+      if (cursor < photos.length) { ph = photos[cursor]; used[ph.id] = 1; cursor++; }
+    } else { used[ph.id] = 1; }
+
+    // 2.4 秒打底，每 9 个字加 1 秒——按朗读速度估，念不完就延长
+    const sec = Math.min(7.5, Math.max(2.8, 2.4 + text.length / 9));
+    frames.push({
+      image: ph ? ph.path : null,
+      text: text.length > 80 ? text.slice(0, 80) + '…' : text,
+      sec: Math.round(sec * 10) / 10,
+      year: en.at_year || null,
+      entryId: en.id,
+    });
+  });
+
+  const total = frames.reduce(function (s, f) { return s + f.sec; }, 0);
+  return {
+    ok: true,
+    title: (ch && ch.title) || a.subject_name,
+    name: a.subject_name,
+    archiveNo: a.archive_no || '',
+    frames: frames,
+    seconds: Math.round(total * 10) / 10,
+    missing: frames.filter(function (f) { return !f.image; }).length,
+    hasFfmpeg: !!ffmpegPath(),
+  };
+}
+
+/**
+ * 真正的合成。走任务队列：几十秒到几分钟的活，不能挂在 HTTP 请求上等。
+ * 返回 { path, seconds, bytes }
+ */
+registerJob('movie', async function (p, ctx) {
+  const bin = ffmpegPath();
+  if (!bin) throw new Error('这个安装包没带 ffmpeg，合成不了短片。用桌面版，或先跑 tools/fetch-ffmpeg.js 重新打包。');
+
+  const frames = (p.frames || []).filter(function (f) { return f && (f.image || f.text); });
+  if (!frames.length) throw new Error('没有可用的分镜');
+
+  const bgmName = String(p.bgm || 'none');
+  const wantVoice = !!p.voice;
+
+  const key = crypto.createHash('sha1')
+    .update(JSON.stringify([p.title, frames, bgmName, wantVoice])).digest('hex').slice(0, 16);
+  const relDir = 'ai/movie/' + key;
+  const absDir = path.join(ctx.files, 'ai', 'movie', key);
+  fs.mkdirSync(absDir, { recursive: true });
+
+  const outRel = relDir + '/movie.mp4';
+  const outAbs = path.join(absDir, 'movie.mp4');
+
+  // 配音：逐帧合成，超时就跳过（宁可没声音，也不要整片失败）
+  if (wantVoice) {
+    for (let i = 0; i < frames.length; i++) {
+      ctx.progress(0.02 + (i / frames.length) * 0.25, '配音 ' + (i + 1) + '/' + frames.length);
+      if (!frames[i].text) continue;
+      try {
+        const r = await apiTts({ text: frames[i].text, speed: p.speed || 1 });
+        if (r && r.ok && r.path) {
+          frames[i].voiceFile = path.join(ctx.files, r.path);
+          const d = mediaSeconds(bin, frames[i].voiceFile);
+          if (d > 0) frames[i].sec = Math.max(Number(frames[i].sec) || 2.8, Math.round((d + 0.45) * 10) / 10);
+        }
+      } catch (e) { /* 这一帧没配上，就静音过去 */ }
+    }
+  }
+
+  // 逐帧渲染
+  const segs = [];
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    ctx.progress(0.28 + (i / frames.length) * 0.55, '渲染第 ' + (i + 1) + '/' + frames.length + ' 格');
+    const seg = 'seg' + String(i).padStart(3, '0') + '.mp4';
+    const d = Number(f.sec) || 3;
+
+    const vf = [
+      'scale=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2) + ':force_original_aspect_ratio=increase',
+      'crop=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2),
+      'zoompan=' + zoomExpr(i) + ":d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=" +
+        MOVIE_W + 'x' + MOVIE_H + ':fps=' + MOVIE_FPS,
+      'format=yuv420p',
+    ].join(',');
+
+    const args = ['-hide_banner', '-loglevel', 'error'];
+    const imgAbs = f.image ? path.join(ctx.files, f.image) : '';
+    if (imgAbs && fs.existsSync(imgAbs) && imageOk(bin, imgAbs)) {
+      args.push('-loop', '1', '-i', imgAbs);
+    } else {
+      // 缺图或坏图：给一张深色底，不要中断整片
+      args.push('-f', 'lavfi', '-i', 'color=c=0x2B2723:s=' + MOVIE_W + 'x' + MOVIE_H + ':d=' + d);
+    }
+
+    const hasVoice = f.voiceFile && fs.existsSync(f.voiceFile);
+    if (hasVoice) args.push('-i', f.voiceFile);
+    else args.push('-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo');
+
+    const aIdx = 1;
+    const af = hasVoice
+      ? '[' + aIdx + ':a]apad,atrim=0:' + d + ',asetpts=N/SR/TB[a]'
+      : '[' + aIdx + ':a]atrim=0:' + d + ',asetpts=N/SR/TB[a]';
+
+    args.push('-t', String(d),
+      '-filter_complex', '[0:v]' + vf + '[v];' + af,
+      '-map', '[v]', '-map', '[a]',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+      '-pix_fmt', 'yuv420p', '-r', String(MOVIE_FPS),
+      '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+      '-y', seg);
+
+    await runFfmpeg(bin, args, { cwd: absDir, what: '第 ' + (i + 1) + ' 格', timeout: 120000 });
+    segs.push(seg);
+  }
+
+  // 拼接
+  ctx.progress(0.85, '拼接');
+  const listFile = path.join(absDir, 'list.txt');
+  fs.writeFileSync(listFile, segs.map(function (s) { return 'file \'' + s + '\''; }).join('\n') + '\n', 'utf8');
+  const joined = 'joined.mp4';
+  await runFfmpeg(bin, ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
+    '-i', 'list.txt', '-c', 'copy', '-y', joined], { cwd: absDir, what: '拼接', timeout: 180000 });
+
+  // 字幕 + BGM
+  ctx.progress(0.92, '配字幕与配乐');
+  const assName = 'subs.ass';
+  fs.writeFileSync(path.join(absDir, assName), buildAss(p.title || '', frames), 'utf8');
+
+  const totalSec = frames.reduce(function (s2, f) { return s2 + (Number(f.sec) || 3); }, 0);
+  const args2 = ['-hide_banner', '-loglevel', 'error', '-i', joined];
+  let fc = '[0:v]ass=' + assName + '[v]';
+
+  if (bgmName !== 'none') {
+    // 三音和弦垫：比单音耐听，又不需要任何音乐文件
+    const roots = { warm: [174, 220, 261], calm: [196, 247, 294], bright: [220, 277, 330], old: [147, 196, 233] };
+    const ch3 = roots[bgmName] || roots.calm;
+    ch3.forEach(function (hz) {
+      args2.push('-f', 'lavfi', '-i', 'sine=frequency=' + hz + ':duration=' + Math.ceil(totalSec + 1));
+    });
+    fc += ';[1:a][2:a][3:a]amix=inputs=3:duration=first,volume=0.09,tremolo=f=0.14:d=0.35[bg]';
+    fc += ';[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0[a]';
+  } else {
+    fc += ';[0:a]anull[a]';
+  }
+
+  args2.push('-filter_complex', fc, '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+    '-pix_fmt', 'yuv420p', '-r', String(MOVIE_FPS),
+    '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+    '-movflags', '+faststart', '-shortest', '-y', 'movie.mp4');
+
+  await runFfmpeg(bin, args2, { cwd: absDir, what: '合成', timeout: 600000 });
+
+  // 碎片清掉，只留成片。用户不需要知道中间产物
+  for (const s2 of segs) { try { fs.unlinkSync(path.join(absDir, s2)); } catch (e) {} }
+  try { fs.unlinkSync(listFile); } catch (e) {}
+  try { fs.unlinkSync(path.join(absDir, joined)); } catch (e) {}
+
+  ctx.progress(0.99, '收尾');
+  const bytes = fs.existsSync(outAbs) ? fs.statSync(outAbs).size : 0;
+  return {
+    path: outRel,
+    seconds: Math.round(totalSec * 10) / 10,
+    bytes: bytes,
+    frames: frames.length,
+    voice: wantVoice,
+    bgm: bgmName,
+  };
+});
+
 /* ---------------- 能力网关 ----------------
  * 一条能力 = 一组候选配置（显式指定 → 用途槽位 → 其余启用配置）。
  * 前一个失败就换下一个，把每一次失败原话带回前端。 */
@@ -1498,6 +1840,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/tts') out = await apiTts(body);
           else if (pathname === '/api/image') out = await apiImage(body);
           else if (pathname === '/api/render/probe') out = apiRenderProbe();
+          else if (pathname === '/api/movie/plan') out = apiMoviePlan(body);
           else if (pathname === '/api/jobs') out = apiJobGet(body);
           else if (pathname === '/api/jobs/create') out = apiJobCreate(body);
           else if (pathname === '/api/jobs/cancel') out = apiJobCancel(body);
@@ -1566,15 +1909,50 @@ if (sea && !fs.existsSync(WEB) && !assetKeys) {
   process.exit(1);
 }
 
-// 端口被别的程序占了，给句人话，别抛一堆 ERR_ 堆栈
+/* 端口被占：不退出，自动往后找一个能用的端口。
+ * 以前这里直接 process.exit(1)，双击 exe 的用户只看到一个黑窗一闪，
+ * 于是结论是"网页打不开"——实际上只是上一次的程序还开着。 */
+let listenPort = PORT;
+let portTries = 0;
+
+/**
+ * 把启动情况追加到 data/启动日志.txt。
+ * 用户说「打不开」时，这是唯一能拿到现场的东西——黑窗口一闪就没了，
+ * 截图也来不及。所以每次启动都留一行，失败也留。
+ */
+function startLog(line) {
+  try {
+    const p = path.join(DATA, '启动日志.txt');
+    const stamp = new Date().toLocaleString('zh-CN', { hour12: false });
+    let old = '';
+    try {
+      const st = fs.statSync(p);
+      if (st.size > 200 * 1024) old = '';            // 超过 200KB 就重来，别无限长
+      else old = fs.readFileSync(p, 'utf8');
+    } catch (e) { old = ''; }
+    const head = old || '我的人生档案 · 启动日志（打不开的时候，把这个文件发出来就能定位）\n\n';
+    fs.writeFileSync(p, head + '[' + stamp + '] ' + line + '\n', 'utf8');
+  } catch (e) { /* 日志写不了也不能影响启动 */ }
+}
+
 server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE' && portTries < 12) {
+    portTries++;
+    listenPort = PORT + portTries;
+    console.error('  端口 ' + (PORT + portTries - 1) + ' 被占用，改用 ' + listenPort + '');
+    startLog('端口 ' + (PORT + portTries - 1) + ' 被占用，改用 ' + listenPort);
+    setTimeout(() => { try { server.listen(listenPort, HOST); } catch (x) {} }, 120);
+    return;
+  }
   if (e.code === 'EADDRINUSE') {
     console.error('');
-    console.error('端口 ' + PORT + ' 已经被占用了。');
-    console.error('多半是上一次的程序还没关。关掉它再双击；');
+    console.error('端口 ' + PORT + ' 到 ' + (PORT + 11) + ' 都被占用了。');
+    console.error('多半是之前的程序开了太多没关。把它们关掉再双击；');
     console.error('或者换个端口启动： set PORT=4401 && MyLife.exe');
+    startLog('失败：' + PORT + '~' + (PORT + 11) + ' 端口全被占用');
   } else {
     console.error('启动失败：' + (e.message || e));
+    startLog('失败：' + (e.message || e));
   }
   process.exit(1);
 });
@@ -1582,7 +1960,7 @@ server.on('error', (e) => {
 server.listen(PORT, HOST, () => {
   jobsStart();          // 重启后把没跑完的任务捡起来
   try { ffmpegPath(); } catch (e) {}   // 内置的 ffmpeg 先解出来，第一次用的时候就不用等
-  const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
+  const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + listenPort;
   const hasLegacy = fs.existsSync(path.join(DATA, 'archive.db'));
   console.log('');
   console.log('  我的人生档案 · The Story of My Life  ' + VERSION);
@@ -1595,6 +1973,7 @@ server.listen(PORT, HOST, () => {
   console.log('');
   console.log('  在这个黑窗口里按 Ctrl+C 或者关掉它就退出了。');
   console.log('');
+  startLog('启动成功 ' + VERSION + ' → ' + addr + '（数据：' + DATA + '）');
 
   // 打包版双击运行：直接把浏览器打开，不用自己去敲地址
   if (sea) {
