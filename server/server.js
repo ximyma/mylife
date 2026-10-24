@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.5.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.6.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -939,6 +939,81 @@ registerJob('selftest', async function (p, ctx) {
   return { steps: steps };
 });
 
+
+/* ---------------- 语音合成（TTS）：云端 + 文本级缓存 ---------------- */
+
+function ttsKey(text, voice, speed, model) {
+  return crypto.createHash('sha1')
+    .update([text, voice, speed, model].join('|')).digest('hex').slice(0, 20);
+}
+
+/**
+ * 把一段文字合成 mp3。命中缓存直接返回路径——同一句话读十次只付一次钱。
+ * 供应商走 OpenAI 兼容的 /audio/speech；没有可用模型时返回 fallback:'system'，
+ * 前端据此退回系统朗读（安卓 TextToSpeech / 浏览器 speechSynthesis）。
+ */
+async function apiTts(body) {
+  const text = String(body.text || '').trim();
+  if (!text) return { ok: false, message: '没有要读的文字' };
+  if (text.length > 2000) return { ok: false, message: '一次最多 2000 字，长文请分段读' };
+
+  const chain = profileChain({ slot: 'tts', profileId: body.profileId, model: body.model });
+  if (!chain.length) {
+    return { ok: false, fallback: 'system', message: '还没配「朗读」用的模型，先用系统音色读' };
+  }
+
+  const voice = String(body.voice || 'alloy');
+  const speed = Number(body.speed) || 1;
+  const dir = path.join(ctxFiles(), 'ai', 'tts');
+  fs.mkdirSync(dir, { recursive: true });
+  const errors = [];
+
+  for (const cand of chain.slice(0, 3)) {
+    const model = cand.model || 'tts-1';
+    const key = ttsKey(text, voice, speed, model);
+
+    try {
+      const hit = ctxDb().prepare('SELECT path FROM ai_assets WHERE cache_key=?').get(key);
+      if (hit && hit.path && fs.existsSync(path.join(ctxFiles(), hit.path))) {
+        return { ok: true, path: hit.path, cached: true, model: model };
+      }
+    } catch (e) { /* 老库没有 ai_assets 也不会崩 */ }
+
+    try {
+      const r = await fetch(endpointOf(cand.profile) + '/audio/speech', {
+        method: 'POST',
+        headers: authHeaders(cand.profile),
+        body: JSON.stringify({
+          model: model, input: text, voice: voice, speed: speed, response_format: 'mp3',
+        }),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + String(t).slice(0, 120));
+        continue;
+      }
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length) { errors.push(cand.profile.name + ' 返回空音频'); continue; }
+
+      const rel = 'ai/tts/' + key + '.mp3';
+      fs.writeFileSync(path.join(ctxFiles(), rel), buf);
+      try {
+        ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
+          .run('tts', key, rel, text.slice(0, 200), model);
+      } catch (e) {}
+      usageAdd('tts', model, text.length, 'char', 0, 'tts');
+      return { ok: true, path: rel, bytes: buf.length, model: model, cached: false };
+    } catch (e) {
+      errors.push(cand.profile.name + ' 连不上：' + (e.message || e));
+    }
+  }
+
+  return {
+    ok: false, fallback: 'system',
+    message: '云端朗读没成，已退回系统音色：' + errors.join('；'),
+  };
+}
+
 /* ---------------- 能力网关 ----------------
  * 一条能力 = 一组候选配置（显式指定 → 用途槽位 → 其余启用配置）。
  * 前一个失败就换下一个，把每一次失败原话带回前端。 */
@@ -1271,6 +1346,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/ai/usage') out = usageSummary(body);
           else if (pathname === '/api/file') out = apiFile(body);
           else if (pathname === '/api/asr') out = await apiAsr(body);
+          else if (pathname === '/api/tts') out = await apiTts(body);
           else if (pathname === '/api/jobs') out = apiJobGet(body);
           else if (pathname === '/api/jobs/create') out = apiJobCreate(body);
           else if (pathname === '/api/jobs/cancel') out = apiJobCancel(body);

@@ -513,3 +513,11 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .arc-cover{position:relative}
 .arc-pt{position:absolute;right:-6px;bottom:-6px;width:26px;height:26px;border-radius:50%;
   object-fit:cover;border:2px solid var(--card)}
+
+/* ---------- 主题曲 ---------- */
+.song-card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.song-lyr{font-family:var(--serif);font-size:16px;line-height:2.2;white-space:pre-wrap;
+  min-height:180px;outline:none;color:var(--ink2)}
+.song-lyr:empty::before{content:"还没有词。点下面「生成歌词」，或者直接在这里写。";color:var(--muted);font-size:13px}
+.song-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)}
+.song-read{position:absolute;left:-9999px;top:0}

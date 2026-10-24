@@ -111,6 +111,31 @@ const html = read('web/index.html');
 });
 ck('样例录音格式为 wav（ASR 兼容性最好）', /\.wav/.test(ai));
 
+
+console.log('\n== 七、v0.6 安卓端补齐队列与流式 ==');
+
+const jobs = read('android/app/src/main/java/com/mylife/archive/Jobs.java');
+
+ck('有任务队列实现', jobs.length > 1000);
+ck('开机复位卡住的 running 任务', /resetStale/.test(jobs) && /status='queued'/.test(jobs));
+ck('worker 轮询 queued', /WHERE status='queued'/.test(jobs));
+ck('支持取消', /cancel_flag=1/.test(jobs) && /canceled/.test(jobs));
+ck('跑完写 result 与 finished_at', /result_json=\?/.test(jobs) && /finished_at=datetime\('now'\)/.test(jobs));
+ck('LocalServer 挂了三个任务接口',
+  /path\.equals\("\/api\/jobs"\)/.test(srv) &&
+  /path\.equals\("\/api\/jobs\/create"\)/.test(srv) &&
+  /path\.equals\("\/api\/jobs\/cancel"\)/.test(srv));
+ck('打开库时复位任务', /Jobs\.resetStale\(d\)/.test(srv));
+
+ck('有流式对话实现', /chatStream\(Context ctx, Db db/.test(ai));
+ck('流式边收边写（逐行 flush）', /out\.flush\(\)/.test(ai));
+ck('流式协议与 Node 一致（t/d/done/retry/err）',
+  /\\"t\\":\\"d\\"/.test(ai) && /\\"t\\":\\"done\\"/.test(ai) &&
+  /\\"t\\":\\"retry\\"/.test(ai) && /\\"t\\":\\"err\\"/.test(ai));
+ck('流式返回 NDJSON 内容类型', /application\/x-ndjson/.test(srv));
+ck('路由把 /api/ai/chat 交给流式分支', /path\.equals\("\/api\/ai\/chat"\)/.test(srv));
+ck('流式最多试三条配置', /tried < 3/.test(ai));
+
 console.log('\n' + (fail === 0 ? '全部通过' : '有 ' + fail + ' 项没过') +
   '：' + pass + ' 通过 / ' + fail + ' 失败\n');
 process.exit(fail === 0 ? 0 : 1);

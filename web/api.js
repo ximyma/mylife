@@ -172,6 +172,11 @@
       return post('/api/ai/test', opts || {});
     },
 
+    /** 语音合成：opts { text, speed?, voice?, profileId? } -> {ok, path, cached} */
+    tts: function (opts) {
+      return post('/api/tts', opts || {}, 120000);
+    },
+
     /** 语音转文字：opts { path, profileId?, model?, language? }，长音频要等，超时放宽 */
     asr: function (opts) {
       return post('/api/asr', opts || {}, 200000);

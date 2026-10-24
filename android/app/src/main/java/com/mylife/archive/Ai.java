@@ -6,9 +6,11 @@ import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -597,5 +599,119 @@ public final class Ai {
 
     private static String msg(boolean ok, String text) {
         return msgObj(ok, text).toString();
+    }
+
+    /* ================= 流式对话（NDJSON，与 Node 端同一个协议） ================= */
+
+    /**
+     * 每行一个 JSON：{"t":"d","v":"字"} 增量 / {"t":"retry"} 换下一个 /
+     * {"t":"done","text":...} 收尾 / {"t":"err","message":...} 失败。
+     *
+     * 为什么把 OutputStream 传进来：边收边发才叫流式。攒完再 write 一遍，
+     * 用户要盯着空白等十几秒——跟没有流式没区别。
+     */
+    public static void chatStream(Context ctx, Db db, String payload, OutputStream out) {
+        try {
+            JSONObject in = Json.obj(payload);
+            JSONArray msgs = in.optJSONArray("messages");
+            if (msgs == null || msgs.length() == 0) {
+                writeLine(out, "{\"t\":\"err\",\"message\":\"没有要发送的内容\"}");
+                return;
+            }
+            JSONArray profiles = new JSONArray(db.query(
+                    "SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id", new JSONArray()));
+            if (profiles.length() == 0) {
+                writeLine(out, "{\"t\":\"err\",\"message\":\"还没配模型。打开「设置 → 模型来源」加一条。\"}");
+                return;
+            }
+            int tried = 0;
+            for (int i = 0; i < profiles.length() && tried < 3; i++) {
+                JSONObject p = profiles.getJSONObject(i);
+                String model = modelOf(p);
+                if (model.length() == 0) continue;
+                tried++;
+                if (streamOne(p, model, in, msgs, out)) return;
+            }
+            writeLine(out, "{\"t\":\"err\",\"message\":\"所有模型都没通，检查网络或 Key\"}");
+        } catch (Exception e) {
+            writeLine(out, "{\"t\":\"err\",\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}");
+        }
+    }
+
+    private static boolean streamOne(JSONObject p, String model, JSONObject in,
+                                     JSONArray msgs, OutputStream out) {
+        HttpURLConnection conn = null;
+        try {
+            JSONObject body = new JSONObject();
+            body.put("model", model);
+            body.put("messages", msgs);
+            body.put("temperature", in.optDouble("temperature", 0.7));
+            body.put("stream", true);
+
+            conn = (HttpURLConnection) new URL(base(p) + "/chat/completions").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(T_CHAT);
+            conn.setRequestProperty("Content-Type", "application/json");
+            String key = Json.sv(p, "api_key");
+            if (key.length() > 0) conn.setRequestProperty("Authorization", "Bearer " + key);
+            conn.setDoOutput(true);
+            OutputStream os = conn.getOutputStream();
+            os.write(body.toString().getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                String err = readAll(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+                writeLine(out, "{\"t\":\"retry\",\"message\":\""
+                        + Json.esc(Json.sv(p, "name") + " HTTP " + code) + "\"}");
+                Log.w(TAG, "流式失败 " + code + " " + shorten(err, 120));
+                return false;
+            }
+
+            BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder full = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.length() == 0 || line.startsWith(":")) continue;
+                if (!line.startsWith("data:")) continue;
+                String data = line.substring(5).trim();
+                if ("[DONE]".equals(data)) break;
+                try {
+                    JSONObject j = new JSONObject(data);
+                    JSONArray ch = j.optJSONArray("choices");
+                    if (ch == null || ch.length() == 0) continue;
+                    JSONObject delta = ch.getJSONObject(0).optJSONObject("delta");
+                    if (delta == null) continue;
+                    String piece = Json.sv(delta, "content");
+                    if (piece.length() == 0) piece = Json.sv(delta, "reasoning_content");
+                    if (piece.length() > 0) {
+                        full.append(piece);
+                        writeLine(out, "{\"t\":\"d\",\"v\":\"" + Json.esc(piece) + "\"}");
+                    }
+                } catch (Exception parse) {
+                    // 心跳、注释行、畸形 JSON：跳过，不打断整段
+                }
+            }
+            br.close();
+            writeLine(out, "{\"t\":\"done\",\"text\":\"" + Json.esc(full.toString())
+                    + "\",\"model\":\"" + Json.esc(model) + "\"}");
+            return true;
+        } catch (Exception e) {
+            writeLine(out, "{\"t\":\"retry\",\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}");
+            return false;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private static void writeLine(OutputStream out, String line) {
+        try {
+            out.write((line + "\n").getBytes("UTF-8"));
+            out.flush();
+        } catch (Exception ignored) {
+        }
     }
 }

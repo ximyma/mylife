@@ -374,6 +374,7 @@
         '<button class="btn tiny" data-aid="' + id + '" data-goto="timeline">时间轴</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-export-open="1">导出文档</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="chat">AI 助手</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="song">主题曲</button>' +
         (d.chapters.length ? '<button class="btn tiny" data-read-all="1">从头朗读</button>' : '') +
         '</div></section>';
 
@@ -1374,7 +1375,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.5.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.6.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1613,7 +1614,35 @@
         '<div class="pref-row"><span>朗读语速</span>' +
         '<input type="range" id="prefRate" min="6" max="14" step="1" value="' +
         esc(Math.round((Number(cfg['pref.rate']) || 0.95) * 10)) + '">' +
-        '<b id="prefRateVal">' + (Number(cfg['pref.rate']) || 0.95).toFixed(1) + '×</b></div>';
+        '<b id="prefRateVal">' + (Number(cfg['pref.rate']) || 0.95).toFixed(1) + '×</b></div>' +
+
+        /* ---- 朗读音色与配乐 ---- */
+        '<h2 class="set-h">朗读音色与配乐</h2>' +
+        '<p class="hint">系统音色离线可用、不花钱；云端音色更好听，但要给「朗读」环节绑一个模型，' +
+        '而且每段文字只会合成一次（同一句再读不再计费）。</p>' +
+        '<div class="pref-row"><span>音色来源</span>' +
+        '<select class="fi" id="prefTtsMode" style="max-width:150px">' +
+        '<option value="system"' + (window.TTS && !window.TTS.cloud() ? ' selected' : '') + '>系统（离线）</option>' +
+        '<option value="cloud"' + (window.TTS && window.TTS.cloud() ? ' selected' : '') + '>云端（需配模型）</option>' +
+        '</select><span class="muted">' + (window.TTS && window.TTS.native ? '手机上固定用系统音色' : '') + '</span></div>' +
+        '<div class="pref-row"><span>背景配乐</span>' +
+        '<select class="fi" id="prefBgm" style="max-width:150px">' +
+        (function () {
+          var list = (window.Mixer && window.Mixer.presets()) || [{ k: 'none', n: '不配乐' }];
+          var cur = window.Mixer ? window.Mixer.current() : 'none';
+          var o = '';
+          for (var i = 0; i < list.length; i++) {
+            o += '<option value="' + esc(list[i].k) + '"' + (list[i].k === cur ? ' selected' : '') + '>' +
+              esc(list[i].n) + '</option>';
+          }
+          return o;
+        })() + '</select>' +
+        '<span class="muted">朗读时才响，会把音量自动压下去</span></div>' +
+        '<div class="pref-row"><span>配乐音量</span>' +
+        '<input type="range" id="prefBgmVol" min="0" max="100" step="5" value="' +
+        Math.round(((window.Mixer ? window.Mixer.restore().volume : 0.34)) * 100) + '">' +
+        '<b id="prefBgmVolVal">' + Math.round((window.Mixer ? window.Mixer.restore().volume : 0.34) * 100) + '</b></div>' +
+        '<p class="hint dim">配乐是程序实时算出来的氛围垫（六种），不是唱片：不占体积、不涉版权、断网也响。</p>';
 
       /* ---- 用量与任务 ---- */
       html += '<h2 class="set-h">用量与任务</h2>' +
@@ -1936,6 +1965,25 @@
       }).catch(fail);
     };
 
+    var ttsMode = document.getElementById('prefTtsMode');
+    if (ttsMode) ttsMode.onchange = function () {
+      try { localStorage.setItem('ms_tts_mode', ttsMode.value); } catch (e) {}
+      toast(ttsMode.value === 'cloud' ? '下次朗读用云端音色（没配模型会自动退回）' : '已切回系统音色');
+    };
+    var bgmSel = document.getElementById('prefBgm');
+    if (bgmSel) bgmSel.onchange = function () {
+      if (window.Mixer) window.Mixer.setPreset(bgmSel.value);
+      toast(bgmSel.value === 'none' ? '已关闭配乐' : '配乐已切换，朗读时生效');
+    };
+    var bgmVol = document.getElementById('prefBgmVol');
+    var bgmVolVal = document.getElementById('prefBgmVolVal');
+    if (bgmVol) {
+      bgmVol.oninput = function () {
+        bgmVolVal.textContent = bgmVol.value;
+        if (window.Mixer) window.Mixer.setVolume(Number(bgmVol.value) / 100);
+      };
+    }
+
     var rate = document.getElementById('prefRate');
     var rateVal = document.getElementById('prefRateVal');
     if (rate) {
@@ -2162,6 +2210,7 @@
     if ((m = /^#\/a\/(\d+)\/collect/.exec(h))) return renderCollect(m[1]);
     if ((m = /^#\/a\/(\d+)\/timeline/.exec(h))) return renderTimeline(m[1]);
     if ((m = /^#\/a\/(\d+)\/chat/.exec(h))) return renderChat(m[1]);
+    if ((m = /^#\/a\/(\d+)\/song/.exec(h))) return renderSong(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
@@ -2171,6 +2220,12 @@
     app.innerHTML = topbar({ back: '#/a/' + id }) +
       '<main class="wrap"><div class="boot">正在排时间轴……</div></main>';
     window.TimelineUI.render(app, Number(id));
+  }
+
+  function renderSong(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在铺纸研墨……</div></main>';
+    window.SongUI.render(app, Number(id));
   }
 
   function renderChat(id) {
@@ -2318,6 +2373,7 @@
     applyPrefs();   // 先把字号/夜间落到页面，避免闪一下
     bindTtsOnce();
     bindToolsOnce();
+    if (window.Mixer) { try { window.Mixer.restore(); } catch (e) {} }
     API.auth.onUnauthorized(function () {
       try { localStorage.removeItem('mylife.token'); } catch (e) {}
       go('#/login');

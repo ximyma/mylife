@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.5.0 · 里程碑 3 / 第一阶段**（2026-10-24）
+**当前版本 v0.6.0 · 里程碑 3 / 第二阶段**（2026-10-24）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
 里程碑 3 任务表见 [docs/TASKS-v0.5-PROGRESS.md](docs/TASKS-v0.5-PROGRESS.md)｜功能方案见 [docs/PLAN-v0.5-FEATURES.md](docs/PLAN-v0.5-FEATURES.md)
@@ -28,6 +28,9 @@
 - **导出成册**：印刷版 HTML、**PDF**（本地 Chrome 打印）、**Word**（可编辑）、**PPT**（一页一章，聚会放映）
 - **AI 助手**：五个角色（采访者 / 编辑 / 编剧 / 音乐人 / 史官），语音或文字输入，逐字流式回复，**回复可一键插回档案**
 - **用量记账与任务队列**：调过几次模型、花了多少，随时可查；耗时任务进队列，可看进度、可取消
+- **朗读有音色也有配乐**：系统音色离线可用；云端音色按句合成并**缓存**（同一句只花钱一次）；
+  六套程序化氛围自动避让朗读（不占体积、不涉版权）
+- **主题曲**：从档案生成三段式歌词，可改、可念（TTS+配乐）、可存为这本档案的主题曲
 - Windows 版**单文件分发**：`MyLife.exe` 拷给别人就能用
 
 ## 直接跑起来
@@ -120,7 +123,7 @@ mylife1/
 │   ├── sync.js          把 web/ 同步进安卓 assets
 │   ├── build-exe.js     出单文件 EXE + 冒烟测试 + 产物版本命名
 │   └── make-backup.py   出全量备份包
-├── test/                10 个审计脚本，295 项
+├── test/                12 个审计脚本，343 项
 ├── docs/                升级方案与里程碑存档
 └── build-apk.bat        一条命令出 APK
 ```
@@ -320,8 +323,8 @@ Node 走 `fetch` + `FormData`；安卓走 `Ai.asr` 手写的 multipart（**固�
 - Groq 国内被墙；阿里百炼 `paraformer-v2` 每月 10 小时免费但不兼容 OpenAI 接口，未接
 - 公网部署未做——现在只在本机 / 本手机上跑，够用也最安全
 - 网页端前端刻意 ES5，因此代码风格偏旧（这是为老 WebView 的取舍，不是疏忽）
-- **安卓宿主还没有 `/api/jobs` 与流式对话**：设置页自检会提示"这个版本还没有任务队列"，
-  AI 助手会自动退回一次性整段回复（能正常用，只是没有逐字效果）。导出走 `API.file` 落盘，两端都通
+- **安卓端的云端音色还没接**（`/api/tts` 只在 Node 端）：手机上固定用系统 TextToSpeech，
+  离线可用、免费；任务队列与流式对话已在 v0.6.0 补齐
 - **一键 PDF 只在桌面端**：需要本机装了 Chrome 或 Edge；没有就改用「印刷版」按 Ctrl+P 另存为 PDF
 - 时间轴排序是「上移 / 下移」按钮，不是拖拽（手机上拖拽误触太多，等分镜编辑器一起做手势）
 - 插图 / 配音 / 音乐 / 短片（P5–P7）还没接：网关与槽位已留好，模型配置里能看到对应环节
@@ -337,13 +340,15 @@ node test/audit-generate.js        # 13 项 生成规则
 node test/audit-archive-mgmt.js    #  9 项 档案级改删
 node test/audit-asr.js             # 12 项 转写契约
 node test/audit-files.js           # 18 项 文件鉴权与路径穿越
-node test/audit-android.js         # 34 项 安卓静态审计（防回归）
+node test/audit-android.js         # 47 项 安卓静态审计（防回归）
 node test/audit-ui.js              # 38 项 界面审计（无头浏览器）
 node test/audit-v05.js             # 56 项 v0.5 基座（表 / 队列 / 用量 / 时间轴 / 版本 / 流式）
 node test/audit-ui-v05.js          # 42 项 封面·时间轴·导出·助手（CDP 真点真存）
+node test/audit-v06.js             # 18 项 语音合成与缓存
+node test/audit-ui-v06.js          # 17 项 混音器 / 设置页 / 主题曲页
 ```
 
-合计 **295 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
+合计 **343 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
 并校验 docx / pptx / pdf 的包结构与文件头）。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
   
 （`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。

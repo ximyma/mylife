@@ -29,6 +29,8 @@ import java.util.concurrent.Executors;
  *   POST /api/exec    {sql, params}  -> {changes, lastId}
  *   POST /api/ai      {messages...}  -> {text}
  *   POST /api/asr     {path}         -> {text}   语音转文字
+ *   POST /api/ai/chat {messages}     -> NDJSON 流（逐行 {"t":"d","v":"字"}）
+ *   POST /api/jobs    {id?}          -> 任务查询 / 创建 / 取消
  *   POST /api/file    {op, ...}      -> 落盘 / 读取 / 删除
  *   GET  /files/<rel>                 -> 二进制，支持 Range
  */
@@ -176,6 +178,21 @@ public class LocalServer {
                 return;
             }
             Db udb = dbForUser(user.uid);
+
+            // 流式对话：边收边发，必须自己写头，不能走"返回一个 JSON 字符串"那条路
+            if (path.equals("/api/ai/chat")) {
+                String ndHead = "HTTP/1.1 200 OK\r\n"
+                        + "Content-Type: application/x-ndjson; charset=utf-8\r\n"
+                        + "Cache-Control: no-store\r\n"
+                        + "Connection: close\r\n"
+                        + "Access-Control-Allow-Origin: *\r\n\r\n";
+                out.write(ndHead.getBytes("UTF-8"));
+                out.flush();
+                Ai.chatStream(ctx, udb, new String(body, "UTF-8"), out);
+                out.flush();
+                return;
+            }
+
             String json = routeApi(path, body, udb, user.uid);
             writeJson(out, json);
             return;
@@ -247,6 +264,7 @@ public class LocalServer {
             // 关键：迁移来的可能是 v0.1 的旧库，缺 v0.2/v0.3 的新表。
             // schema 全是 IF NOT EXISTS，幂等——每次打开都补一遍（Node 端同样做法）。
             d.ensureSchema();
+            Jobs.resetStale(d);          // 上次进程被杀时卡在 running 的任务，放回队列
             userDbs.put(uid, d);
             return d;
         }
@@ -397,6 +415,15 @@ public class LocalServer {
             }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);
+            }
+            if (path.equals("/api/jobs")) {
+                return Jobs.get(udb, json);
+            }
+            if (path.equals("/api/jobs/create")) {
+                return Jobs.create(udb, json);
+            }
+            if (path.equals("/api/jobs/cancel")) {
+                return Jobs.cancel(udb, json);
             }
             if (path.equals("/api/debug/data")) {
                 return debugData(udb, uid);
