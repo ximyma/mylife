@@ -2180,6 +2180,11 @@
   }
 
   window.addEventListener('hashchange', function () {
+    // 换页时把抽屉收掉：抽屉挂在 body 上，不清就会跟着下一个页面一起显示
+    var sheets = document.querySelectorAll('.sheet-back');
+    for (var i = 0; i < sheets.length; i++) {
+      if (sheets[i].parentNode) sheets[i].parentNode.removeChild(sheets[i]);
+    }
     window.scrollTo(0, 0);
     route();
   });

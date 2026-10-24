@@ -45,7 +45,8 @@
     return '<div class="cv style-' + esc(cfg.style) + '" style="--accent:' + esc(cfg.accent) + '">' +
       (cover
         ? '<div class="cv-photo" style="background-image:url(' + esc(fsrc(cover.path)) + ');' +
-          'background-position:' + esc(cfg.pos) + ';background-size:' + Math.round(zoom * 100) + '%"></div>'
+          'background-position:' + esc(cfg.pos) + ';' +
+          (zoom > 1 ? 'transform:scale(' + zoom.toFixed(2) + ')' : '') + '"></div>'
         : '<div class="cv-photo cv-blank"></div>') +
       '<div class="cv-shade"></div>' +
       '<div class="cv-txt">' +
@@ -187,7 +188,7 @@
           cover_photo_id: state.coverId, portrait_photo_id: state.portraitId,
           cover_config_json: JSON.stringify(state.cfg),
         };
-        stage.innerHTML = coverHtml(fake, state.photos, { foot: '<span>共 ' + (a.status === 'ready' ? '已生成' : '待生成') + '</span>' });
+        stage.innerHTML = coverHtml(fake, state.photos, { foot: '<span>' + (a.status === 'ready' ? '已生成' : '待生成') + '</span>' });
       }
 
       function renderPhotos() {
