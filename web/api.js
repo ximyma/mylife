@@ -172,6 +172,16 @@
       return post('/api/ai/test', opts || {});
     },
 
+    /** 插图生成：opts { prompt, size?, steps?, cfg?, profileId? } -> {ok, path, cached} */
+    image: function (opts) {
+      return post('/api/image', opts || {}, 200000);
+    },
+
+    /** 渲染能力探测：ffmpeg 在不在 */
+    renderProbe: function () {
+      return post('/api/render/probe', {}, 30000);
+    },
+
     /** 语音合成：opts { text, speed?, voice?, profileId? } -> {ok, path, cached} */
     tts: function (opts) {
       return post('/api/tts', opts || {}, 120000);

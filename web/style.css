@@ -554,3 +554,23 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .sc-act{font-size:13.5px;color:var(--ink2);margin:4px 0 4px 10px;line-height:1.8}
 .sc-line{font-size:14px;margin:5px 0 5px 29px;text-indent:-29px;line-height:1.8}
 .sc-line b{display:inline-block;min-width:25px;margin-right:4px;color:var(--ink)}
+
+/* ---------- 插图 ---------- */
+.art-set{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.art-row{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.art-item{display:flex;flex-wrap:wrap;gap:10px;background:var(--card);border:1px solid var(--line);
+  border-radius:9px;padding:12px 14px;margin-bottom:10px;align-items:flex-start}
+.art-txt{flex:1 1 260px;min-width:0}
+.art-when{font-size:11.5px;color:var(--muted);letter-spacing:1px;margin-bottom:2px}
+.art-txt p{margin:0;font-size:14px;line-height:1.75;color:var(--ink2)}
+.art-acts{flex:0 0 auto}
+.art-out{flex:1 1 100%}
+.art-load{font-size:12.5px;color:var(--muted);padding:10px 0}
+.art-fig{margin:0}
+.art-fig img{width:100%;max-width:420px;border-radius:8px;display:block}
+.art-fig figcaption{display:flex;gap:10px;align-items:center;justify-content:space-between;
+  font-size:11.5px;color:var(--muted);margin-top:6px;max-width:420px}
+.art-gal{margin-top:20px}
+.art-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
+.art-thumb{display:block;aspect-ratio:1/1;border-radius:6px;overflow:hidden;background:var(--paper)}
+.art-thumb img{width:100%;height:100%;object-fit:cover}

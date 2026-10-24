@@ -23,3 +23,6 @@ __pycache__/
 
 dist/
 tmp/
+
+# 内置播放/渲染引擎（体积大，用 tools/fetch-ffmpeg.js 拉取，不入库）
+bin/

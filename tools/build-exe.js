@@ -48,6 +48,16 @@ function addDir(rel) {
 }
 addDir('web');
 assets['schema.sql'] = path.join(ROOT, 'server', 'schema.sql');
+
+// ffmpeg：内置进 exe。单文件分发时只有一个 exe，不能指望旁边有 bin/。
+const FF = path.join(ROOT, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+const hasFF = fs.existsSync(FF) && fs.statSync(FF).size > 1024 * 1024;
+if (hasFF) {
+  assets['bin/' + path.basename(FF)] = FF;
+  console.log('  内置 ffmpeg ' + Math.round(fs.statSync(FF).size / 1048576) + ' MB');
+} else {
+  console.log('  ⚠ 没有 bin/ffmpeg，本包不含渲染引擎（先跑 node tools/fetch-ffmpeg.js）');
+}
 console.log('  内置资产 ' + Object.keys(assets).length + ' 个（web 前端 + schema）');
 
 const cfg = path.join(TMP, 'sea-config.json');
@@ -115,6 +125,10 @@ cp(WEB_SRC, WEB_DST);
 let webBytes = 0;
 for (const f of fs.readdirSync(WEB_DST)) webBytes += fs.statSync(path.join(WEB_DST, f)).size;
 fs.copyFileSync(path.join(ROOT, 'server', 'schema.sql'), path.join(OUT, 'resources', 'schema.sql'));
+if (hasFF) {
+  fs.mkdirSync(path.join(OUT, 'bin'), { recursive: true });
+  fs.copyFileSync(FF, path.join(OUT, 'bin', path.basename(FF)));
+}
 console.log('  resources/web ' + fs.readdirSync(WEB_DST).length + ' 个文件 ' +
   Math.round(webBytes / 1024) + 'KB');
 console.log('  resources/schema.sql');

@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.7.0 · 里程碑 3 / 第三阶段**（2026-10-24）
+**当前版本 v0.8.0 · 里程碑 3 / 第四阶段**（2026-10-24）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
 里程碑 3 任务表见 [docs/TASKS-v0.5-PROGRESS.md](docs/TASKS-v0.5-PROGRESS.md)｜功能方案见 [docs/PLAN-v0.5-FEATURES.md](docs/PLAN-v0.5-FEATURES.md)
@@ -34,6 +34,9 @@
 - **润色**：条目上点「润」，五种风格出稿，左右并排看字符级差异，**采纳前原文另存一份**，可随时退回
 - **剧本**：一章口述 → 3–6 场戏（场景头 / 人物 / 动作 / 对白），只用档案事实，缺的标 [待考]；
   可打印（A4 剧本版心）也可导出 .txt
+- **插图**：按条目画那个年代的画面（硅基流动 Kolors 实测 4–5 秒一张），六种画风 +
+  **人物设定卡**保持前后一致；生成的图带「AI 生成」标识，满意就一键存进档案
+- **内置 ffmpeg**：渲染引擎随 exe 一起分发（146MB 单文件），首次用到自动解到 `data/bin/`
 - Windows 版**单文件分发**：`MyLife.exe` 拷给别人就能用
 
 ## 直接跑起来
@@ -108,6 +111,11 @@ mylife1/
 │   ├── export.js   文档模型 + 印刷版 HTML + 一键 PDF
 │   ├── export-docx.js / export-pptx.js   Word / PPT 渲染器
 │   ├── chat.js     AI 助手（五角色 / 流式 / 插回档案）
+│   ├── song.js     主题曲（歌词 / 念白 / 配乐）
+│   ├── polish.js   润色（字符级 diff / 原文存档 / 可退回）
+│   ├── script.js   剧本（分场 / 解析 / 打印与 txt）
+│   ├── art.js      插图（六种画风 / 人物设定卡）
+│   ├── mixer.js    配乐（六套程序化氛围 / 自动避让）
 │   └── vendor/     docx 与 pptxgenjs（构建期依赖，运行时零安装）
 ├── server/
 │   ├── server.js   网页端宿主（含内联的账号模块，SEA 单文件入口）
@@ -126,7 +134,7 @@ mylife1/
 │   ├── sync.js          把 web/ 同步进安卓 assets
 │   ├── build-exe.js     出单文件 EXE + 冒烟测试 + 产物版本命名
 │   └── make-backup.py   出全量备份包
-├── test/                13 个审计脚本，369 项
+├── test/                14 个审计脚本，385 项
 ├── docs/                升级方案与里程碑存档
 └── build-apk.bat        一条命令出 APK
 ```
@@ -350,9 +358,10 @@ node test/audit-ui-v05.js          # 42 项 封面·时间轴·导出·助手（
 node test/audit-v06.js             # 18 项 语音合成与缓存
 node test/audit-ui-v06.js          # 17 项 混音器 / 设置页 / 主题曲页
 node test/audit-ui-v07.js          # 26 项 润色（diff/采纳/原文留存）与剧本（解析/导出）
+node test/audit-v08.js             # 16 项 插图（临时 URL 落盘 / 缓存）与 ffmpeg 解包
 ```
 
-合计 **369 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
+合计 **385 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
 并校验 docx / pptx / pdf 的包结构与文件头）。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
   
 （`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。

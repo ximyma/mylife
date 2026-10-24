@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.7.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.8.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1014,6 +1014,155 @@ async function apiTts(body) {
   };
 }
 
+
+/* ---------------- 插图生成（文生图） ---------------- */
+
+function imgKey(prompt, model, size) {
+  return crypto.createHash('sha1').update([prompt, model, size].join('|')).digest('hex').slice(0, 20);
+}
+
+/**
+ * 生成一张插图。供应商走 OpenAI 兼容的 /images/generations。
+ * 硅基流动返回的是临时 URL（会过期），所以必须当场下载落盘，不能只存链接。
+ * 同一段描述 + 同一模型 + 同一尺寸 = 同一张图，缓存命中直接返回。
+ */
+async function apiImage(body) {
+  const prompt = String(body.prompt || '').trim();
+  if (!prompt) return { ok: false, message: '没有画面描述' };
+  if (prompt.length > 1200) return { ok: false, message: '画面描述太长了（最多 1200 字）' };
+
+  const chain = profileChain({ slot: 'img', profileId: body.profileId, model: body.model });
+  if (!chain.length) {
+    return {
+      ok: false, fallback: 'none',
+      message: '还没配「图片生成」的模型。设置 → 模型来源里绑一条，模型填 Kwai-Kolors/Kolors（免费）。',
+    };
+  }
+
+  const size = /^\d{3,4}x\d{3,4}$/.test(String(body.size || '')) ? String(body.size) : '1024x1024';
+  const dir = path.join(ctxFiles(), 'ai', 'img');
+  fs.mkdirSync(dir, { recursive: true });
+  const errors = [];
+
+  for (const cand of chain.slice(0, 2)) {
+    const model = cand.model || 'Kwai-Kolors/Kolors';
+    const key = imgKey(prompt, model, size);
+
+    try {
+      const hit = ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='image'").get(key);
+      if (hit && hit.path && fs.existsSync(path.join(ctxFiles(), hit.path))) {
+        return { ok: true, path: hit.path, cached: true, model: model };
+      }
+    } catch (e) {}
+
+    try {
+      const t0 = Date.now();
+      const r = await fetchJson(endpointOf(cand.profile) + '/images/generations', {
+        method: 'POST',
+        headers: authHeaders(cand.profile),
+        body: JSON.stringify({
+          model: model,
+          prompt: prompt,
+          image_size: size,
+          batch_size: 1,
+          num_inference_steps: Number(body.steps) || 20,
+          guidance_scale: Number(body.cfg) || 7.5,
+        }),
+      }, 180000);
+
+      if (!r.ok) {
+        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + String(r.text).slice(0, 150));
+        continue;
+      }
+      const j = r.json || {};
+      const item = (j.images && j.images[0]) || (j.data && j.data[0]) || null;
+      if (!item) { errors.push(cand.profile.name + ' 没返回图片'); continue; }
+
+      let buf = null;
+      const url = String(item.url || '');
+      if (url.indexOf('data:') === 0) {
+        buf = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
+      } else if (item.b64_json) {
+        buf = Buffer.from(String(item.b64_json), 'base64');
+      } else if (/^https?:/.test(url)) {
+        const img = await fetch(url);
+        if (!img.ok) { errors.push('图床取图失败 ' + img.status); continue; }
+        buf = Buffer.from(await img.arrayBuffer());
+      }
+      if (!buf || !buf.length) { errors.push(cand.profile.name + ' 图片是空的'); continue; }
+
+      const rel = 'ai/img/' + key + '.jpg';
+      fs.writeFileSync(path.join(ctxFiles(), rel), buf);
+      try {
+        ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
+          .run('image', key, rel, prompt.slice(0, 300), model);
+      } catch (e) {}
+      usageAdd('image', model, 1, 'image', 0, 'image');
+
+      return {
+        ok: true, path: rel, bytes: buf.length, model: model, ms: Date.now() - t0, cached: false,
+        note: '图片由 AI 生成，服务商会在角落加标识',
+      };
+    } catch (e) {
+      errors.push(cand.profile.name + ' 连不上：' + (e.message || e));
+    }
+  }
+
+  return { ok: false, message: '没画出来：' + errors.join('；') };
+}
+
+/* ---------------- 媒体渲染：ffmpeg 探测 ---------------- */
+
+/**
+ * ffmpeg 随 exe 一起分发（内置资源），首次用到时解到 data/bin 下。
+ * 为什么不在 resources/ 里直接放：单文件分发时只有一个 exe，没有 resources 目录。
+ */
+function ffmpegPath() {
+  const binDir = path.join(DATA, 'bin');
+  const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const target = path.join(binDir, exeName);
+
+  if (fs.existsSync(target) && fs.statSync(target).size > 1024 * 1024) {
+    return target;
+  }
+
+  const asset = assetGet('bin/' + exeName);
+  const onDisk = path.join(ROOT, 'bin', exeName);
+  let buf = null;
+  if (asset && asset.length) buf = asset;
+  else if (fs.existsSync(onDisk)) buf = fs.readFileSync(onDisk);
+
+  if (!buf || buf.length < 1024 * 1024) return null;
+
+  try {
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(target, buf);
+    try { fs.chmodSync(target, 0o755); } catch (e) {}
+    return target;
+  } catch (e) {
+    console.warn('[ffmpeg] 解包失败：', e.message);
+    return null;
+  }
+}
+
+function apiRenderProbe() {
+  const bin = ffmpegPath();
+  if (!bin) {
+    return { ok: false, message: '这个包里没有 ffmpeg（构建时未内置），短片与混音导出用不了' };
+  }
+  try {
+    const r = require('child_process').spawnSync(bin, ['-version'], { encoding: 'utf8', timeout: 15000 });
+    const first = String(r.stdout || '').split('\n')[0] || '';
+    return {
+      ok: r.status === 0, path: bin, version: first.trim(),
+      bytes: fs.statSync(bin).size,
+      encoders: true,
+    };
+  } catch (e) {
+    return { ok: false, message: 'ffmpeg 调不起来：' + (e.message || e) };
+  }
+}
+
 /* ---------------- 能力网关 ----------------
  * 一条能力 = 一组候选配置（显式指定 → 用途槽位 → 其余启用配置）。
  * 前一个失败就换下一个，把每一次失败原话带回前端。 */
@@ -1347,6 +1496,8 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/file') out = apiFile(body);
           else if (pathname === '/api/asr') out = await apiAsr(body);
           else if (pathname === '/api/tts') out = await apiTts(body);
+          else if (pathname === '/api/image') out = await apiImage(body);
+          else if (pathname === '/api/render/probe') out = apiRenderProbe();
           else if (pathname === '/api/jobs') out = apiJobGet(body);
           else if (pathname === '/api/jobs/create') out = apiJobCreate(body);
           else if (pathname === '/api/jobs/cancel') out = apiJobCancel(body);
@@ -1430,6 +1581,7 @@ server.on('error', (e) => {
 
 server.listen(PORT, HOST, () => {
   jobsStart();          // 重启后把没跑完的任务捡起来
+  try { ffmpegPath(); } catch (e) {}   // 内置的 ffmpeg 先解出来，第一次用的时候就不用等
   const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
   const hasLegacy = fs.existsSync(path.join(DATA, 'archive.db'));
   console.log('');

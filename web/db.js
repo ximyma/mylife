@@ -1192,6 +1192,16 @@
         return locate().then(function (loc) { return addEntry(loc); });
       }
 
+      // 插图：图片已经在 ai/img 里了，直接登记，不再复制一份字节
+      if (kind === 'photo' && o.photoPath) {
+        return locate().then(function (loc) {
+          return API.exec(
+            'INSERT INTO photos (archive_id,path,taken_year,taken_month,taken_day,place,event,chapter_id,role) VALUES (?,?,?,?,?,?,?,?,?)',
+            [aid, o.photoPath, year || 0, month, day, o.place || 'AI 插图', o.text || 'AI 插图', loc.chapterId, 'inline']
+          ).then(function (r) { return addEntry(loc, { photoId: r.lastId }); });
+        });
+      }
+
       if (!o.dataUrl) return Promise.reject(new Error('没有收到文件'));
       var raw = String(o.dataUrl);
       var comma = raw.indexOf(',');
