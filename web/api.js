@@ -59,6 +59,36 @@
     });
   }
 
+  /** 与 post 同构，但发 DELETE（用户删除用）。401 同样踢回登录页。 */
+  function del(path, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('DELETE', path, true);
+      var t = token();
+      if (t) xhr.setRequestHeader('Authorization', 'Bearer ' + t);
+      xhr.timeout = timeoutMs || 30000;
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status === 0) return reject(new Error('连不上本地服务'));
+        var j;
+        try { j = JSON.parse(xhr.responseText); } catch (e) { return reject(new Error('返回的不是 JSON：' + String(xhr.responseText).slice(0, 80))); }
+        if (xhr.status === 401) {
+          setToken('');
+          if (onUnauthorized) onUnauthorized();
+          var e401 = new Error((j && (j.__auth || j.message)) || '需要登录');
+          e401.unauthorized = true;
+          return reject(e401);
+        }
+        if (j && j.__error) return reject(new Error(j.__error));
+        if (xhr.status >= 400) return reject(new Error((j && j.message) || ('HTTP ' + xhr.status)));
+        resolve(j);
+      };
+      xhr.onerror = function () { reject(new Error('网络出错了')); };
+      xhr.ontimeout = function () { reject(new Error('等太久了，稍后再试')); };
+      xhr.send();
+    });
+  }
+
   /**
    * 安卓端 SQLite 读出来的每一列都是字符串（Cursor.getString），
    * 电脑端 node:sqlite 给的是数字。于是 profiles[i].id === 1 这种比较
@@ -236,6 +266,17 @@
       debugData: function () {
         return post('/api/debug/data', {});
       },
+      /* ---- 用户管理（v0.9 单机版） ---- */
+      users: function () { return post('/api/auth/users', {}); },
+      createUser: function (phone, password, nickname, isAdmin) {
+        return post('/api/auth/users', { phone: phone, password: password, nickname: nickname, isAdmin: !!isAdmin });
+      },
+      deleteUser: function (id) { return del('/api/auth/users/' + id); },
+      resetUser: function (id, password) { return post('/api/auth/users/' + id + '/reset', { password: password }); },
+      changePassword: function (oldP, password) { return post('/api/auth/me/password', { old: oldP, password: password }); },
+      setSecurity: function (question, answer) { return post('/api/auth/me/security', { question: question, answer: answer }); },
+      recoverQuestion: function (phone) { return post('/api/auth/recover/q', { phone: phone }); },
+      recover: function (phone, answer, password) { return post('/api/auth/recover', { phone: phone, answer: answer, password: password }); },
       token: token,
       setToken: setToken,
       /** app.js 注入 401 跳转回调 */

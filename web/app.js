@@ -100,8 +100,147 @@
   window.ML = {
     esc: esc, fsrc: fsrc, toast: toast, fail: fail, go: go,
     topbar: topbar, bytes: bytes,
+    openChangePassword: openChangePassword,
+    openSetSecurity: openSetSecurity,
+    openResetPassword: openResetPassword,
     safeName: function (s) { return String(s || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60); },
   };
+
+  /* ---------------- v0.9：账号弹窗（改密 / 密保 / 重置他人） ---------------- */
+
+  function modalBox(title, bodyHtml) {
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal"><h3>' + esc(title) + '</h3>' + bodyHtml +
+      '<div class="ml-modal-msg" id="mlmMsg"></div></div>';
+    document.body.appendChild(ov);
+    ov.onclick = function (e) { if (e.target === ov) close(); };
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    return { ov: ov, close: close, msg: function (t, bad) {
+      var el = document.getElementById('mlmMsg');
+      if (el) { el.textContent = t || ''; el.style.color = bad ? 'var(--danger)' : 'var(--accent)'; }
+    } };
+  }
+
+  function openChangePassword() {
+    var m = modalBox('修改密码',
+      '<div class="fld"><label>原密码</label><input id="cpOld" type="password"></div>' +
+      '<div class="fld"><label>新密码（至少 6 位）</label><input id="cpNew" type="password"></div>' +
+      '<div class="ml-modal-acts"><button class="btn primary" id="cpOk">确定</button>' +
+      '<button class="btn" id="cpCancel">取消</button></div>');
+    m.ov.querySelector('#cpCancel').onclick = m.close;
+    m.ov.querySelector('#cpOk').onclick = function () {
+      var oldP = m.ov.querySelector('#cpOld').value;
+      var newP = m.ov.querySelector('#cpNew').value;
+      if (!newP || newP.length < 6) { m.msg('新密码至少 6 位', true); return; }
+      API.auth.changePassword(oldP, newP).then(function () { toast('密码已修改'); m.close(); })
+        .catch(function (e) { m.msg(e.message, true); });
+    };
+  }
+
+  function openSetSecurity() {
+    var m = modalBox('设置密保问题',
+      '<p class="hint">忘记密码时可用它自助找回，答案只有你自己知道。</p>' +
+      '<div class="fld"><label>密保问题</label><input id="sq" placeholder="例如：我小学班主任姓什么"></div>' +
+      '<div class="fld"><label>密保答案</label><input id="sa" placeholder="例如：王"></div>' +
+      '<div class="ml-modal-acts"><button class="btn primary" id="sqOk">保存</button>' +
+      '<button class="btn" id="sqCancel">取消</button></div>');
+    m.ov.querySelector('#sqCancel').onclick = m.close;
+    m.ov.querySelector('#sqOk').onclick = function () {
+      var q = m.ov.querySelector('#sq').value.trim();
+      var a = m.ov.querySelector('#sa').value.trim();
+      if (!q || !a) { m.msg('问题和答案都要填', true); return; }
+      API.auth.setSecurity(q, a).then(function () { toast('密保已设置'); m.close(); })
+        .catch(function (e) { m.msg(e.message, true); });
+    };
+  }
+
+  function openResetPassword(uid, phone) {
+    var m = modalBox('重置密码 · ' + esc(phone),
+      '<div class="fld"><label>新密码（至少 6 位）</label><input id="rp" type="password"></div>' +
+      '<div class="ml-modal-acts"><button class="btn primary" id="rpOk">确定</button>' +
+      '<button class="btn" id="rpCancel">取消</button></div>');
+    m.ov.querySelector('#rpCancel').onclick = m.close;
+    m.ov.querySelector('#rpOk').onclick = function () {
+      var pw = m.ov.querySelector('#rp').value;
+      if (!pw || pw.length < 6) { m.msg('新密码至少 6 位', true); return; }
+      API.auth.resetUser(uid, pw).then(function () { toast('已重置 ' + phone + ' 的密码'); m.close(); })
+        .catch(function (e) { m.msg(e.message, true); });
+    };
+  }
+
+  /* ---------------- 用户管理（管理员页） ---------------- */
+
+  function renderUsers() {
+    app.innerHTML = topbar({ back: '#/settings', title: '用户管理' }) +
+      '<main class="wrap narrow"><div class="boot">正在加载用户……</div></main>';
+    API.auth.me().then(function (me) {
+      if (!me.isAdmin) {
+        app.innerHTML = topbar({ back: '#/settings', title: '用户管理' }) +
+          '<main class="wrap narrow"><p class="warn-text">只有管理员能管理用户。</p></main>';
+        return;
+      }
+      return API.auth.users().then(function (r) {
+        var users = r.users || [];
+        var rows = '';
+        for (var i = 0; i < users.length; i++) {
+          var u = users[i];
+          rows += '<div class="usr-row">' +
+            '<div class="usr-info"><b>' + esc(u.phone) + '</b>' +
+            (u.nickname ? ' <span class="muted">' + esc(u.nickname) + '</span>' : '') +
+            (u.isAdmin ? ' <span class="tag">管理员</span>' : '') + '</div>' +
+            '<div class="usr-acts">' +
+            '<button class="btn tiny" data-rp="' + u.id + '" data-phone="' + esc(u.phone) + '">重置密码</button>' +
+            (u.id !== me.uid ? '<button class="btn tiny danger-t" data-del="' + u.id + '" data-phone="' + esc(u.phone) + '">删除</button>' : '') +
+            '</div></div>';
+        }
+        var html = topbar({ back: '#/settings', title: '用户管理' }) + '<main class="wrap narrow">' +
+          '<h2 class="set-h">已有用户（' + users.length + '）</h2>' + (rows || '<p class="muted">还没有其它用户</p>') +
+          '<h2 class="set-h">添加用户</h2>' +
+          '<div class="fld"><label>手机号</label><input id="nuPhone" maxlength="11" placeholder="11 位手机号"></div>' +
+          '<div class="fld"><label>昵称（选填）</label><input id="nuNick" placeholder="怎么称呼"></div>' +
+          '<div class="fld"><label>初始密码（至少 6 位）</label><input id="nuPw" type="password"></div>' +
+          '<label class="chk"><input type="checkbox" id="nuAdmin"> 设为管理员</label>' +
+          '<p class="ml-modal-msg" id="nuMsg" style="min-height:16px;color:var(--danger)"></p>' +
+          '<button class="btn primary" id="nuAdd" style="width:100%">添加用户</button>' +
+          '</main>';
+        app.innerHTML = html;
+        bindUsers(me);
+      });
+    }).catch(fail);
+  }
+
+  function bindUsers(me) {
+    var addBtn = document.getElementById('nuAdd');
+    if (addBtn) addBtn.onclick = function () {
+      var phone = document.getElementById('nuPhone').value.trim();
+      var nick = document.getElementById('nuNick').value.trim();
+      var pw = document.getElementById('nuPw').value;
+      var isAdm = document.getElementById('nuAdmin').checked;
+      var msg = document.getElementById('nuMsg');
+      if (!pw || pw.length < 6) { msg.textContent = '初始密码至少 6 位'; return; }
+      API.auth.createUser(phone, pw, nick, isAdm).then(function () { toast('已添加用户'); renderUsers(); })
+        .catch(function (e) { msg.textContent = e.message; });
+    };
+    var rows = app.querySelectorAll('[data-rp]');
+    for (var i = 0; i < rows.length; i++) {
+      (function (el) {
+        el.onclick = function () { ML.openResetPassword(Number(el.getAttribute('data-rp')), el.getAttribute('data-phone')); };
+      })(rows[i]);
+    }
+    var dels = app.querySelectorAll('[data-del]');
+    for (var j = 0; j < dels.length; j++) {
+      (function (el) {
+        el.onclick = function () {
+          var id = Number(el.getAttribute('data-del'));
+          var phone = el.getAttribute('data-phone');
+          if (!window.confirm('确定删除用户 ' + phone + '？\n该账号将无法登录，但其档案数据保留（可由管理员找回）。')) return;
+          API.auth.deleteUser(id).then(function () { toast('已删除 ' + phone); renderUsers(); })
+            .catch(function (e) { alert(e.message); });
+        };
+      })(dels[j]);
+    }
+  }
 
   /* ---------------- 首页 ---------------- */
 
@@ -1398,12 +1537,22 @@
   function clearEdit() { editState.type = null; editState.id = null; }
 
   function renderSettings() {
-    Promise.all([DB.listProfiles(), DB.getSlots(), DB.getSettings()]).then(function (r) {
-      var profiles = r[0], slots = r[1], cfg = r[2];
+    Promise.all([DB.listProfiles(), DB.getSlots(), DB.getSettings(), API.auth.me().catch(function(){return {};})]).then(function (r) {
+      var profiles = r[0], slots = r[1], cfg = r[2], me = r[3] || {};
+      var isAdmin = !!me.isAdmin;
       var slotMap = {};
       for (var i = 0; i < slots.length; i++) slotMap[slots[i].slot] = slots[i];
 
       var html = topbar({ back: '#/', title: '设置' }) + '<main class="wrap narrow">';
+
+      /* ---- 账号（v0.9：单机版多用户 / 找回密码） ---- */
+      html += '<h2 class="set-h">账号</h2>' +
+        '<div class="acc-actions">' +
+        '<button class="btn" id="accChPw">修改密码</button>' +
+        '<button class="btn" id="accSec">设置密保问题</button>' +
+        (isAdmin ? '<a class="btn" href="#/users">用户管理</a>' : '') +
+        '</div>' +
+        '<p class="hint dim">忘记密码时，可用密保问题自助找回；管理员也能在「用户管理」里重置他人密码。</p>';
 
       /* ---- 模型来源 ---- */
       html += '<h2 class="set-h">模型来源</h2>' +
@@ -1679,6 +1828,11 @@
 
       html += '</main>';
       app.innerHTML = html;
+
+      var accChPw = document.getElementById('accChPw');
+      if (accChPw) accChPw.onclick = function () { ML.openChangePassword(); };
+      var accSec = document.getElementById('accSec');
+      if (accSec) accSec.onclick = function () { ML.openSetSecurity(); };
 
       bindSettings(profiles, slotMap);
     }).catch(fail);
@@ -2125,54 +2279,123 @@
 
   /* ---------------- 路由 ---------------- */
 
-  /** 登录 / 注册页。v0.3 起先登录再用；验证码演示版固定 1234 */
+  /** 登录 / 注册 / 找回密码。v0.3 起先登录再用；验证码演示版固定 1234 */
   function renderLogin() {
-    var mode = 'login';   // login | register
-    app.innerHTML = topbar() +
-      '<main class="wrap auth-wrap"><div class="auth-box">' +
-      '<h1 class="h1" style="text-align:center">我的人生档案</h1>' +
-      '<p class="muted" style="text-align:center">登录后开始使用</p>' +
+    var mode = 'login';   // login | register | recover
 
-      '<div class="fld"><label>手机号</label>' +
-      '<input id="auPhone" type="tel" maxlength="11" placeholder="11 位手机号"></div>' +
-
-      '<div class="fld"><label>密码</label>' +
-      '<input id="auPass" type="password" placeholder="至少 6 位"></div>' +
-
-      '<div class="fld" id="auNickRow" hidden><label>昵称（选填）</label>' +
-      '<input id="auNick" placeholder="怎么称呼你"></div>' +
-
-      '<div class="fld" id="auCodeRow" hidden><label>短信验证码</label>' +
-      '<div style="display:flex;gap:8px">' +
-      '<input id="auCode" maxlength="6" placeholder="演示版固定 1234" style="flex:1">' +
-      '<button class="btn" id="auSms" type="button">发验证码</button></div></div>' +
-
-      '<button class="btn primary" id="auGo" style="width:100%;margin-top:6px">登录</button>' +
-      '<p class="muted" style="text-align:center;margin-top:12px">' +
-      '<a href="javascript:void 0" id="auToggle" style="color:var(--accent)">没有账号？注册一个</a></p>' +
-      '<p class="muted" id="auMsg" style="text-align:center;min-height:18px;color:var(--danger)"></p>' +
-      '</div></main>';
-
-    function msg(t) { document.getElementById('auMsg').textContent = t || ''; }
-    function isReg() { return mode === 'register'; }
-    function refreshMode() {
-      document.getElementById('auNickRow').hidden = !isReg();
-      document.getElementById('auCodeRow').hidden = !isReg();
-      document.getElementById('auGo').textContent = isReg() ? '注册并进入' : '登录';
-      document.getElementById('auToggle').textContent = isReg() ? '已有账号？去登录' : '没有账号？注册一个';
-      msg('');
+    function box(inner) {
+      return topbar() + '<main class="wrap auth-wrap"><div class="auth-box">' +
+        '<h1 class="h1" style="text-align:center">我的人生档案</h1>' +
+        '<p class="muted" style="text-align:center" id="auSub">登录后开始使用</p>' + inner +
+        '<p class="muted" id="auMsg" style="text-align:center;min-height:18px;color:var(--danger)"></p>' +
+        '</div></main>';
     }
 
-    document.getElementById('auToggle').onclick = function () {
-      mode = isReg() ? 'login' : 'register';
-      refreshMode();
-    };
-    document.getElementById('auSms').onclick = function () {
-      var phone = document.getElementById('auPhone').value.trim();
-      API.auth.sms(phone).then(function (r) {
-        msg(''); toast(r.message || '验证码已发送');
+    function render() {
+      var inner;
+      if (mode === 'recover') {
+        inner =
+          '<div class="fld"><label>手机号</label><input id="auPhone" type="tel" maxlength="11" placeholder="11 位手机号"></div>' +
+          '<div class="fld" id="recQRow" hidden><label>密保问题</label><input id="auQ" disabled></div>' +
+          '<div class="fld" id="recARow" hidden><label>密保答案</label><input id="auA" placeholder="输入你的答案"></div>' +
+          '<div class="fld" id="recPRow" hidden><label>新密码（至少 6 位）</label><input id="auPass" type="password"></div>' +
+          '<button class="btn primary" id="auGo" style="width:100%;margin-top:6px">下一步</button>' +
+          '<p class="muted" style="text-align:center;margin-top:12px">' +
+          '<a href="javascript:void 0" id="auBack" style="color:var(--accent)">返回登录</a></p>';
+      } else {
+        inner =
+          '<div class="fld"><label>手机号</label><input id="auPhone" type="tel" maxlength="11" placeholder="11 位手机号"></div>' +
+          '<div class="fld"><label>密码</label><input id="auPass" type="password" placeholder="至少 6 位"></div>' +
+          '<div class="fld" id="auNickRow"' + (mode === 'register' ? '' : ' hidden') + '><label>昵称（选填）</label><input id="auNick" placeholder="怎么称呼你"></div>' +
+          '<div class="fld" id="auCodeRow"' + (mode === 'register' ? '' : ' hidden') + '><label>短信验证码</label><div style="display:flex;gap:8px"><input id="auCode" maxlength="6" placeholder="演示版固定 1234" style="flex:1"><button class="btn" id="auSms" type="button">发验证码</button></div></div>' +
+          '<div class="fld" id="auSecQRow"' + (mode === 'register' ? '' : ' hidden') + '><label>密保问题（选填，用于找回密码）</label><input id="auSecQ" placeholder="例如：我小学班主任姓什么"></div>' +
+          '<div class="fld" id="auSecARow"' + (mode === 'register' ? '' : ' hidden') + '><label>密保答案</label><input id="auSecA" placeholder="例如：王"></div>' +
+          '<button class="btn primary" id="auGo" style="width:100%;margin-top:6px">' + (mode === 'register' ? '注册并进入' : '登录') + '</button>' +
+          '<p class="muted" style="text-align:center;margin-top:12px">' +
+          '<a href="javascript:void 0" id="auToggle" style="color:var(--accent)">' + (mode === 'register' ? '已有账号？去登录' : '没有账号？注册一个') + '</a>' +
+          (mode === 'register' ? '' : ' · <a href="javascript:void 0" id="auForget" style="color:var(--accent)">忘记密码？</a>') +
+          '</p>';
+      }
+      app.innerHTML = box(inner);
+      bind();
+    }
+
+    function msg(t) { var el = document.getElementById('auMsg'); if (el) el.textContent = t || ''; }
+    function isReg() { return mode === 'register'; }
+
+    function bind() {
+      var goBtn = document.getElementById('auGo');
+      var sub = document.getElementById('auSub');
+
+      if (mode === 'recover') {
+        if (sub) sub.textContent = '用密保问题找回密码';
+        goBtn.textContent = '下一步';
+        goBtn.onclick = function () {
+          var phone = document.getElementById('auPhone').value.trim();
+          API.auth.recoverQuestion(phone).then(function (r) {
+            document.getElementById('recQRow').hidden = false;
+            document.getElementById('recARow').hidden = false;
+            document.getElementById('recPRow').hidden = false;
+            document.getElementById('auQ').value = r.question || '';
+            goBtn.textContent = '重置密码';
+            goBtn.onclick = function () { doRecover(phone); };
+          }).catch(function (e) { msg(e.message); });
+        };
+        var back = document.getElementById('auBack');
+        if (back) back.onclick = function () { mode = 'login'; render(); };
+        return;
+      }
+
+      if (sub) sub.textContent = isReg() ? '注册一个新账号' : '登录后开始使用';
+      goBtn.textContent = isReg() ? '注册并进入' : '登录';
+      var toggle = document.getElementById('auToggle');
+      if (toggle) toggle.onclick = function () { mode = isReg() ? 'login' : 'register'; render(); };
+      var forget = document.getElementById('auForget');
+      if (forget) forget.onclick = function () { mode = 'recover'; render(); };
+      var sms = document.getElementById('auSms');
+      if (sms) sms.onclick = function () {
+        var phone = document.getElementById('auPhone').value.trim();
+        API.auth.sms(phone).then(function (r) { msg(''); toast(r.message || '验证码已发送'); })
+          .catch(function (e) { msg(e.message); });
+      };
+      goBtn.onclick = function () {
+        var btn = this;
+        var phone = document.getElementById('auPhone').value.trim();
+        var pass = document.getElementById('auPass').value;
+        btn.disabled = true;
+        var p;
+        if (isReg()) {
+          var secQ = document.getElementById('auSecQ').value.trim();
+          var secA = document.getElementById('auSecA').value.trim();
+          p = API.auth.register(phone, pass, document.getElementById('auCode').value.trim(),
+            document.getElementById('auNick').value.trim());
+          p = p.then(function (r) {
+            if (secQ && secA) {
+              return API.auth.setSecurity(secQ, secA).catch(function () { return r; }).then(function () { return r; });
+            }
+            return r;
+          });
+        } else {
+          p = API.auth.login(phone, pass);
+        }
+        p.then(done).catch(function (e) { msg(e.message); btn.disabled = false; });
+      };
+      var passEl = document.getElementById('auPass');
+      if (passEl) passEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') goBtn.click();
+      });
+    }
+
+    function doRecover(phone) {
+      var answer = document.getElementById('auA').value.trim();
+      var newP = document.getElementById('auPass').value;
+      if (!answer) { msg('请填写密保答案'); return; }
+      if (!newP || newP.length < 6) { msg('新密码至少 6 位'); return; }
+      API.auth.recover(phone, answer, newP).then(function () {
+        toast('密码已重置，请用新密码登录');
+        mode = 'login'; render();
       }).catch(function (e) { msg(e.message); });
-    };
+    }
 
     function done(r) {
       API.auth.setToken(r.token);
@@ -2180,25 +2403,8 @@
       toast(r.message || '欢迎回来');
       go('#/');
     }
-    document.getElementById('auGo').onclick = function () {
-      var btn = this;
-      var phone = document.getElementById('auPhone').value.trim();
-      var pass = document.getElementById('auPass').value;
-      btn.disabled = true;
-      var p;
-      if (isReg()) {
-        p = API.auth.register(phone, pass,
-          document.getElementById('auCode').value.trim(),
-          document.getElementById('auNick').value.trim());
-      } else {
-        p = API.auth.login(phone, pass);
-      }
-      p.then(done).catch(function (e) { msg(e.message); btn.disabled = false; });
-    };
-    // 回车直接提交
-    app.querySelector('#auPass').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') document.getElementById('auGo').click();
-    });
+
+    render();
   }
 
   function route() {
@@ -2222,6 +2428,7 @@
     if ((m = /^#\/a\/(\d+)\/comic/.exec(h))) return renderComic(m[1]);
     if ((m = /^#\/a\/(\d+)\/movie/.exec(h))) return renderMovie(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
+    if (h === '#/users') return renderUsers();
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
   }

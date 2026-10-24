@@ -108,6 +108,9 @@ function init(dataDir, onMigrate) {
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       nickname TEXT,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      security_q TEXT,
+      security_a TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -116,6 +119,16 @@ function init(dataDir, onMigrate) {
       expires_at TEXT NOT NULL
     );
   `);
+  // 老库补列：CREATE TABLE IF NOT EXISTS 不会给已存在的表加新字段
+  const userCols = adb.prepare('PRAGMA table_info(users)').all().map(function (c) { return c.name; });
+  const addCol = function (col, ddl) {
+    if (!userCols.includes(col)) {
+      try { adb.prepare('ALTER TABLE users ADD COLUMN ' + col + ' ' + ddl).run(); } catch (e) {}
+    }
+  };
+  addCol('is_admin', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('security_q', 'TEXT');
+  addCol('security_a', 'TEXT');
   firstUserMigrate = onMigrate || null;
   return adb;
 }
@@ -153,17 +166,18 @@ function register(phone, password, code, nickname) {
     throw new Error('这个手机号已经注册过，直接登录');
   }
 
+  const firstOne = userCount() === 0;   // 全站第一个账号 = 管理员
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = hashPw(password, salt);
-  const r = adb.prepare('INSERT INTO users (phone, password_hash, salt, nickname) VALUES (?, ?, ?, ?)')
-    .run(phone, hash, salt, nickname || null);
+  const r = adb.prepare('INSERT INTO users (phone, password_hash, salt, nickname, is_admin) VALUES (?, ?, ?, ?, ?)')
+    .run(phone, hash, salt, nickname || null, firstOne ? 1 : 0);
   const uid = Number(r.lastInsertRowid);
 
   let migrated = false;
-  if (userCount() === 1 && firstUserMigrate) {
+  if (firstOne && firstUserMigrate) {
     migrated = !!firstUserMigrate(uid);
   }
-  return { uid, token: issueToken(uid), phone, migrated };
+  return { uid: uid, token: issueToken(uid), phone: phone, nickname: nickname || null, isAdmin: firstOne, migrated: migrated };
 }
 
 function login(phone, password) {
@@ -207,7 +221,105 @@ function logout(token) {
   return true;
 }
 
-return { init, register, login, sms, verify, logout, CODE_FIXED };
+/* ---------------- 用户管理（v0.9：单机版多用户 + 找回密码） ----------------
+ * 首个注册账号是管理员（is_admin=1）。管理员可增删用户、重置他人密码；
+ * 普通用户可改自己的密码、设置/使用密保问题自助找回。
+ * 密保答案做 sha256（转小写去空格）存储，不存明文。 */
+
+function hashAnswer(a) {
+  return crypto.createHash('sha256').update(String(a || '').trim().toLowerCase()).digest('hex');
+}
+
+function isAdmin(uid) {
+  const u = adb.prepare('SELECT is_admin FROM users WHERE id=?').get(Number(uid));
+  return !!(u && u.is_admin);
+}
+
+function listUsers() {
+  return adb.prepare('SELECT id, phone, nickname, is_admin, created_at FROM users ORDER BY id').all()
+    .map(function (r) {
+      return { id: Number(r.id), phone: r.phone, nickname: r.nickname, isAdmin: !!r.is_admin, createdAt: r.created_at };
+    });
+}
+
+function addUser(actorUid, phone, password, nickname, makeAdmin) {
+  if (!isAdmin(actorUid)) throw new Error('只有管理员能添加用户');
+  if (!/^1[3-9]\d{9}$/.test(String(phone || ''))) throw new Error('手机号格式不对');
+  if (!password || String(password).length < 6) throw new Error('密码至少 6 位');
+  if (adb.prepare('SELECT id FROM users WHERE phone=?').get(phone)) throw new Error('这个手机号已经存在');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPw(password, salt);
+  const r = adb.prepare('INSERT INTO users (phone, password_hash, salt, nickname, is_admin) VALUES (?, ?, ?, ?, ?)')
+    .run(phone, hash, salt, nickname || null, makeAdmin ? 1 : 0);
+  return { uid: Number(r.lastInsertRowid), phone: phone, nickname: nickname || null, isAdmin: !!makeAdmin };
+}
+
+function deleteUser(actorUid, targetUid) {
+  if (!isAdmin(actorUid)) throw new Error('只有管理员能删除用户');
+  targetUid = Number(targetUid);
+  if (actorUid === targetUid) throw new Error('不能删除自己');
+  const t = adb.prepare('SELECT id, is_admin FROM users WHERE id=?').get(targetUid);
+  if (!t) throw new Error('用户不存在');
+  if (t.is_admin) {
+    const adminCount = Number(adb.prepare('SELECT count(*) n FROM users WHERE is_admin=1').get().n);
+    if (adminCount <= 1) throw new Error('至少保留一个管理员');
+  }
+  adb.prepare('DELETE FROM users WHERE id=?').run(targetUid);
+  return { ok: true };
+}
+
+function changePassword(uid, oldPw, newPw) {
+  uid = Number(uid);
+  if (!newPw || String(newPw).length < 6) throw new Error('新密码至少 6 位');
+  const u = adb.prepare('SELECT * FROM users WHERE id=?').get(uid);
+  if (!u) throw new Error('用户不存在');
+  if (!sameHash(u.password_hash, hashPw(oldPw || '', u.salt))) throw new Error('原密码不对');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPw(newPw, salt);
+  adb.prepare('UPDATE users SET password_hash=?, salt=? WHERE id=?').run(hash, salt, uid);
+  return { ok: true };
+}
+
+function resetPassword(actorUid, targetUid, newPw) {
+  if (!isAdmin(actorUid)) throw new Error('只有管理员能重置密码');
+  targetUid = Number(targetUid);
+  if (!newPw || String(newPw).length < 6) throw new Error('新密码至少 6 位');
+  const u = adb.prepare('SELECT id FROM users WHERE id=?').get(targetUid);
+  if (!u) throw new Error('用户不存在');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPw(newPw, salt);
+  adb.prepare('UPDATE users SET password_hash=?, salt=? WHERE id=?').run(hash, salt, targetUid);
+  return { ok: true };
+}
+
+function setSecurity(uid, q, a) {
+  uid = Number(uid);
+  if (!q || !a) throw new Error('密保问题和答案都要填');
+  adb.prepare('UPDATE users SET security_q=?, security_a=? WHERE id=?').run(String(q), hashAnswer(a), uid);
+  return { ok: true };
+}
+
+function getSecurityQuestion(phone) {
+  const u = adb.prepare('SELECT security_q FROM users WHERE phone=?').get(String(phone || ''));
+  if (!u) throw new Error('这个手机号没注册过');
+  if (!u.security_q) throw new Error('该账号未设置密保问题，无法自助找回，请联系管理员重置');
+  return { question: u.security_q };
+}
+
+function recoverPassword(phone, answer, newPw) {
+  if (!newPw || String(newPw).length < 6) throw new Error('新密码至少 6 位');
+  const u = adb.prepare('SELECT * FROM users WHERE phone=?').get(String(phone || ''));
+  if (!u) throw new Error('这个手机号没注册过');
+  if (!u.security_a) throw new Error('该账号未设置密保问题，无法自助找回，请联系管理员重置');
+  if (u.security_a !== hashAnswer(answer)) throw new Error('密保答案不对');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPw(newPw, salt);
+  adb.prepare('UPDATE users SET password_hash=?, salt=? WHERE id=?').run(hash, salt, Number(u.id));
+  return { ok: true };
+}
+
+return { init, register, login, sms, verify, logout, isAdmin, listUsers, addUser, deleteUser,
+  changePassword, resetPassword, setSecurity, getSecurityQuestion, recoverPassword, CODE_FIXED };
 
 })();
 AUTH.init(DATA, migrateLegacy);
@@ -1774,8 +1886,8 @@ async function handleAuth(req, res, pathname) {
         'mylife_token=' + out.token + '; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax');
       return sendJson(res, 200, {
         ok: true, token: out.token, uid: out.uid, phone: out.phone,
-        migrated: out.migrated,
-        message: out.migrated ? '注册成功，v0.2 的旧档案已归属这个账号' : '注册成功',
+        isAdmin: out.isAdmin, migrated: out.migrated,
+        message: out.migrated ? '注册成功，v0.2 的旧档案已归属这个账号' : (out.isAdmin ? '注册成功，你已是管理员' : '注册成功'),
       });
     }
     if (pathname === '/api/auth/login') {
@@ -1788,12 +1900,49 @@ async function handleAuth(req, res, pathname) {
     const user = authUser(req);
     if (pathname === '/api/auth/me') {
       if (!user) return sendJson(res, 401, { __auth: '需要登录' });
-      return sendJson(res, 200, { ok: true, uid: user.uid, phone: user.phone, nickname: user.nickname });
+      return sendJson(res, 200, { ok: true, uid: user.uid, phone: user.phone, nickname: user.nickname, isAdmin: AUTH.isAdmin(user.uid) });
     }
     if (pathname === '/api/auth/logout') {
       if (user) AUTH.logout(bearerToken(req) || cookieToken(req));
       res.setHeader('Set-Cookie', 'mylife_token=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax');
       return sendJson(res, 200, { ok: true });
+    }
+
+    /* ---- 用户管理（管理员） ---- */
+    if (pathname === '/api/auth/users' && req.method === 'GET') {
+      if (!user || !AUTH.isAdmin(user.uid)) return sendJson(res, 403, { __error: '需要管理员权限' });
+      return sendJson(res, 200, { ok: true, users: AUTH.listUsers(), me: user.uid });
+    }
+    if (pathname === '/api/auth/users' && req.method === 'POST') {
+      if (!user || !AUTH.isAdmin(user.uid)) return sendJson(res, 403, { __error: '需要管理员权限' });
+      const out = AUTH.addUser(user.uid, body.phone, body.password, body.nickname, !!body.isAdmin);
+      return sendJson(res, 200, Object.assign({ ok: true }, out));
+    }
+    var um = /^\/api\/auth\/users\/(\d+)$/.exec(pathname);
+    if (um && req.method === 'DELETE') {
+      if (!user || !AUTH.isAdmin(user.uid)) return sendJson(res, 403, { __error: '需要管理员权限' });
+      return sendJson(res, 200, Object.assign({ ok: true }, AUTH.deleteUser(user.uid, um[1])));
+    }
+    var rm = /^\/api\/auth\/users\/(\d+)\/reset$/.exec(pathname);
+    if (rm && req.method === 'POST') {
+      if (!user || !AUTH.isAdmin(user.uid)) return sendJson(res, 403, { __error: '需要管理员权限' });
+      return sendJson(res, 200, Object.assign({ ok: true }, AUTH.resetPassword(user.uid, rm[1], body.password)));
+    }
+    if (pathname === '/api/auth/me/password' && req.method === 'POST') {
+      if (!user) return sendJson(res, 401, { __auth: '需要登录' });
+      return sendJson(res, 200, Object.assign({ ok: true }, AUTH.changePassword(user.uid, body.old, body.password)));
+    }
+    if (pathname === '/api/auth/me/security' && req.method === 'POST') {
+      if (!user) return sendJson(res, 401, { __auth: '需要登录' });
+      return sendJson(res, 200, Object.assign({ ok: true }, AUTH.setSecurity(user.uid, body.question, body.answer)));
+    }
+    if (pathname === '/api/auth/recover/q' && req.method === 'POST') {
+      try { return sendJson(res, 200, Object.assign({ ok: true }, AUTH.getSecurityQuestion(body.phone))); }
+      catch (e) { return sendJson(res, 200, { ok: false, message: e.message }); }
+    }
+    if (pathname === '/api/auth/recover' && req.method === 'POST') {
+      try { return sendJson(res, 200, Object.assign({ ok: true }, AUTH.recoverPassword(body.phone, body.answer, body.password))); }
+      catch (e) { return sendJson(res, 200, { ok: false, message: e.message }); }
     }
     return sendJson(res, 404, { __error: '未知接口 ' + pathname });
   } catch (e) {
