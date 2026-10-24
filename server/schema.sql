@@ -149,3 +149,159 @@ INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('asr', NULL, NU
 -- 图片生成 / 视频生成：功能接入前先把模型配置留着
 INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('img', NULL, NULL);
 INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('vid', NULL, NULL);
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('tts', NULL, NULL);
+INSERT OR IGNORE INTO ai_slots (slot, profile_id, model) VALUES ('music', NULL, NULL);
+
+-- ===== v0.5 基座：派生素材 / 任务队列 / 用量记账 =====
+
+CREATE TABLE IF NOT EXISTS derivations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  source_path TEXT NOT NULL,
+  params_hash TEXT NOT NULL,
+  out_path TEXT NOT NULL,
+  bytes INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_deriv ON derivations(source_path, params_hash);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  type TEXT NOT NULL,
+  payload_json TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',
+  progress REAL NOT NULL DEFAULT 0,
+  stage TEXT,
+  result_json TEXT,
+  error TEXT,
+  cancel_flag INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  started_at TEXT,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  capability TEXT NOT NULL,
+  model TEXT,
+  units REAL NOT NULL DEFAULT 0,
+  unit TEXT,
+  cost REAL NOT NULL DEFAULT 0,
+  ref TEXT,
+  at TEXT DEFAULT (datetime('now'))
+);
+
+-- ===== v0.6 导出记录 =====
+
+CREATE TABLE IF NOT EXISTS exports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 1,
+  archive_id INTEGER,
+  kind TEXT NOT NULL,
+  path TEXT,
+  bytes INTEGER,
+  params_json TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ===== v0.7 版本 / 剧本 / 分镜 / 素材 / 对话 =====
+
+CREATE TABLE IF NOT EXISTS entry_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL,
+  archive_id INTEGER,
+  kind TEXT NOT NULL DEFAULT 'polish',
+  style TEXT,
+  text TEXT,
+  status TEXT NOT NULL DEFAULT 'proposal',
+  model TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  title TEXT,
+  json TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS storyboards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  layout TEXT NOT NULL DEFAULT '4',
+  json TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER,
+  capability TEXT NOT NULL,
+  cache_key TEXT,
+  path TEXT NOT NULL,
+  prompt TEXT,
+  model TEXT,
+  meta_json TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER,
+  role TEXT NOT NULL DEFAULT 'interviewer',
+  title TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT,
+  refs_json TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status, id);
+CREATE INDEX IF NOT EXISTS ix_usage_at ON ai_usage(at);
+CREATE INDEX IF NOT EXISTS ix_versions_entry ON entry_versions(entry_id);
+CREATE INDEX IF NOT EXISTS ix_msgs_thread ON ai_messages(thread_id, id);
+
+-- ===== v0.5 字段增量（旧库升级用；新库的 CREATE 里已含，重复执行会被忽略） =====
+ALTER TABLE archives ADD COLUMN portrait_photo_id INTEGER;
+ALTER TABLE archives ADD COLUMN cover_config_json TEXT;
+ALTER TABLE photos ADD COLUMN role TEXT DEFAULT 'inline';
+ALTER TABLE photos ADD COLUMN crop_json TEXT;
+ALTER TABLE entries ADD COLUMN at_year INTEGER;
+ALTER TABLE entries ADD COLUMN at_month INTEGER;
+ALTER TABLE entries ADD COLUMN at_day INTEGER;
+ALTER TABLE entries ADD COLUMN at_precision TEXT;
+ALTER TABLE entries ADD COLUMN at_label TEXT;
+ALTER TABLE entries ADD COLUMN sort_key REAL;
+ALTER TABLE segments ADD COLUMN at_year INTEGER;
+ALTER TABLE segments ADD COLUMN at_month INTEGER;
+ALTER TABLE segments ADD COLUMN at_day INTEGER;
+ALTER TABLE segments ADD COLUMN at_precision TEXT;
+ALTER TABLE segments ADD COLUMN at_label TEXT;
+ALTER TABLE media ADD COLUMN at_year INTEGER;
+ALTER TABLE media ADD COLUMN at_month INTEGER;
+ALTER TABLE media ADD COLUMN at_day INTEGER;
+ALTER TABLE media ADD COLUMN at_precision TEXT;
+ALTER TABLE media ADD COLUMN at_label TEXT;
+
+-- 时间轴：四类内容按统一字段合成一张视图，前端只查它
+CREATE VIEW IF NOT EXISTS v_timeline AS
+SELECT 'entry' AS kind, e.id AS id, e.archive_id AS archive_id, e.chapter_id AS chapter_id, e.at_year AS at_year, e.at_month AS at_month, e.at_day AS at_day, e.at_precision AS at_precision, e.at_label AS at_label, COALESCE(e.sort_key, e.seq) AS sort_key, substr(COALESCE(e.text, ''), 1, 90) AS preview FROM entries e
+UNION ALL
+SELECT 'segment', s.id, s.archive_id, NULL, s.at_year, s.at_month, s.at_day, s.at_precision, s.at_label, s.id, substr(COALESCE(s.raw_text, ''), 1, 90) FROM segments s
+UNION ALL
+SELECT 'photo', p.id, p.archive_id, p.chapter_id, p.taken_year, p.taken_month, p.taken_day, 'year', NULL, p.id, COALESCE(p.event, '') FROM photos p
+UNION ALL
+SELECT 'media', m.id, m.archive_id, NULL, m.at_year, m.at_month, m.at_day, m.at_precision, m.at_label, m.id, COALESCE(m.caption, m.kind) FROM media m;

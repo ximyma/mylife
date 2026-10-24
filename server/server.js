@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.4.1';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.5.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -247,7 +247,12 @@ function initSchemaOn(d) {
     if (!clean) continue;
     all++;
     try { d.exec(clean); ok++; }
-    catch (e) { console.warn('[schema] 跳过：', clean.slice(0, 50), e.message); }
+    catch (e) {
+      // ALTER TABLE 加列在第二次打开时必然"重复列名"——这是幂等迁移的正常现象，不用刷屏
+      const msg = String(e && e.message || '');
+      if (/duplicate column name|already exists/i.test(msg)) continue;
+      console.warn('[schema] 跳过：', clean.slice(0, 50), msg);
+    }
   }
   console.log(`  数据库结构 ${ok}/${all} 条就绪`);
 }
@@ -258,10 +263,17 @@ function dbForUser(uid) {
   fs.mkdirSync(path.join(userDir, 'files', 'photo'), { recursive: true });
   fs.mkdirSync(path.join(userDir, 'files', 'audio'), { recursive: true });
   fs.mkdirSync(path.join(userDir, 'files', 'video'), { recursive: true });
+  // v0.5 的三类新目录：派生（缩略图/转码，可重建）、AI 产物、导出件。
+  // 老的 photo/audio/video 就是「原始件」，不搬家——搬一万个用户的路径是拿数据冒险。
+  for (const sub of ['derived', 'ai', 'exports']) {
+    fs.mkdirSync(path.join(userDir, 'files', sub), { recursive: true });
+  }
   const d = new DatabaseSync(path.join(userDir, 'archive.db'));
   d.exec('PRAGMA journal_mode = WAL');
   d.exec('PRAGMA foreign_keys = ON');
   initSchemaOn(d);
+  // 上次进程被杀时留下的 running 任务：重新入队，不让它永远卡在"进行中"
+  try { d.prepare("UPDATE jobs SET status='queued', stage='重启后继续' WHERE status='running'").run(); } catch (e) {}
   if (userDbs.size >= USER_DB_MAX) {
     const oldest = userDbs.keys().next().value;
     try { userDbs.get(oldest).close(); } catch (e) {}
@@ -592,57 +604,43 @@ async function apiAiTest(body) {
   }
 }
 
-/** 对话：支持多模态（messages 里带 image_url 直接透传） */
+/** 对话：支持多模态（messages 里带 image_url 直接透传）；一条不通自动换下一条 */
 async function apiAi(body) {
-  const pick = pickProfile(body);
-  if (!pick) {
-    return { ok: false, message: '还没配模型。打开「设置 → 模型」加一条。' };
-  }
-  const { profile, model } = pick;
-  const useModel = model || profile.default_model;
-  if (!useModel) return { ok: false, message: '这条配置还没选模型' };
   if (!body.messages || !body.messages.length) return { ok: false, message: '没有要发送的内容' };
-
-  const payload = {
-    model: useModel,
-    messages: body.messages,
-    temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
-    stream: false,
-  };
-  if (body.maxTokens) payload.max_tokens = body.maxTokens;
-
-  const t0 = Date.now();
-  try {
-    const r = await fetchJson(endpointOf(profile) + '/chat/completions', {
-      method: 'POST',
-      headers: authHeaders(profile),
-      body: JSON.stringify(payload),
-    }, 120000);
-    const ms = Date.now() - t0;
-
-    if (!r.ok) {
-      return { ok: false, ms, status: r.status,
-        message: `模型返回 ${r.status}：${String(r.text).slice(0, 200)}` };
-    }
-    const msg = r.json && r.json.choices && r.json.choices[0] && r.json.choices[0].message;
-    // 推理模型只吐思考、正文被 max_tokens 截断时，退一步拿思考内容，总比给用户一片空白强
-    const body = (msg && (msg.content || msg.reasoning_content || msg.reasoning)) || '';
-    return {
-      ok: true,
-      ms,
-      model: useModel,
-      profile: profile.name,
-      text: body,
-      usage: (r.json && r.json.usage) || null,
-    };
-  } catch (e) {
-    return { ok: false, ms: Date.now() - t0, message: '调不通：' + (e.message || e) };
+  const chain = profileChain(body);
+  if (!chain.length) {
+    return { ok: false, message: '还没配模型。打开「设置 → 模型来源」加一条。' };
   }
+  const errors = [];
+  for (const cand of chain.slice(0, 3)) {
+    if (!cand.model) { errors.push(cand.profile.name + ' 还没选模型'); continue; }
+    const r = await aiChatOnce(cand, body);
+    if (r.ok) {
+      usageAdd('text', cand.model, (r.usage && r.usage.total_tokens) || Math.round(r.text.length / 2), 'token', 0, 'chat');
+      return {
+        ok: true, ms: r.ms, model: cand.model, profile: cand.profile.name,
+        text: r.text, usage: r.usage || null,
+        fallbacks: errors.length ? errors : undefined,
+      };
+    }
+    errors.push(r.message || '失败');
+  }
+  return { ok: false, message: errors.join('\n') || '调用失败' };
 }
 
 /* 路径安全：只允许落在 data/files/ 里 */
 const safe = s => String(s || 'misc').replace(/\.\./g, '').replace(/[\/\\]/g, '');
 const safePath = s => String(s || '').replace(/\.\./g, '').replace(/\\/g, '/');
+
+/** 子目录也走得通（derived/thumbs、ai/img、exports），每一段都洗一遍 */
+function safeRel(s) {
+  return String(s || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(function (x) { return x && x !== '.' && x !== '..'; })
+    .map(function (x) { return x.replace(/[^\w.\-\u4e00-\u9fa5]/g, '_'); })
+    .join('/');
+}
 
 /**
  * 语音转文字：把已经存好的音频转写成文字。
@@ -719,14 +717,14 @@ async function apiAsr(body) {
     if (!String(text).trim()) {
       return { ok: false, ms, message: '转出来是空的。录音里可能没说话，或者这段音频格式不支持。', diag: diagOf(200, r.text) };
     }
+    usageAdd('asr', useModel, Math.round(size / 1024), 'KB', 0, 'asr');
     return {
       ok: true, ms, model: useModel,
       text: String(text).trim(),
       bytes: size,
       usage: (r.json && r.json.usage) || null,
       language: (r.json && r.json.language) || null,
-    };
-  } catch (e) {
+    };  } catch (e) {
     return {
       ok: false, ms: Date.now() - t0,
       message: '连不上服务器：' + (e.message || e) + '\n→ 检查网络，或这条配置的地址是否需要代理',
@@ -739,7 +737,7 @@ function apiFile(body) {
   const op = body.op || 'save';
 
   if (op === 'save') {
-    const kind = safe(body.kind);
+    const kind = safeRel(body.dir || body.kind || 'misc') || 'misc';
     const name = safe(body.name || String(Date.now()));
     let b64 = String(body.base64 || '');
     const comma = b64.indexOf(',');
@@ -753,10 +751,18 @@ function apiFile(body) {
     const dir = path.join(ctxFiles(), kind);
     fs.mkdirSync(dir, { recursive: true });
     const abs = path.join(dir, name);
+    if (!abs.startsWith(ctxFiles())) throw new Error('路径不合法');
     if (body.append) fs.appendFileSync(abs, buf);
     else fs.writeFileSync(abs, buf);
 
     return { ok: true, path: kind + '/' + name, bytes: fs.statSync(abs).size };
+  }
+
+  if (op === 'stat') {
+    const abs = path.join(ctxFiles(), safePath(body.path));
+    if (!abs.startsWith(ctxFiles()) || !fs.existsSync(abs)) return { ok: true, exists: false };
+    const st = fs.statSync(abs);
+    return { ok: true, exists: st.isFile(), bytes: st.size, mtime: st.mtimeMs };
   }
 
   if (op === 'read') {
@@ -783,6 +789,371 @@ function apiFile(body) {
   }
 
   throw new Error('未知操作 ' + op);
+}
+
+/* ================= v0.5 基座：用量记账 / 任务队列 / 能力网关 ================= */
+
+/* ---------------- 用量记账 ---------------- */
+
+function usageAdd(capability, model, units, unit, cost, ref) {
+  try {
+    ctxDb().prepare('INSERT INTO ai_usage (capability, model, units, unit, cost, ref) VALUES (?,?,?,?,?,?)')
+      .run(String(capability || 'text'), model ? String(model) : null,
+        Number(units) || 0, unit || null, Number(cost) || 0, ref || null);
+  } catch (e) { console.warn('[usage] 记账失败：' + (e.message || e)); }
+}
+
+function usageSummary(body) {
+  const days = Math.max(1, Number(body.days) || 30);
+  const rows = ctxDb().prepare(
+    "SELECT capability, COUNT(*) AS calls, COALESCE(SUM(units),0) AS units, COALESCE(SUM(cost),0) AS cost " +
+    "FROM ai_usage WHERE at >= datetime('now', ?) GROUP BY capability ORDER BY capability"
+  ).all('-' + days + ' days');
+  let calls = 0, cost = 0;
+  for (const r of rows) { calls += Number(r.calls || 0); cost += Number(r.cost || 0); }
+  return { ok: true, days: days, byCapability: rows, calls: calls, cost: Math.round(cost * 100) / 100 };
+}
+
+/* ---------------- 任务队列 ----------------
+ * 单线程、300ms 轮询、可取消、进程重启后 running 自动回队列。
+ * 为什么不用 SSE 推：安卓老 WebView 的 EventSource 带不了 Authorization 头，
+ * 本地回环上 1 秒一次的轮询开销可以忽略。 */
+
+const JOB_TYPES = Object.create(null);
+let jobBusy = false;
+let jobTicker = null;
+
+function registerJob(type, fn) { JOB_TYPES[type] = fn; }
+
+function jobsStart() {
+  if (jobTicker) return;
+  jobTicker = setInterval(function () { jobsTick().catch(function () {}); }, 300);
+  if (jobTicker.unref) jobTicker.unref();
+}
+
+function jobRowToJson(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id), type: row.type, status: row.status,
+    progress: Number(row.progress || 0), stage: row.stage || '',
+    error: row.error || null,
+    result: row.result_json ? safeJson(row.result_json) : null,
+    created_at: row.created_at, started_at: row.started_at, finished_at: row.finished_at,
+  };
+}
+
+function safeJson(s) { try { return JSON.parse(s); } catch (e) { return null; } }
+
+async function jobsTick() {
+  if (jobBusy) return;
+  const uids = Array.from(userDbs.keys());
+  for (const uid of uids) {
+    const db = userDbs.get(uid);
+    if (!db) continue;
+    let row = null;
+    try { row = db.prepare("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").get(); }
+    catch (e) { continue; }
+    if (!row) continue;
+    jobBusy = true;
+    try { await runJob(uid, db, row); }
+    finally { jobBusy = false; }
+    return;              // 一轮只处理一个，保证进度上报不互相打
+  }
+}
+
+async function runJob(uid, db, row) {
+  const files = path.join(DATA, 'users', String(uid), 'files');
+  const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const canceled = () => {
+    try { return Number((db.prepare('SELECT cancel_flag FROM jobs WHERE id=?').get(row.id) || {}).cancel_flag || 0) === 1; }
+    catch (e) { return false; }
+  };
+
+  db.prepare("UPDATE jobs SET status='running', started_at=?, progress=0, stage='准备中' WHERE id=?").run(now(), row.id);
+
+  const ctx = {
+    uid: uid, db: db, files: files,
+    progress: function (p, stage) {
+      if (canceled()) throw new Error('__canceled__');
+      try {
+        db.prepare('UPDATE jobs SET progress=?, stage=? WHERE id=?')
+          .run(Math.max(0, Math.min(1, Number(p) || 0)), stage || null, row.id);
+      } catch (e) {}
+    },
+  };
+
+  const jobCtx = { uid: uid, db: db, files: files };
+  try {
+    const fn = JOB_TYPES[row.type];
+    if (!fn) throw new Error('未知任务类型 ' + row.type);
+    const payload = row.payload_json ? safeJson(row.payload_json) : {};
+    const result = await RLS.run(jobCtx, function () { return fn(payload || {}, ctx); });
+    db.prepare("UPDATE jobs SET status='done', progress=1, stage='完成', result_json=?, finished_at=? WHERE id=?")
+      .run(JSON.stringify(result === undefined ? null : result), now(), row.id);
+  } catch (e) {
+    const isCancel = String(e && e.message) === '__canceled__';
+    db.prepare('UPDATE jobs SET status=?, error=?, finished_at=? WHERE id=?')
+      .run(isCancel ? 'canceled' : 'failed', isCancel ? null : String(e && e.message || e), now(), row.id);
+  }
+}
+
+function apiJobCreate(body) {
+  const type = String(body.type || '');
+  if (!type) throw new Error('没有任务类型');
+  if (!JOB_TYPES[type]) throw new Error('这个版本还不支持任务 ' + type);
+  const r = ctxDb().prepare('INSERT INTO jobs (type, payload_json, stage) VALUES (?,?,?)')
+    .run(type, JSON.stringify(body.payload || {}), '排队中');
+  jobsStart();
+  return { ok: true, id: Number(r.lastInsertRowid) };
+}
+
+function apiJobGet(body) {
+  const id = Number(body.id);
+  if (!id) {
+    const rows = ctxDb().prepare('SELECT * FROM jobs ORDER BY id DESC LIMIT 10').all();
+    return { ok: true, items: rows.map(jobRowToJson) };
+  }
+  return { ok: true, job: jobRowToJson(ctxDb().prepare('SELECT * FROM jobs WHERE id=?').get(id)) };
+}
+
+function apiJobCancel(body) {
+  const id = Number(body.id);
+  if (!id) throw new Error('没有任务号');
+  ctxDb().prepare("UPDATE jobs SET cancel_flag=1 WHERE id=? AND status IN ('queued','running')").run(id);
+  const row = ctxDb().prepare('SELECT * FROM jobs WHERE id=?').get(id);
+  if (row && row.status === 'queued') {
+    ctxDb().prepare("UPDATE jobs SET status='canceled', finished_at=datetime('now') WHERE id=?").run(id);
+  }
+  return { ok: true };
+}
+
+/* 自检任务：设置页的「跑一次自检」用它，也是队列的验收用例 */
+registerJob('selftest', async function (p, ctx) {
+  const steps = Math.max(1, Number(p.steps) || 6);
+  const ms = Math.max(10, Number(p.ms) || 120);
+  for (let i = 1; i <= steps; i++) {
+    await new Promise(function (r) { setTimeout(r, ms); });
+    ctx.progress(i / steps, '第 ' + i + '/' + steps + ' 步');
+  }
+  return { steps: steps };
+});
+
+/* ---------------- 能力网关 ----------------
+ * 一条能力 = 一组候选配置（显式指定 → 用途槽位 → 其余启用配置）。
+ * 前一个失败就换下一个，把每一次失败原话带回前端。 */
+
+function enabledProfiles() {
+  return ctxDb().prepare('SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id').all();
+}
+
+function profileChain(body) {
+  const out = [], seen = {};
+  function push(profile, model) {
+    if (!profile || seen[profile.id]) return;
+    seen[profile.id] = 1;
+    out.push({ profile: profile, model: model || profile.default_model });
+  }
+  if (body.profileId) push(profileById(body.profileId), body.model);
+  if (body.slot) {
+    const hit = profileForSlot(body.slot);
+    if (hit) push(hit.profile, body.model || hit.model);
+  }
+  for (const p of enabledProfiles()) push(p, null);
+  return out;
+}
+
+function chatPayload(cand, body) {
+  const payload = {
+    model: cand.model,
+    messages: body.messages,
+    temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
+    stream: false,
+  };
+  if (body.maxTokens) payload.max_tokens = body.maxTokens;
+  return payload;
+}
+
+async function aiChatOnce(cand, body) {
+  const t0 = Date.now();
+  try {
+    const r = await fetchJson(endpointOf(cand.profile) + '/chat/completions', {
+      method: 'POST',
+      headers: authHeaders(cand.profile),
+      body: JSON.stringify(chatPayload(cand, body)),
+    }, 120000);
+    if (!r.ok) {
+      return { ok: false, ms: Date.now() - t0, status: r.status,
+        message: cand.profile.name + ' 返回 HTTP ' + r.status + '：' + String(r.text).slice(0, 160) };
+    }
+    const choice = (r.json && r.json.choices && r.json.choices[0]) || {};
+    const msg = choice.message || {};
+    const text = String(msg.content || msg.reasoning_content || msg.reasoning || '');
+    if (!text.trim()) {
+      return { ok: false, ms: Date.now() - t0, message: cand.profile.name + ' 回了空内容' };
+    }
+    return { ok: true, ms: Date.now() - t0, text: text, usage: r.json.usage || null, model: cand.model };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, message: cand.profile.name + ' 连不上：' + (e.message || e) };
+  }
+}
+
+/* ---------------- 流式对话（NDJSON：每行一个 json） ---------------- */
+
+async function apiChatStream(req, res, body) {
+  const chain = profileChain(body);
+  res.writeHead(200, {
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-accel-buffering': 'no',
+  });
+  const send = function (o) { try { res.write(JSON.stringify(o) + '\n'); } catch (e) {} };
+
+  if (!chain.length) {
+    send({ t: 'err', message: '还没配模型。打开「设置 → 模型来源」加一条。' });
+    return res.end();
+  }
+  if (!body.messages || !body.messages.length) {
+    send({ t: 'err', message: '没有要发送的内容' });
+    return res.end();
+  }
+
+  const errors = [];
+  for (const cand of chain.slice(0, 3)) {
+    try {
+      const payload = chatPayload(cand, body);
+      payload.stream = true;
+      const r = await fetch(endpointOf(cand.profile) + '/chat/completions', {
+        method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + String(txt).slice(0, 120));
+        send({ t: 'retry', message: errors[errors.length - 1] });
+        continue;
+      }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder('utf-8');
+      let buf = '', full = '', done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).replace(/\r$/, '').trim();
+          buf = buf.slice(idx + 1);
+          if (!line || line.charAt(0) === ':') continue;
+          if (line.indexOf('data:') !== 0) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { done = true; break; }
+          try {
+            const j = JSON.parse(data);
+            const delta = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+            const piece = delta.content || delta.reasoning_content || '';
+            if (piece) { full += piece; send({ t: 'd', v: piece }); }
+          } catch (e) { /* 心跳或畸形行，跳过 */ }
+        }
+      }
+      send({ t: 'done', text: full, model: cand.model, profile: cand.profile.name });
+      usageAdd('text', cand.model, Math.round(full.length / 2), 'token', 0, 'chat');
+      return res.end();
+    } catch (e) {
+      errors.push(cand.profile.name + ' 断流：' + (e.message || e));
+      send({ t: 'retry', message: errors[errors.length - 1] });
+    }
+  }
+  send({ t: 'err', message: '所有模型都没通：' + errors.join('；') });
+  return res.end();
+}
+
+/* ---------------- 导出：PDF（无头 Chrome） ---------------- */
+
+function findChrome() {
+  const cands = [
+    process.env.CHROME_PATH,
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
+  ];
+  for (const c of cands) {
+    try { if (c && fs.existsSync(c)) return c; } catch (e) {}
+  }
+  return null;
+}
+
+function runProc(bin, args, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    const { spawn } = require('child_process');
+    const p = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    const timer = setTimeout(function () { try { p.kill(); } catch (e) {} reject(new Error('超时')); }, timeoutMs || 120000);
+    p.stderr.on('data', function (c) { err += String(c); });
+    p.on('error', function (e) { clearTimeout(timer); reject(e); });
+    p.on('close', function (code) {
+      clearTimeout(timer);
+      if (code === 0) resolve(true); else reject(new Error('进程退出码 ' + code + '：' + err.slice(0, 200)));
+    });
+  });
+}
+
+async function apiExportPdf(body) {
+  const html = String(body.html || '');
+  if (!html) return { ok: false, message: '没有可打印的内容' };
+  const files = ctxFiles();
+  const outDir = path.join(files, 'exports');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const base = safe(body.name || 'book') + '-' + stamp;
+  const tmpHtml = path.join(outDir, '__p-' + Date.now() + '.html');
+  const outPdf = path.join(outDir, base + '.pdf');
+  fs.writeFileSync(tmpHtml, html, 'utf8');
+
+  const chrome = findChrome();
+  if (!chrome) {
+    try { fs.unlinkSync(tmpHtml); } catch (e) {}
+    return {
+      ok: false,
+      message: '这台机器上没找到 Chrome / Edge，做不了"一键 PDF"。\n' +
+               '可以改用「打印版」：浏览器里按 Ctrl+P，目标选「另存为 PDF」，效果一样。',
+    };
+  }
+  try {
+    await runProc(chrome, [
+      '--headless=new', '--disable-gpu', '--no-sandbox', '--no-pdf-header-footer',
+      '--virtual-time-budget=12000',
+      '--print-to-pdf=' + outPdf,
+      'file:///' + tmpHtml.replace(/\\/g, '/'),
+    ], 120000);
+  } finally {
+    try { fs.unlinkSync(tmpHtml); } catch (e) {}
+  }
+  if (!fs.existsSync(outPdf)) return { ok: false, message: 'PDF 没生成出来（Chrome 可能开了沙箱限制）' };
+  const bytes = fs.statSync(outPdf).size;
+  ctxDb().prepare('INSERT INTO exports (archive_id, kind, path, bytes, params_json) VALUES (?,?,?,?,?)')
+    .run(body.archiveId ? Number(body.archiveId) : null, 'pdf', 'exports/' + base + '.pdf', bytes, JSON.stringify(body.params || {}));
+  return { ok: true, path: 'exports/' + base + '.pdf', bytes: bytes };
+}
+
+/** 前端生成好的 docx/pptx（base64）落盘，统一进 exports/ */
+function apiExportSave(body) {
+  const name = safe(body.name || ('file-' + Date.now()));
+  const ext = String(body.ext || 'bin').replace(/[^a-z0-9]/gi, '');
+  const b64 = String(body.base64 || '');
+  if (!b64) throw new Error('没有文件内容');
+  const buf = Buffer.from(b64.replace(/^data:[^,]*,/, ''), 'base64');
+  if (!buf.length) throw new Error('文件是空的');
+  const outDir = path.join(ctxFiles(), 'exports');
+  fs.mkdirSync(outDir, { recursive: true });
+  const filename = name + '.' + ext;
+  fs.writeFileSync(path.join(outDir, filename), buf);
+  ctxDb().prepare('INSERT INTO exports (archive_id, kind, path, bytes, params_json) VALUES (?,?,?,?,?)')
+    .run(body.archiveId ? Number(body.archiveId) : null, ext, 'exports/' + filename, buf.length, JSON.stringify(body.params || {}));
+  return { ok: true, path: 'exports/' + filename, bytes: buf.length };
 }
 
 /* ---------------- 服务 ---------------- */
@@ -896,8 +1267,15 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/ai') out = await apiAi(body);
           else if (pathname === '/api/ai/models') out = await apiAiModels(body);
           else if (pathname === '/api/ai/test') out = await apiAiTest(body);
+          else if (pathname === '/api/ai/chat') return await apiChatStream(req, res, body);
+          else if (pathname === '/api/ai/usage') out = usageSummary(body);
           else if (pathname === '/api/file') out = apiFile(body);
           else if (pathname === '/api/asr') out = await apiAsr(body);
+          else if (pathname === '/api/jobs') out = apiJobGet(body);
+          else if (pathname === '/api/jobs/create') out = apiJobCreate(body);
+          else if (pathname === '/api/jobs/cancel') out = apiJobCancel(body);
+          else if (pathname === '/api/export/pdf') out = await apiExportPdf(body);
+          else if (pathname === '/api/export/save') out = apiExportSave(body);
           else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
           return sendJson(res, 200, out);
         } catch (e) {
@@ -975,6 +1353,7 @@ server.on('error', (e) => {
 });
 
 server.listen(PORT, HOST, () => {
+  jobsStart();          // 重启后把没跑完的任务捡起来
   const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + PORT;
   const hasLegacy = fs.existsSync(path.join(DATA, 'archive.db'));
   console.log('');

@@ -86,6 +86,69 @@
     return rows;
   }
 
+  /**
+   * 流式对话：服务端按行吐 NDJSON（{t:'d',v:'字'} / {t:'retry'} / {t:'done'} / {t:'err'}）。
+   * 用 XHR 的 onprogress 增量读——EventSource 带不了 Authorization 头，
+   * ReadableStream 在安卓 5/6 的 WebView 里根本不存在。
+   *
+   * onEvent(evt) 每解析出一行调用一次；返回值 resolve 完整文本。
+   */
+  function chatStream(opts, onEvent) {
+    var abortFn = null;
+    var p = new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      abortFn = function () { try { xhr.abort(); } catch (e) {} };
+      xhr.open('POST', '/api/ai/chat', true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      var t = token();
+      if (t) xhr.setRequestHeader('Authorization', 'Bearer ' + t);
+      xhr.timeout = 300000;
+
+      var offset = 0, buf = '', full = '', finished = false, streamError = null;
+
+      function feed(final) {
+        var text = String(xhr.responseText || '');
+        if (text.length <= offset) return;
+        buf += text.slice(offset);
+        offset = text.length;
+        var nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          var line = buf.slice(0, nl).replace(/\r$/, '');
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          var evt;
+          try { evt = JSON.parse(line); } catch (e) { continue; }
+          // 安卓端还没有流式接口时，会回 {__error:"未知接口 …"}，转成统一的错误事件
+          if (evt && evt.__error) evt = { t: 'err', message: evt.__error };
+          if (evt.t === 'd') full += evt.v;
+          if (evt.t === 'done') finished = true;
+          if (evt.t === 'err') streamError = evt.message || '调用失败';
+          if (onEvent) { try { onEvent(evt); } catch (e) {} }
+        }
+      }
+
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState === 3) feed(false);
+        if (xhr.readyState !== 4) return;
+        feed(true);
+        if (xhr.status === 401) {
+          setToken('');
+          if (onUnauthorized) onUnauthorized();
+          return reject(new Error('需要登录'));
+        }
+        if (xhr.status === 0) return reject(new Error('连不上本地服务'));
+        if (streamError) return reject(new Error(streamError));
+        if (finished) return resolve(full);
+        reject(new Error(finished ? '对话中断' : (full ? '输出被截断' : '没有收到回复')));
+      };
+      xhr.onerror = function () { reject(new Error('网络出错了')); };
+      xhr.ontimeout = function () { reject(new Error('等太久了，稍后再试')); };
+      xhr.send(JSON.stringify(opts || {}));
+    });
+    p.abort = function () { if (abortFn) abortFn(); };
+    return p;
+  }
+
   window.API = {
     query: function (sql, params) {
       return post('/api/query', { sql: sql, params: params || [] }).then(normalizeRows);
@@ -117,6 +180,21 @@
     file: function (payload) {
       return post('/api/file', payload || {});
     },
+
+    /* ---- v0.5：任务队列 / 用量 / 流式对话 / 导出 ---- */
+    chatStream: chatStream,
+
+    job: {
+      create: function (type, payload) { return post('/api/jobs/create', { type: type, payload: payload || {} }); },
+      get: function (id) { return post('/api/jobs', { id: id }); },
+      list: function () { return post('/api/jobs', {}); },
+      cancel: function (id) { return post('/api/jobs/cancel', { id: id }); }
+    },
+
+    usage: function (days) { return post('/api/ai/usage', { days: days || 30 }); },
+
+    exportPdf: function (payload) { return post('/api/export/pdf', payload || {}, 180000); },
+    exportSave: function (payload) { return post('/api/export/save', payload || {}, 120000); },
 
     /* ---- 账号（v0.3） ---- */
     auth: {

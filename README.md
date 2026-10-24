@@ -1,8 +1,9 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.4.1 · 里程碑 2**（2026-10-23）
+**当前版本 v0.5.0 · 里程碑 3 / 第一阶段**（2026-10-24）
 
-变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)
+变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
+里程碑 3 任务表见 [docs/TASKS-v0.5-PROGRESS.md](docs/TASKS-v0.5-PROGRESS.md)｜功能方案见 [docs/PLAN-v0.5-FEATURES.md](docs/PLAN-v0.5-FEATURES.md)
 
 > **里程碑 1（v0.2）**：一个人在一台电脑上把档案做出来。
 >   
@@ -22,6 +23,11 @@
 - 一键**导出 / 导入**：整本档案装进一个 `.mylife.json`，换机、备份、分享都靠它
 - 每段后面可**传**图片 / 视频 / 录音，直接排进卷宗
 - 模型配置**按能力过滤**：填一个 Key 自动配好三个基础环节，免费/付费一目了然
+- **封面与头像**：封面工坊可选图/裁切/换版式（4 套）与字体主色；头像独立存储，自动出三档缩略图
+- **时间轴**：四类内容按年份摆成一条线，任意时间点插入文字 / 图片 / 音频 / 视频，年份自动归章
+- **导出成册**：印刷版 HTML、**PDF**（本地 Chrome 打印）、**Word**（可编辑）、**PPT**（一页一章，聚会放映）
+- **AI 助手**：五个角色（采访者 / 编辑 / 编剧 / 音乐人 / 史官），语音或文字输入，逐字流式回复，**回复可一键插回档案**
+- **用量记账与任务队列**：调过几次模型、花了多少，随时可查；耗时任务进队列，可看进度、可取消
 - Windows 版**单文件分发**：`MyLife.exe` 拷给别人就能用
 
 ## 直接跑起来
@@ -88,16 +94,22 @@ mylife1/
 ├── web/            一套前端（两端共用）
 │   ├── index.html
 │   ├── style.css
-│   ├── api.js      唯一的后端入口（含 token 注入与数值列归一化）
+│   ├── api.js      唯一的后端入口（含 token 注入、数值列归一化、流式对话）
 │   ├── db.js       全部 SQL 与生成规则 ★
-│   └── app.js      界面与交互
+│   ├── app.js      界面与交互
+│   ├── cover.js    封面工坊（版式 / 取景 / 头像缩略图）
+│   ├── timeline.js 时间轴与任意时间点插入
+│   ├── export.js   文档模型 + 印刷版 HTML + 一键 PDF
+│   ├── export-docx.js / export-pptx.js   Word / PPT 渲染器
+│   ├── chat.js     AI 助手（五角色 / 流式 / 插回档案）
+│   └── vendor/     docx 与 pptxgenjs（构建期依赖，运行时零安装）
 ├── server/
 │   ├── server.js   网页端宿主（含内联的账号模块，SEA 单文件入口）
 │   └── schema.sql  建表，两端共用
 ├── android/        安卓宿主
 │   └── app/src/main/java/com/mylife/archive/
 │       ├── MainActivity.java   壳 + 权限 + 原生 TTS + 选图/录音桥
-│       ├── LocalServer.java    本地 HTTP（4 个接口 + /files 静态服务）
+│       ├── LocalServer.java    本地 HTTP（查询/执行/AI/文件 + /files 静态服务）
 │       ├── Auth.java           PBKDF2 密码哈希 + 会话令牌
 │       ├── Db.java             开库 / query / exec / ensureSchema
 │       ├── Ai.java             代理调模型（Key 不进前端）+ 手写 multipart
@@ -108,7 +120,7 @@ mylife1/
 │   ├── sync.js          把 web/ 同步进安卓 assets
 │   ├── build-exe.js     出单文件 EXE + 冒烟测试 + 产物版本命名
 │   └── make-backup.py   出全量备份包
-├── test/                8 个审计脚本，197 项
+├── test/                10 个审计脚本，295 项
 ├── docs/                升级方案与里程碑存档
 └── build-apk.bat        一条命令出 APK
 ```
@@ -308,6 +320,11 @@ Node 走 `fetch` + `FormData`；安卓走 `Ai.asr` 手写的 multipart（**固�
 - Groq 国内被墙；阿里百炼 `paraformer-v2` 每月 10 小时免费但不兼容 OpenAI 接口，未接
 - 公网部署未做——现在只在本机 / 本手机上跑，够用也最安全
 - 网页端前端刻意 ES5，因此代码风格偏旧（这是为老 WebView 的取舍，不是疏忽）
+- **安卓宿主还没有 `/api/jobs` 与流式对话**：设置页自检会提示"这个版本还没有任务队列"，
+  AI 助手会自动退回一次性整段回复（能正常用，只是没有逐字效果）。导出走 `API.file` 落盘，两端都通
+- **一键 PDF 只在桌面端**：需要本机装了 Chrome 或 Edge；没有就改用「印刷版」按 Ctrl+P 另存为 PDF
+- 时间轴排序是「上移 / 下移」按钮，不是拖拽（手机上拖拽误触太多，等分镜编辑器一起做手势）
+- 插图 / 配音 / 音乐 / 短片（P5–P7）还没接：网关与槽位已留好，模型配置里能看到对应环节
 
 ---
 
@@ -322,8 +339,11 @@ node test/audit-asr.js             # 12 项 转写契约
 node test/audit-files.js           # 18 项 文件鉴权与路径穿越
 node test/audit-android.js         # 34 项 安卓静态审计（防回归）
 node test/audit-ui.js              # 38 项 界面审计（无头浏览器）
+node test/audit-v05.js             # 56 项 v0.5 基座（表 / 队列 / 用量 / 时间轴 / 版本 / 流式）
+node test/audit-ui-v05.js          # 42 项 封面·时间轴·导出·助手（CDP 真点真存）
 ```
 
-合计 **197 项**。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
+合计 **295 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
+并校验 docx / pptx / pdf 的包结构与文件头）。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
   
 （`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。

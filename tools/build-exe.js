@@ -42,7 +42,8 @@ function addDir(rel) {
   const dir = path.join(ROOT, rel);
   for (const f of fs.readdirSync(dir)) {
     const fp = path.join(dir, f);
-    if (fs.statSync(fp).isFile()) assets[rel + '/' + f] = fp;
+    if (fs.statSync(fp).isDirectory()) addDir(rel + '/' + f);   // web/vendor 也要进 exe
+    else assets[rel + '/' + f] = fp;
   }
 }
 addDir('web');

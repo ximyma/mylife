@@ -198,6 +198,13 @@
     return best;
   }
 
+  /** 短哈希：给派生文件起名用，避免中文路径进文件名 */
+  function shortHash(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) & 0x7fffffff;
+    return h.toString(36);
+  }
+
   var DB = {
 
     /* ---------------- 档案 ---------------- */
@@ -212,6 +219,8 @@
         '(SELECT COUNT(*) FROM chapters c WHERE c.archive_id=a.id) AS chapter_count, ' +
         '(SELECT COUNT(*) FROM entries e WHERE e.archive_id=a.id) AS entry_count, ' +
         '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count, ' +
+        '(SELECT p.path FROM photos p WHERE p.id=a.portrait_photo_id) AS portrait_path, ' +
+        '(SELECT p.path FROM photos p WHERE p.id=a.cover_photo_id) AS cover_photo_path, ' +
         'COALESCE(' +
         '(SELECT p.path FROM photos p WHERE p.id=a.cover_photo_id), ' +
         '(SELECT p.path FROM photos p WHERE p.archive_id=a.id ORDER BY p.taken_year LIMIT 1)' +
@@ -922,10 +931,33 @@
                 }));
               });
             }).then(function () {
+              // 4) 手写内容按年份重新归位：重建章节会把它们的 chapter_id 变成孤儿
+              return self.rehomeUserEntries(archiveId);
+            }).then(function () {
               return API.exec("UPDATE archives SET status='ready', updated_at=? WHERE id=?", [nowSql(), archiveId]);
             });
           });
       });
+    },
+
+    /** 生成卷宗会重建章节：用户手写的条目要按年份重新归位，不能落成孤儿 */
+    rehomeUserEntries: function (archiveId) {
+      return API.query("SELECT id, text, at_year FROM entries WHERE archive_id=? AND origin='user'", [archiveId])
+        .then(function (rows) {
+          var chain = Promise.resolve();
+          for (var i = 0; i < rows.length; i++) {
+            (function (r) {
+              var y = r.at_year || findYear(r.text || '');
+              chain = chain.then(function () {
+                return DB.chapterForYear(archiveId, y).then(function (chId) {
+                  return API.exec('UPDATE entries SET chapter_id=?, at_year=COALESCE(at_year,?) WHERE id=?',
+                    [chId || null, y || null, r.id]);
+                });
+              });
+            })(rows[i]);
+          }
+          return chain;
+        });
     },
 
     /* ---------------- AI 配置（可无限添加） ---------------- */
@@ -1024,6 +1056,249 @@
 
     setPref: function (k, v) {
       return DB.saveSetting('pref.' + k, String(v));
+    },
+
+    /* ================= v0.5：封面与头像 ================= */
+
+    setCoverPhoto: function (archiveId, photoId) {
+      return API.exec('UPDATE archives SET cover_photo_id=?, updated_at=? WHERE id=?',
+        [photoId || null, nowSql(), archiveId]);
+    },
+
+    setPortrait: function (archiveId, photoId) {
+      return API.exec('UPDATE archives SET portrait_photo_id=?, updated_at=? WHERE id=?',
+        [photoId || null, nowSql(), archiveId]);
+    },
+
+    saveCoverConfig: function (archiveId, cfg) {
+      return API.exec('UPDATE archives SET cover_config_json=?, updated_at=? WHERE id=?',
+        [JSON.stringify(cfg || {}), nowSql(), archiveId]);
+    },
+
+    /** 封面参数：缺什么补什么，旧档案没这字段也能直接用 */
+    coverConfig: function (a) {
+      var def = { style: 'paper', font: 'song', accent: '#8B5E3C', pos: '50% 35%', zoom: 1 };
+      var o = {};
+      try { o = JSON.parse((a && a.cover_config_json) || '{}') || {}; } catch (e) { o = {}; }
+      for (var k in def) {
+        if (!Object.prototype.hasOwnProperty.call(def, k)) continue;
+        if (typeof o[k] === 'undefined' || o[k] === null || o[k] === '') o[k] = def[k];
+      }
+      return o;
+    },
+
+    listPhotos: function (archiveId) {
+      return API.query('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year, id', [archiveId]);
+    },
+
+    /** 这张照片正被谁当封面/头像用——删之前必须问一句 */
+    photoUsage: function (photoId) {
+      return API.query(
+        'SELECT id, subject_name, cover_photo_id, portrait_photo_id FROM archives WHERE cover_photo_id=? OR portrait_photo_id=?',
+        [photoId, photoId]).then(function (rows) {
+        var asCover = [], asPortrait = [];
+        for (var i = 0; i < rows.length; i++) {
+          if (String(rows[i].cover_photo_id) === String(photoId)) asCover.push(rows[i]);
+          if (String(rows[i].portrait_photo_id) === String(photoId)) asPortrait.push(rows[i]);
+        }
+        return { cover: asCover, portrait: asPortrait, blocked: rows.length > 0 };
+      });
+    },
+
+    deletePhotoSafe: function (id) {
+      return DB.photoUsage(id).then(function (u) {
+        if (u.blocked) {
+          var names = [];
+          for (var i = 0; i < u.cover.length; i++) names.push(u.cover[i].subject_name);
+          for (var j = 0; j < u.portrait.length; j++) names.push(u.portrait[j].subject_name);
+          throw new Error('这张正在当封面或头像（' + names.join('、') + '），先换一张再删');
+        }
+        return DB.deletePhoto(id);
+      });
+    },
+
+    /** 缩略图：前端 canvas 生成后落到 derived/thumbs/，同一源+尺寸只生成一次 */
+    saveThumb: function (sourcePath, dataUrl, size) {
+      var params = 'thumb' + size;
+      return API.query('SELECT out_path FROM derivations WHERE source_path=? AND params_hash=?',
+        [String(sourcePath), params]).then(function (rows) {
+        if (rows.length) return rows[0].out_path;
+        var name = 't' + size + '-' + shortHash(String(sourcePath) + params) + '.jpg';
+        return API.file({ op: 'save', dir: 'derived/thumbs', name: name, base64: dataUrl })
+          .then(function (f) {
+            return API.exec(
+              'INSERT OR IGNORE INTO derivations (source_path, params_hash, out_path, bytes) VALUES (?,?,?,?)',
+              [String(sourcePath), params, f.path, f.bytes]).then(function () { return f.path; });
+          });
+      });
+    },
+
+    /* ================= v0.5：时间轴与插叙 ================= */
+
+    timeline: function (archiveId) {
+      return API.query(
+        'SELECT * FROM v_timeline WHERE archive_id=? ' +
+        'ORDER BY (at_year IS NULL), at_year, COALESCE(at_month,0), COALESCE(at_day,0), sort_key, id',
+        [archiveId]);
+    },
+
+    /** 某一年落在哪一章（生成卷宗用的是同一套范围判断） */
+    chapterForYear: function (archiveId, year) {
+      if (!year) return Promise.resolve(null);
+      return API.query(
+        'SELECT id FROM chapters WHERE archive_id=? AND year_from<=? AND (year_to IS NULL OR year_to>=?) ORDER BY seq LIMIT 1',
+        [archiveId, year, year]).then(function (r) { return r.length ? r[0].id : null; });
+    },
+
+    /**
+     * 在任意时间点插入内容。kind: text / photo / audio / video
+     * opts: { archiveId, year, month, day, precision, label, chapterId, text, dataUrl, mime, ext }
+     */
+    insertAt: function (opts) {
+      var o = opts || {};
+      var aid = Number(o.archiveId);
+      if (!aid) return Promise.reject(new Error('没有指定档案'));
+      var year = o.year ? Number(o.year) : null;
+      var month = o.month ? Number(o.month) : null;
+      var day = o.day ? Number(o.day) : null;
+      var precision = o.precision || (day ? 'day' : (month ? 'month' : 'year'));
+      var kind = o.kind || 'text';
+
+      function locate() {
+        var chP = (typeof o.chapterId !== 'undefined' && o.chapterId !== '' && o.chapterId !== null)
+          ? Promise.resolve(Number(o.chapterId))
+          : DB.chapterForYear(aid, year);
+        return chP.then(function (chId) {
+          var q = chId
+            ? API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE chapter_id=?', [chId])
+            : API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE archive_id=?', [aid]);
+          return q.then(function (r) {
+            return { chapterId: chId || null, sortKey: Number(r[0].k || 0) + 10 };
+          });
+        });
+      }
+
+      function addEntry(loc, extra) {
+        return API.exec(
+          'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,photo_id,media_id,origin,edited,' +
+          'at_year,at_month,at_day,at_precision,at_label,sort_key) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)',
+          [aid, loc.chapterId, Math.round(loc.sortKey), kind, o.text || null,
+            extra && extra.photoId || null, extra && extra.mediaId || null, 'user',
+            year, month, day, precision, o.label || null, loc.sortKey]);
+      }
+
+      if (kind === 'text') {
+        if (!String(o.text || '').trim()) return Promise.reject(new Error('写点什么再存'));
+        return locate().then(function (loc) { return addEntry(loc); });
+      }
+
+      if (!o.dataUrl) return Promise.reject(new Error('没有收到文件'));
+      var raw = String(o.dataUrl);
+      var comma = raw.indexOf(',');
+      if (raw.indexOf('data:') === 0 && comma > 0) raw = raw.slice(comma + 1);
+      var ext = o.ext || (kind === 'photo' ? 'jpg' : (kind === 'audio' ? 'wav' : 'mp4'));
+      var name = 't' + Date.now() + '-' + Math.floor(Math.random() * 1000) + '.' + ext;
+      var dir = kind === 'photo' ? 'photo' : kind;
+
+      return locate().then(function (loc) {
+        return API.file({ op: 'save', dir: dir, name: name, base64: raw }).then(function (f) {
+          if (!f.ok) throw new Error(f.message || '文件没存下来');
+          if (kind === 'photo') {
+            return API.exec(
+              'INSERT INTO photos (archive_id,path,taken_year,taken_month,taken_day,place,event,chapter_id) VALUES (?,?,?,?,?,?,?,?)',
+              [aid, f.path, year || 0, month, day, o.place || '未标地点', o.text || '未标事件', loc.chapterId]
+            ).then(function (r) { return addEntry(loc, { photoId: r.lastId }); });
+          }
+          return API.exec(
+            'INSERT INTO media (archive_id,kind,path,mime,bytes,caption,at_year,at_month,at_day,at_precision,at_label) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            [aid, kind, f.path, o.mime || null, f.bytes || null, o.text || null,
+              year, month, day, precision, o.label || null]
+          ).then(function (r) { return addEntry(loc, { mediaId: r.lastId }); });
+        });
+      });
+    },
+
+    /** 上下移动一条：交换 sort_key，不重排全章（改一次只写两行） */
+    moveEntry: function (entryId, dir) {
+      return API.query('SELECT * FROM entries WHERE id=?', [entryId]).then(function (rows) {
+        if (!rows.length) return { moved: false };
+        var e = rows[0];
+        var k = Number(e.sort_key || e.seq || 0);
+        var sql = dir < 0
+          ? 'SELECT * FROM entries WHERE archive_id=? AND sort_key<? ORDER BY sort_key DESC, id DESC LIMIT 1'
+          : 'SELECT * FROM entries WHERE archive_id=? AND sort_key>? ORDER BY sort_key ASC, id ASC LIMIT 1';
+        return API.query(sql, [e.archive_id, k]).then(function (nb) {
+          if (!nb.length) return { moved: false };
+          var other = nb[0];
+          return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [Number(other.sort_key), e.id])
+            .then(function () { return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [k, other.id]); })
+            .then(function () { return { moved: true }; });
+        });
+      });
+    },
+
+    /* ================= v0.5：版本（原文只读） ================= */
+
+    listVersions: function (entryId) {
+      return API.query('SELECT * FROM entry_versions WHERE entry_id=? ORDER BY id DESC', [entryId]);
+    },
+
+    addVersion: function (entryId, archiveId, kind, style, text, model) {
+      return API.exec(
+        'INSERT INTO entry_versions (entry_id, archive_id, kind, style, text, status, model) VALUES (?,?,?,?,?,?,?)',
+        [entryId, archiveId || null, kind || 'polish', style || null, String(text || ''), 'proposal', model || null]);
+    },
+
+    /**
+     * 采纳一条版本：先把当前原文存成一条 kind='original'，再覆盖。
+     * 顺序不能反——反了就把原文弄丢了，这本档案也就毁了。
+     */
+    acceptVersion: function (versionId) {
+      return API.query('SELECT * FROM entry_versions WHERE id=?', [versionId]).then(function (rows) {
+        if (!rows.length) throw new Error('找不到这条版本');
+        var v = rows[0];
+        return API.query('SELECT * FROM entries WHERE id=?', [v.entry_id]).then(function (er) {
+          if (!er.length) throw new Error('原条目已不存在');
+          var e = er[0];
+          return API.exec(
+            "INSERT INTO entry_versions (entry_id, archive_id, kind, style, text, status, model) VALUES (?,?,?,?,?,?,?)",
+            [e.id, e.archive_id, 'original', null, String(e.text || ''), 'kept', null]
+          ).then(function () {
+            return API.exec('UPDATE entries SET text=?, edited=1 WHERE id=?', [String(v.text || ''), e.id]);
+          }).then(function () {
+            return API.exec("UPDATE entry_versions SET status='accepted' WHERE id=?", [versionId]);
+          });
+        });
+      });
+    },
+
+    /* ================= v0.5：AI 对话 ================= */
+
+    threads: function (archiveId) {
+      return API.query(
+        'SELECT * FROM ai_threads WHERE archive_id IS NULL OR archive_id=? ORDER BY updated_at DESC, id DESC LIMIT 50',
+        [archiveId || null]);
+    },
+
+    createThread: function (archiveId, role, title) {
+      return API.exec('INSERT INTO ai_threads (archive_id, role, title) VALUES (?,?,?)',
+        [archiveId || null, role || 'interviewer', title || '新对话']).then(function (r) { return r.lastId; });
+    },
+
+    messages: function (threadId) {
+      return API.query('SELECT * FROM ai_messages WHERE thread_id=? ORDER BY id', [threadId]);
+    },
+
+    addMessage: function (threadId, role, content, refs) {
+      return API.exec('INSERT INTO ai_messages (thread_id, role, content, refs_json) VALUES (?,?,?,?)',
+        [threadId, role, String(content || ''), refs ? JSON.stringify(refs) : null]).then(function (r) {
+        return API.exec('UPDATE ai_threads SET updated_at=? WHERE id=?', [nowSql(), threadId]).then(function () { return r.lastId; });
+      });
+    },
+
+    deleteThread: function (threadId) {
+      return API.exec('DELETE FROM ai_messages WHERE thread_id=?', [threadId])
+        .then(function () { return API.exec('DELETE FROM ai_threads WHERE id=?', [threadId]); });
     },
 
     /* ---------------- 工具 ---------------- */

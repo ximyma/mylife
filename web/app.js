@@ -95,6 +95,13 @@
     return n + ' B';
   }
 
+  /* 给 v0.5 拆出去的几个模块用（cover / timeline / chat / export）。
+     只放纯工具与导航，不放业务——拆出去是为了不再把 app.js 撑大。 */
+  window.ML = {
+    esc: esc, fsrc: fsrc, toast: toast, fail: fail, go: go,
+    topbar: topbar, bytes: bytes,
+  };
+
   /* ---------------- 首页 ---------------- */
 
   function renderHome() {
@@ -144,6 +151,7 @@
           '<div class="arc-cover">' +
           (a.cover_path ? '<img src="' + esc(fsrc(a.cover_path)) + '" alt="">' :
             '<span class="arc-empty">档案</span>') +
+          (a.portrait_path ? '<img class="arc-pt" src="' + esc(fsrc(a.portrait_path)) + '" alt="">' : '') +
           '</div>' +
           '<div class="arc-meta">' +
           '<div class="arc-no">第 ' + esc(a.archive_no || '—') + ' 号</div>' +
@@ -355,21 +363,19 @@
 
       html += '<main class="paper">';
 
-      html += '<section class="cover">' +
-        (coverPhoto
-          ? '<img class="cover-photo" src="' + esc(fsrc(coverPhoto.path)) + '" alt="">'
-          : '<div class="cover-photo"></div>') +
-        '<div class="cover-no">档案第 ' + esc(a.archive_no || '—') + ' 号</div>' +
-        '<h1 class="cover-name">' + esc(a.subject_name) + '</h1>' +
-        '<div class="cover-years">' + esc(DB.yearLabel(a.birth_year, a.death_year)) +
-        (a.hometown ? ' · ' + esc(a.hometown) : '') + '</div>' +
-        (a.intro ? '<p class="cover-intro">「' + esc(a.intro) + '」</p>' : '') +
-        '<div class="cover-foot">共 ' + d.chapters.length + ' 章' +
-        (a.status === 'ready' ? '' : ' · 还没生成') + '</div>' +
-        (d.chapters.length
-          ? '<div class="cover-acts"><button class="btn tiny" data-read-all="1">从头朗读</button></div>'
-          : '') +
-        '</section>';
+      html += '<section class="cover-wrap">' +
+        (window.CoverUI
+          ? CoverUI.coverHtml(a, d.photos)
+          : '<div class="cover">' +
+            (coverPhoto ? '<img class="cover-photo" src="' + esc(fsrc(coverPhoto.path)) + '" alt="">' : '') +
+            '<h1 class="cover-name">' + esc(a.subject_name) + '</h1></div>') +
+        '<div class="cover-tools">' +
+        '<button class="btn tiny" data-aid="' + id + '" data-cover-open="1">换封面</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="timeline">时间轴</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-export-open="1">导出文档</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="chat">AI 助手</button>' +
+        (d.chapters.length ? '<button class="btn tiny" data-read-all="1">从头朗读</button>' : '') +
+        '</div></section>';
 
       /* 档案信息 */
       var facts = [];
@@ -1368,7 +1374,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.4.1';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.5.0';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -1609,6 +1615,15 @@
         esc(Math.round((Number(cfg['pref.rate']) || 0.95) * 10)) + '">' +
         '<b id="prefRateVal">' + (Number(cfg['pref.rate']) || 0.95).toFixed(1) + '×</b></div>';
 
+      /* ---- 用量与任务 ---- */
+      html += '<h2 class="set-h">用量与任务</h2>' +
+        '<div class="usage-box" id="usageBox"><div class="usage-row"><b>正在统计……</b></div></div>' +
+        '<p class="hint dim">只统计你主动调过 AI 的次数与模型，不含任何内容。' +
+        '本地规则生成的章节名不计入。</p>' +
+        '<div class="pref-row"><button class="btn tiny" id="jobTest">跑一次自检</button>' +
+        '<span class="muted">排一个后台任务，看进度能不能正常跑完</span></div>' +
+        '<div class="job-bar" id="jobBar" hidden><i></i><span>排队中</span></div>';
+
       /* ---- 关于 ---- */
       var myPhone = '';
       try { myPhone = localStorage.getItem('mylife.phone') || ''; } catch (e2) {}
@@ -1634,7 +1649,68 @@
     }).catch(fail);
   }
 
+  /** 用量统计 + 任务队列的自检按钮（也是 jobs 前端的验收用例） */
+  function bindUsage() {
+    var box = document.getElementById('usageBox');
+    if (box) {
+      API.usage(30).then(function (u) {
+        var rows = '';
+        var list = (u && u.byCapability) || [];
+        var NAMES = { text: '文字', asr: '转写', image: '插图', tts: '朗读', music: '音乐', video: '视频' };
+        if (!list.length) {
+          rows = '<div class="usage-row"><b>最近 30 天还没有调用过模型</b></div>';
+        } else {
+          for (var i = 0; i < list.length; i++) {
+            var c = list[i];
+            rows += '<div class="usage-row"><b>' + esc(NAMES[c.capability] || c.capability) + '</b>' +
+              '<span>' + Number(c.calls || 0) + ' 次' +
+              (Number(c.units) ? ' · ' + Math.round(Number(c.units)) + ' 单位' : '') +
+              (Number(c.cost) ? ' · ¥' + Number(c.cost).toFixed(2) : '') + '</span></div>';
+          }
+        }
+        rows += '<div class="usage-row" style="border-top:1px solid var(--line);margin-top:6px;padding-top:8px">' +
+          '<b>合计</b><span>' + Number(u && u.calls || 0) + ' 次</span></div>';
+        box.innerHTML = rows;
+      }, function () {
+        box.innerHTML = '<div class="usage-row"><b>这个版本读不到用量记录</b></div>';
+      });
+    }
+
+    var btn = document.getElementById('jobTest');
+    if (!btn) return;
+    btn.onclick = function () {
+      var bar = document.getElementById('jobBar');
+      var fill = bar.querySelector('i');
+      var label = bar.querySelector('span');
+      bar.hidden = false;
+      fill.style.width = '0%';
+      label.textContent = '排队中';
+      btn.disabled = true;
+
+      API.job.create('selftest', { steps: 8, ms: 140 }).then(function (r) {
+        var timer = setInterval(function () {
+          API.job.get(r.id).then(function (g) {
+            var j = g && g.job;
+            if (!j) return;
+            fill.style.width = Math.round((j.progress || 0) * 100) + '%';
+            label.textContent = (j.stage || '') + (j.status === 'done' ? ' · 完成' : '');
+            if (j.status === 'done' || j.status === 'failed' || j.status === 'canceled') {
+              clearInterval(timer);
+              btn.disabled = false;
+              if (j.status === 'failed') label.textContent = '失败：' + j.error;
+              if (j.status === 'canceled') label.textContent = '已取消';
+            }
+          }, function () { clearInterval(timer); btn.disabled = false; });
+        }, 400);
+      }).catch(function (e) {
+        btn.disabled = false;
+        label.textContent = '这个版本还没有任务队列（' + (e.message || e) + '）';
+      });
+    };
+  }
+
   function bindSettings(profiles, slotMap) {
+    bindUsage();
     /* --- 添加 / 编辑 --- */
     var addBtn = document.getElementById('addProfile');
     if (addBtn) addBtn.onclick = function () {
@@ -2084,15 +2160,129 @@
     var m;
 
     if ((m = /^#\/a\/(\d+)\/collect/.exec(h))) return renderCollect(m[1]);
+    if ((m = /^#\/a\/(\d+)\/timeline/.exec(h))) return renderTimeline(m[1]);
+    if ((m = /^#\/a\/(\d+)\/chat/.exec(h))) return renderChat(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
+  }
+
+  function renderTimeline(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在排时间轴……</div></main>';
+    window.TimelineUI.render(app, Number(id));
+  }
+
+  function renderChat(id) {
+    app.innerHTML = topbar({ back: '#/a/' + id }) +
+      '<main class="wrap"><div class="boot">正在打开助手……</div></main>';
+    window.ChatUI.render(app, Number(id));
   }
 
   window.addEventListener('hashchange', function () {
     window.scrollTo(0, 0);
     route();
   });
+
+  /* ---------------- v0.5：封面 / 时间轴 / 导出 / 助手的统一入口 ---------------- */
+
+  function bindToolsOnce() {
+    document.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t.closest) return;
+
+      var cv = t.closest('[data-cover-open]');
+      if (cv) {
+        var aid = Number(cv.getAttribute('data-aid'));
+        window.CoverUI.open(aid, function () { route(); });
+        return;
+      }
+      var gt = t.closest('[data-goto]');
+      if (gt) {
+        var id2 = Number(gt.getAttribute('data-aid'));
+        go('#/a/' + id2 + '/' + gt.getAttribute('data-goto'));
+        return;
+      }
+      var ex = t.closest('[data-export-open]');
+      if (ex) {
+        openExportSheet(Number(ex.getAttribute('data-aid')));
+      }
+    });
+  }
+
+  /** 导出抽屉：打印版 / PDF / Word / PPT，一次说清各要多久、靠什么 */
+  function openExportSheet(archiveId) {
+    var back = document.createElement('div');
+    back.className = 'sheet-back';
+    back.innerHTML = '<div class="sheet"><div class="sheet-hd"><b>导出这本档案</b>' +
+      '<button class="sheet-x" data-ex-close="1">✕</button></div>' +
+      '<div class="sheet-bd">' +
+      '<div class="ex-grid">' +
+      '<button class="ex-card" data-ex="print"><b>印刷版</b><small>浏览器里直接看，按 Ctrl+P 存成 PDF</small></button>' +
+      '<button class="ex-card" data-ex="pdf"><b>PDF</b><small>一键出文件，需要电脑上装了 Chrome/Edge</small></button>' +
+      '<button class="ex-card" data-ex="docx"><b>Word</b><small>能改能批注，给要动笔的人</small></button>' +
+      '<button class="ex-card" data-ex="pptx"><b>PPT</b><small>家族聚会放映用，一页一章</small></button>' +
+      '</div>' +
+      '<div class="ex-opts"><label>开本' +
+      '<select class="fi" id="exSize"><option value="a5">A5（小册子）</option><option value="a4">A4（打印装订）</option></select></label>' +
+      '<label>纸色' +
+      '<select class="fi" id="exTheme"><option value="paper">素纸</option><option value="ink">靛蓝</option><option value="warm">暖棕</option></select></label>' +
+      '</div>' +
+      '<div class="ex-tip" id="exTip">导出会读一遍全部内容，图多的时候要等一会儿。生成的文件都在 data/users/&lt;账号&gt;/files/exports/ 里。</div>' +
+      '</div></div>';
+    document.body.appendChild(back);
+
+    var tip = back.querySelector('#exTip');
+    var busy = false;
+
+    back.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t.closest) return;
+      if (t.closest('[data-ex-close]')) { back.remove(); return; }
+      var b = t.closest('[data-ex]');
+      if (!b || busy) return;
+      var kind = b.getAttribute('data-ex');
+      var size = back.querySelector('#exSize').value;
+      var theme = back.querySelector('#exTheme').value;
+
+      busy = true;
+      b.classList.add('on');
+      tip.textContent = '正在准备……';
+
+      var t0 = Date.now();
+      window.Exporter.model(archiveId).then(function (m) {
+        if (kind === 'print') {
+          tip.textContent = '已打开新窗口，按 Ctrl+P（Mac 是 ⌘P）→ 目标选「另存为 PDF」。';
+          window.Exporter.print(m, { size: size, theme: theme });
+          busy = false; b.classList.remove('on');
+          return null;
+        }
+        if (kind === 'pdf') {
+          tip.textContent = '正在把图片打包进文档……';
+          return window.Exporter.pdf(m, { size: size, theme: theme, archiveId: archiveId });
+        }
+        if (kind === 'docx') {
+          tip.textContent = '正在排 Word（图多会慢一点）……';
+          return window.Exporter.docx(m, { archiveId: archiveId });
+        }
+        tip.textContent = '正在排 PPT……';
+        return window.Exporter.pptx(m, { archiveId: archiveId });
+      }).then(function (r) {
+        busy = false; b.classList.remove('on');
+        if (!r) return;
+        if (!r.ok) {
+          tip.textContent = r.message || '没导出成功';
+          return;
+        }
+        tip.innerHTML = '好了：' + esc(r.path) + '（' + bytes(r.bytes) + '，用了 ' +
+          Math.round((Date.now() - t0) / 1000) + ' 秒）<br>' +
+          '<a class="linkbtn" target="_blank" href="' + esc(fsrc(r.path)) + '">打开看看</a>';
+      }).catch(function (e) {
+        busy = false; b.classList.remove('on');
+        tip.textContent = '出错：' + (e.message || e);
+      });
+    });
+  }
 
   function bindTtsOnce() {
     document.addEventListener('click', function (ev) {
@@ -2122,6 +2312,7 @@
     }
     applyPrefs();   // 先把字号/夜间落到页面，避免闪一下
     bindTtsOnce();
+    bindToolsOnce();
     API.auth.onUnauthorized(function () {
       try { localStorage.removeItem('mylife.token'); } catch (e) {}
       go('#/login');

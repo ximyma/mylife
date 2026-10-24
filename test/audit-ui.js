@@ -64,7 +64,7 @@ ck('有导入入口（有档案时）', h.indexOf('importFile') >= 0);
 
 console.log('[U2] 卷宗页');
 h = domToFile('/a/1', tmp + '/u2.html');
-ck('卷宗有封面', h.indexOf('cover-name') >= 0);
+ck('卷宗有封面', /cv-name|cover-name/.test(h));
 ck('有目录区', h.indexOf('toc') >= 0);
 ck('条目有改按钮', /data-entry-edit="\d+"/.test(h));
 ck('条目有传按钮', /data-entry-upload="\d+"/.test(h));
