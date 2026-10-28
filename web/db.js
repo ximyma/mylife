@@ -47,6 +47,20 @@
     return null;
   }
 
+  /** 「1921 · 江西石城 · 父亲李前裕」-> {year, place, event}（Word 图注就这个写法） */
+  function docxCaption(cap) {
+    var out = { year: 0, place: '', event: '' };
+    var s = String(cap || '').trim();
+    if (!s) return out;
+    var parts = s.split('·');
+    var i = 0;
+    var m = /^\s*([0-9]{4})\s*$/.exec(parts[0] || '');
+    if (m) { out.year = parseInt(m[1], 10); i = 1; }
+    if (parts.length > i + 1) { out.place = String(parts[i] || '').trim(); i++; }
+    out.event = parts.slice(i).join('·').trim();
+    return out;
+  }
+
   /** 去掉口头语与重复标点，只做清理，不改写 */
   function clean(t) {
     return String(t || '')
@@ -410,21 +424,105 @@
     },
 
     /**
+     * 导入前先看看库里是不是已经有同一本：编号相同，或名字相同，都算「同一本」。
+     * 以前不看这个，导一次多一本一模一样的（编号名字全一样），用户根本分不清哪本是哪本。
+     */
+    findImportTargets: function (pack) {
+      var a = (pack && pack.archive) || {};
+      var no = String(a.archive_no || '').trim();
+      var name = String(a.subject_name || '').trim();
+      if (!no && !name) return Promise.resolve([]);
+      var where = [], args = [];
+      if (no) { where.push('archive_no=?'); args.push(no); }
+      if (name) { where.push('subject_name=?'); args.push(name); }
+      return API.query(
+        'SELECT a.id, a.subject_name, a.archive_no, a.updated_at, ' +
+        '(SELECT COUNT(*) FROM chapters c WHERE c.archive_id=a.id) AS chapter_count, ' +
+        '(SELECT COUNT(*) FROM entries e WHERE e.archive_id=a.id) AS entry_count, ' +
+        '(SELECT COUNT(*) FROM photos p WHERE p.archive_id=a.id) AS photo_count ' +
+        'FROM archives a WHERE a.deleted_at IS NULL AND (' + where.join(' OR ') + ') ' +
+        'ORDER BY a.updated_at DESC', args);
+    },
+
+    /** 同名就给个不重复的名字：王家（副本）、王家（副本 2）… */
+    uniqueCopyName: function (name) {
+      var base = String(name || '未命名').trim().replace(/（副本(\s*\d+)?）$/, '');
+      return API.query('SELECT subject_name FROM archives WHERE deleted_at IS NULL', []).then(function (rows) {
+        var used = {};
+        for (var i = 0; i < rows.length; i++) used[String(rows[i].subject_name)] = 1;
+        if (!used[base]) return base;
+        for (var n = 1; n < 500; n++) {
+          var cand = base + '（副本' + (n === 1 ? '' : ' ' + n) + '）';
+          if (!used[cand]) return cand;
+        }
+        return base + '（副本 ' + Date.now() + '）';
+      });
+    },
+
+    /** 编号被占了就重新发一个，不硬抢 */
+    takeFreeNo: function (no) {
+      var self = this;
+      var s = String(no || '').trim();
+      if (!s) return self.nextNo();
+      return API.query('SELECT id FROM archives WHERE archive_no=? AND deleted_at IS NULL', [s])
+        .then(function (rows) { return rows.length ? self.nextNo() : s; });
+    },
+
+    /**
+     * 清空一本档案的正文（保留档案本身、id、编号、名字）。
+     * 覆盖导入用：先腾空，再按文件重建，照片/录音文件顺手删掉。
+     */
+    clearArchiveContent: function (id) {
+      return Promise.all([
+        API.query('SELECT path FROM photos WHERE archive_id=?', [id]),
+        API.query('SELECT audio_path FROM segments WHERE archive_id=? AND audio_path IS NOT NULL', [id]),
+        API.query('SELECT path, poster FROM media WHERE archive_id=?', [id])
+      ]).then(function (r) {
+        var paths = [], i;
+        for (i = 0; i < r[0].length; i++) if (r[0][i].path) paths.push(r[0][i].path);
+        for (i = 0; i < r[1].length; i++) if (r[1][i].audio_path) paths.push(r[1][i].audio_path);
+        for (i = 0; i < r[2].length; i++) {
+          if (r[2][i].path) paths.push(r[2][i].path);
+          if (r[2][i].poster) paths.push(r[2][i].poster);
+        }
+        // 顺序有讲究：先删引用方（条目），再删被引用方，否则外键会拦
+        return API.exec('DELETE FROM entries WHERE archive_id=?', [id])
+          .then(function () { return API.exec('DELETE FROM photos WHERE archive_id=?', [id]); })
+          .then(function () { return API.exec('DELETE FROM segments WHERE archive_id=?', [id]); })
+          .then(function () { return API.exec('DELETE FROM media WHERE archive_id=?', [id]); })
+          .then(function () { return API.exec('DELETE FROM chapters WHERE archive_id=?', [id]); })
+          .then(function () {
+            var chain = Promise.resolve();
+            paths.forEach(function (p) {
+              chain = chain.then(function () { return API.file({ op: 'del', path: p }).catch(function () {}); });
+            });
+            return chain;
+          });
+      });
+    },
+
+    /**
      * 导入一本档案：所有 id 重新分配，媒体落成新文件。
      * 引用关系（条目→照片/媒体、封面、章）按导出时的旧 id 一一映射回去。
+     *
+     * opts.mode = 'copy'（默认，存成另一本：名字加「（副本）」、编号重发）
+     *            | 'replace'（覆盖 opts.intoId 那本：内容全换，id/编号/名字不动）
      */
-    importArchive: function (pack) {
+    importArchive: function (pack, opts) {
       if (!pack || pack.format !== 'mylife-archive' || !pack.archive) {
         return Promise.reject(new Error('这不是本程序导出的档案文件'));
       }
+      opts = opts || {};
       var self = this;
       var a = pack.archive;
+      var replaceId = opts.mode === 'replace' ? (Number(opts.intoId) || 0) : 0;
       var stamp = Date.now();
       var seq = 0;
       function newName(ext) {
         seq++;
         return 'imp-' + stamp + '-' + seq + '.' + (ext || 'bin');
       }
+
       // dataURL 或裸 base64 -> 存盘，返回新 path
       function saveMedia(b64, kind, ext) {
         if (!b64) return Promise.resolve(null);
@@ -439,12 +537,30 @@
         return m ? m[1] : fallback;
       }
 
-      return API.exec(
-        'INSERT INTO archives (subject_name,birth_year,death_year,hometown,intro,status,archive_no,created_at,updated_at) ' +
-        'VALUES (?,?,?,?,?,?,?,?,?)',
-        [a.subject_name || '未命名', a.birth_year || null, a.death_year || null,
-         a.hometown || null, a.intro || null, 'ready', a.archive_no || null, nowSql(), nowSql()]
-      ).then(function (ar) {
+      // 先决定这本要落成什么样：覆盖就在原地重建，另存就换名字、换编号
+      var head;
+      if (replaceId) {
+        head = self.clearArchiveContent(replaceId).then(function () {
+          return API.exec(
+            'UPDATE archives SET subject_name=?, birth_year=?, death_year=?, hometown=?, intro=?, ' +
+            'status=?, archive_no=?, updated_at=? WHERE id=?',
+            [a.subject_name || '未命名', a.birth_year || null, a.death_year || null,
+             a.hometown || null, a.intro || null, 'ready',
+             a.archive_no || null, nowSql(), replaceId]);
+        }).then(function () { return { lastId: replaceId }; });
+      } else {
+        head = self.uniqueCopyName(a.subject_name || '未命名').then(function (nm) {
+          return self.takeFreeNo(a.archive_no).then(function (no) {
+            return API.exec(
+              'INSERT INTO archives (subject_name,birth_year,death_year,hometown,intro,status,archive_no,created_at,updated_at) ' +
+              'VALUES (?,?,?,?,?,?,?,?,?)',
+              [nm, a.birth_year || null, a.death_year || null,
+               a.hometown || null, a.intro || null, 'ready', no, nowSql(), nowSql()]);
+          });
+        });
+      }
+
+      return head.then(function (ar) {
         var newAid = ar.lastId;
         var chapterMap = {}, photoMap = {}, mediaMap = {}, segmentMap = {};
 
@@ -548,6 +664,80 @@
           });
         });
       });
+    },
+
+    /**
+     * Word 解析结果 → 档案包（和导出的 JSON 同一个形状），后面直接走 importArchive。
+     * 这样覆盖/另存、id 重映射、媒体落盘全都不用再写第二遍。
+     */
+    docxToPack: function (draft) {
+      if (!draft || draft.format !== 'mylife-docx' || !draft.chapters) return null;
+      var a = draft.archive || {};
+      var pack = {
+        format: 'mylife-archive', version: 2,
+        exported_at: new Date().toISOString(),
+        source: 'docx',
+        archive: {
+          subject_name: a.subject_name || draft.suggest_name || '未命名',
+          birth_year: a.birth_year || null,
+          death_year: null,
+          hometown: a.hometown || null,
+          intro: a.intro || null,
+          archive_no: a.archive_no || null,
+          cover_photo_id: null
+        },
+        chapters: [], entries: [], photos: [], segments: [], media: []
+      };
+
+      var chId = 0, entryId = 0, photoId = 0, seqNo = 0;
+      for (var ci = 0; ci < draft.chapters.length; ci++) {
+        var c = draft.chapters[ci] || {};
+        chId++;
+        var yFrom = c.years ? (parseInt(String(c.years), 10) || null) : null;
+        var yTo = null;
+        var mY = /([0-9]{4})\s*[-—–~至]\s*([0-9]{4})/.exec(String(c.years || ''));
+        if (mY) { yFrom = parseInt(mY[1], 10); yTo = parseInt(mY[2], 10); }
+        pack.chapters.push({
+          id: chId, seq: chId * 10, title: c.title || ('第 ' + chId + ' 章'),
+          year_from: yFrom, year_to: yTo, stage: c.stage || null,
+          quote: c.quote || null, summary: null
+        });
+
+        var blocks = c.blocks || [];
+        for (var bi = 0; bi < blocks.length; bi++) {
+          var b = blocks[bi] || {};
+          seqNo += 10;
+          if (b.type === 'photo') {
+            if (!b.b64) continue;
+            photoId++;
+            var cap = docxCaption(b.caption);
+            pack.photos.push({
+              id: photoId,
+              path: b.name || ('import-' + photoId + '.jpg'),
+              taken_year: cap.year || yFrom || 0,
+              place: cap.place, event: cap.event,
+              chapter_id: chId, b64: b.b64
+            });
+            entryId++;
+            pack.entries.push({
+              id: entryId, chapter_id: chId, seq: seqNo, kind: 'photo',
+              text: null, photo_id: photoId, origin: 'import', edited: 0
+            });
+            // 第一张照片当封面，省得用户还要自己设一次
+            if (!pack.archive.cover_photo_id) pack.archive.cover_photo_id = photoId;
+            continue;
+          }
+          var txt = String(b.text || '').trim();
+          if (!txt) continue;
+          entryId++;
+          pack.entries.push({
+            id: entryId, chapter_id: chId, seq: seqNo,
+            kind: b.type === 'quote' ? 'quote' : 'text',
+            text: txt, origin: 'import', edited: 0
+          });
+        }
+      }
+      return pack;
     },
 
     /* ---------------- 导出 / 导入结束 ---------------- */

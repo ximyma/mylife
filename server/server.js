@@ -16,9 +16,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.5';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.6';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -2035,6 +2036,283 @@ function apiExportSave(body) {
   return { ok: true, path: 'exports/' + filename, bytes: buf.length };
 }
 
+/* ---------------- 导入 Word（.docx）：把文档读回成档案 ---------------- */
+
+/**
+ * 极简 zip 解包：Word/WPS 写 docx 只用 store(0) 和 deflate(8) 两种，
+ * 自己解就够了——不为一个导入功能引第三方库（exe 是单文件 SEA，多一个依赖就多一份麻烦）。
+ * 返回 { 'word/document.xml': Buffer, 'word/media/image1.jpg': Buffer, ... }
+ */
+function unzipDocx(buf) {
+  // zip 末尾是中央目录（EOCD，签名 0x06054b50），后面可能还有注释，所以从尾部往前找
+  let eocd = -1;
+  const stop = Math.max(0, buf.length - 66000);
+  for (let i = buf.length - 22; i >= stop; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('这不是 .docx 文件（不是 zip 格式）。老的 .doc 请先用 Word/WPS 另存为 .docx');
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  if (off === 0xffffffff) throw new Error('这个 docx 用了 zip64 格式，暂不支持；用 Word 另存一次通常就好了');
+  const out = {};
+  for (let n = 0; n < count; n++) {
+    if (off + 46 > buf.length || buf.readUInt32LE(off) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(off + 10);
+    const compSize = buf.readUInt32LE(off + 20);
+    const nameLen = buf.readUInt16LE(off + 28);
+    const extraLen = buf.readUInt16LE(off + 30);
+    const cmtLen = buf.readUInt16LE(off + 32);
+    const localOff = buf.readUInt32LE(off + 42);
+    const name = buf.toString('utf8', off + 46, off + 46 + nameLen);
+    off += 46 + nameLen + extraLen + cmtLen;
+    if (compSize === 0xffffffff || localOff === 0xffffffff) continue;
+    if (localOff + 30 > buf.length || buf.readUInt32LE(localOff) !== 0x04034b50) continue;
+    const lnLen = buf.readUInt16LE(localOff + 26);
+    const leLen = buf.readUInt16LE(localOff + 28);
+    const start = localOff + 30 + lnLen + leLen;
+    const raw = buf.subarray(start, start + compSize);
+    try {
+      out[name] = method === 0 ? Buffer.from(raw) : zlib.inflateRawSync(raw);
+    } catch (e) { /* 单个文件坏了不影响正文，跳过 */ }
+  }
+  return out;
+}
+
+function xmlChr(code) {
+  try { return String.fromCodePoint(code); } catch (e) { return ''; }
+}
+
+function xmlUnescape(s) {
+  return String(s)
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => xmlChr(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (m, d) => xmlChr(parseInt(d, 10)))
+    .replace(/&(lt|gt|quot|apos|amp);/g, (m, k) => (
+      { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&amp;': '&' }[m] || k));
+}
+
+/** 一个 <w:p> 里的可见文字：把分段的 <w:t> 拼起来（Word 会把一句话切成很多 run） */
+function paraText(chunk) {
+  const ts = chunk.match(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g) || [];
+  let s = '';
+  for (const t of ts) {
+    s += xmlUnescape(t.replace(/^<w:t(?:\s[^>]*)?>/, '').replace(/<\/w:t>\s*$/, ''));
+  }
+  return s.replace(/\u00a0/g, ' ').trim();
+}
+
+function headLevel(style) {
+  const s = String(style || '');
+  const m = /^(?:heading|Heading|HEADING)\s*([1-6])$/.exec(s) ||
+    /^标题\s*([1-6])$/.exec(s) || /^([1-6])$/.exec(s);
+  return m ? Number(m[1]) : 0;
+}
+
+/** 「1921 · 江西石城 · 父亲李前裕」这种图注 */
+function looksLikeCaption(t) {
+  const s = String(t || '');
+  return s.length <= 80 && /^[0-9]{4}/.test(s) && s.indexOf('·') > 0;
+}
+
+/**
+ * 解析 docx 正文 -> 档案草稿。
+ * 认两种文档：① 本程序导出的 Word（有「档案信息」「目录」页，章标题是「第 N 章　」）
+ *           ② 别人随便写的 Word（靠「标题 1」样式分章，没样式就整篇当一章）
+ */
+function parseDocx(buf, fileName) {
+  const files = unzipDocx(buf);
+  const docBuf = files['word/document.xml'];
+  if (!docBuf) throw new Error('这个 .docx 里没有正文（可能不是 Word 文档，或者是加密的）');
+  const xml = docBuf.toString('utf8');
+
+  // 关系表：rId -> 包内路径（图片靠它找）
+  const rels = {};
+  const relBuf = files['word/_rels/document.xml.rels'];
+  if (relBuf) {
+    const s = relBuf.toString('utf8');
+    const re = /<Relationship\b[^>]*\/?>/g;
+    let m;
+    while ((m = re.exec(s))) {
+      const id = /Id="([^"]+)"/.exec(m[0]);
+      const tg = /Target="([^"]+)"/.exec(m[0]);
+      if (!id || !tg) continue;
+      let t = tg[1];
+      if (/^https?:/i.test(t)) continue;                       // 外链图片不取
+      if (t.charAt(0) === '/') t = t.slice(1);
+      else if (t.indexOf('word/') !== 0) t = 'word/' + t;
+      rels[id[1]] = t;
+    }
+  }
+
+  const bodyAt = xml.indexOf('<w:body>');
+  const chunks = xml.slice(bodyAt < 0 ? 0 : bodyAt).split('</w:p>');
+
+  const items = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const st = /<w:pStyle\b[^>]*w:val="([^"]+)"/.exec(c);
+    const text = paraText(c);
+    const imgs = [];
+    const re2 = /r:embed="([^"]+)"/g;
+    let m2;
+    while ((m2 = re2.exec(c))) {
+      const p = rels[m2[1]];
+      if (p && files[p] && /\.(jpe?g|png|gif|webp|bmp)$/i.test(p)) imgs.push(p);
+    }
+    if (!text && !imgs.length) continue;                        // 空段落直接丢
+    items.push({ style: st ? st[1] : '', text: text, imgs: imgs });
+  }
+
+  const meta = { subject_name: '', archive_no: '', birth_year: null, years: '', hometown: '', intro: '' };
+  const chapters = [];
+  const warnings = [];
+  const headItems = [];
+  let cur = null;
+  let skipping = false;        // 处在「档案信息」「目录」这种不算正文的块里
+  let imgCount = 0;
+  const MAX_IMGS = 40;
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const lv = headLevel(it.style);
+
+    if (lv === 1) {
+      const t = String(it.text || '').replace(/[\s\u3000]+/g, ' ').trim();
+      if (/^(档案信息|目\s*录)$/.test(t)) { skipping = true; cur = null; continue; }
+      skipping = false;
+      const mc = /^第\s*[0-9一二三四五六七八九十百千]+\s*章\s*(.*)$/.exec(t);
+      let title = mc ? mc[1] : t;
+      let years = '';
+      // 第三方文档的「第一章 出生（1921）」：把括注里的年份挪到章头
+      const my = /[（(]\s*([0-9]{4}(?:\s*[-—–~至]\s*[0-9]{4})?)\s*[）)]\s*$/.exec(title);
+      if (my) { years = my[1]; title = title.slice(0, my.index).trim(); }
+      cur = {
+        title: title || ('第 ' + (chapters.length + 1) + ' 章'),
+        years: years, stage: '', quote: '', blocks: [],
+      };
+      chapters.push(cur);
+      continue;
+    }
+    if (skipping) continue;
+    if (!cur) { headItems.push(it); continue; }
+
+    // 图片：单独成块，紧跟的那行「年 · 地点 · 说明」当图注
+    if (it.imgs.length) {
+      let cap = '';
+      const nx = items[i + 1];
+      if (nx && !nx.imgs.length && looksLikeCaption(nx.text)) { cap = nx.text; i++; }
+      for (const p of it.imgs) {
+        if (imgCount >= MAX_IMGS) {
+          if (warnings.indexOf('图片太多') < 0) warnings.push('图片太多，只导入了前 ' + MAX_IMGS + ' 张');
+          continue;
+        }
+        const bytes = files[p];
+        if (!bytes || bytes.length > 8 * 1024 * 1024) continue;
+        imgCount++;
+        cur.blocks.push({
+          type: 'photo', name: path.basename(p), caption: cap,
+          b64: bytes.toString('base64'),
+        });
+      }
+      continue;
+    }
+
+    const t = it.text;
+    if (!t) continue;
+
+    // 章头下一行「1921 · 幼年」
+    if (!cur.years && !cur.blocks.length &&
+        /^[0-9]{4}(?:\s*[-—–~至]\s*[0-9]{0,4})?\s*(?:·.*)?$/.test(t)) {
+      const parts = t.split('·');
+      cur.years = String(parts[0] || '').trim();
+      cur.stage = String(parts[1] || '').trim();
+      continue;
+    }
+    // 「……」：第一个当章引语，其余当引文块
+    if (/^「[\s\S]*」$/.test(t)) {
+      const inner = t.slice(1, -1).trim();
+      if (!cur.quote && !cur.blocks.length) cur.quote = inner;
+      else cur.blocks.push({ type: 'quote', text: inner });
+      continue;
+    }
+    cur.blocks.push({ type: 'text', text: t });
+  }
+
+  /* 章之前的内容 = 封面 + 档案信息。只有在真有章节时才当封面读——
+     整篇没有章标题的文档，前面那些段落是正文，不能拿第一句当人名。 */
+  if (chapters.length) {
+    for (const it of headItems) {
+      const t = it.text;
+      if (!t) continue;
+      const mno = /^档案编号\s*[：:]\s*(.+)$/.exec(t);
+      if (mno) { meta.archive_no = mno[1].trim(); continue; }
+      if (/^(篇幅|整理日期|共\s*\d+\s*章)\s*[：:]/.test(t)) continue;
+      const my = /^([0-9]{4}(?:\s*[-—–~至]\s*[0-9]{0,4})?)\s*(?:·\s*(.*))?$/.exec(t);
+      if (my && !meta.years) { meta.years = my[1]; meta.hometown = String(my[2] || '').trim(); continue; }
+      if (/^「[\s\S]*」$/.test(t) && !meta.intro) { meta.intro = t.slice(1, -1).trim(); continue; }
+      if (!meta.archive_no && /^[A-Za-z]{1,8}[-0-9]{2,}$/.test(t)) { meta.archive_no = t; continue; }
+      // 人名：短、且不像句子（不带句读）
+      if (!meta.subject_name && t.length <= 24 && !/[。！？，、；：]/.test(t)) { meta.subject_name = t; continue; }
+    }
+  }
+
+  meta.birth_year = meta.years ? (parseInt(meta.years, 10) || null) : null;
+
+  /* 一章都没认出来：整篇当一章，别让用户白选一次文件 */
+  const stat = { chapters: 0, paragraphs: 0, words: 0, photos: 0 };
+  if (!chapters.length) {
+    const all = [];
+    for (const it of items) {
+      if (it.text) all.push({ type: 'text', text: it.text });
+      for (const p of it.imgs) {
+        if (!files[p] || imgCount >= MAX_IMGS) continue;
+        imgCount++;
+        all.push({ type: 'photo', name: path.basename(p), caption: '', b64: files[p].toString('base64') });
+      }
+    }
+    if (all.length) {
+      chapters.push({ title: meta.subject_name || '全文', years: '', stage: '', quote: '', blocks: all });
+      warnings.push('没找到章节标题，把整篇当成一章导入了');
+    } else {
+      throw new Error('这个 Word 里没读到文字（可能是扫描件或纯图片）');
+    }
+  }
+
+  for (const c of chapters) {
+    stat.chapters++;
+    for (const b of c.blocks) {
+      if (b.type === 'photo') stat.photos++;
+      else { stat.paragraphs++; stat.words += String(b.text || '').length; }
+    }
+  }
+
+  return {
+    format: 'mylife-docx',
+    archive: meta,
+    chapters: chapters,
+    stats: stat,
+    warnings: warnings,
+    suggest_name: meta.subject_name || String(fileName || '').replace(/\.[a-z0-9]+$/i, '').replace(/[-_]\d{6,8}$/, ''),
+  };
+}
+
+function apiDocxParse(body) {
+  try {
+    let b64 = String(body.base64 || '');
+    const comma = b64.indexOf(',');
+    if (b64.indexOf('data:') === 0 && comma > 0) b64 = b64.slice(comma + 1);
+    if (!b64) throw new Error('没有收到文件内容，可能选文件时被取消了');
+    const buf = Buffer.from(b64, 'base64');
+    if (!buf.length) throw new Error('文件是空的');
+    if (buf.length > 80 * 1024 * 1024) throw new Error('这个 Word 超过 80MB，先用 Word 压一下里面的图片再导');
+    const r = parseDocx(buf, body.name || '');
+    r.ok = true;
+    return r;
+  } catch (e) {
+    // 读不出来是常事（选错文件、加密文档、扫描件），如实说，不要抛给前端当异常
+    return { ok: false, message: e.message || '这个 Word 读不出来' };
+  }
+}
+
 /* ---------------- 服务 ---------------- */
 
 function cookieToken(req) {
@@ -2196,6 +2474,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/jobs/cancel') out = apiJobCancel(body);
           else if (pathname === '/api/export/pdf') out = await apiExportPdf(body);
           else if (pathname === '/api/export/save') out = apiExportSave(body);
+          else if (pathname === '/api/docx/parse') out = apiDocxParse(body);
           else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
           return sendJson(res, 200, out);
         } catch (e) {

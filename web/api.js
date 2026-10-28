@@ -231,6 +231,11 @@
       return post('/api/file', payload || {});
     },
 
+    /** 读 Word：{base64, name} -> {ok, archive, chapters, stats, warnings, suggest_name} */
+    docxParse: function (opts) {
+      return post('/api/docx/parse', opts || {}, 180000);
+    },
+
     /* ---- v0.5：任务队列 / 用量 / 流式对话 / 导出 ---- */
     chatStream: chatStream,
 

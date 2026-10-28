@@ -329,10 +329,8 @@
         '<button class="arc-new" id="newBtn"><span>＋</span><b>新建档案</b>' +
         '<small>写下他的名字就能开始</small></button>' +
         '</section>' +
-        (list.length
-          ? '<div class="row end"><label class="btn tiny ghost" id="importBtn">导入档案' +
-            '<input type="file" id="importFile" accept=".json,application/json" hidden></label></div>'
-          : '') +
+        '<div class="row end"><label class="btn tiny ghost" id="importBtn">导入档案 / Word' +
+        '<input type="file" id="importFile" accept=".json,.docx,application/json" hidden></label></div>' +
         guide + '</main>';
 
       var nb = document.getElementById('newBtn');
@@ -433,22 +431,25 @@
       homeClickHandler = expHandler;
       app.addEventListener('click', homeClickHandler);
 
-      /* --- 导入：选文件 → 解析 → 入库 → 跳过去看 --- */
+      /* --- 导入：认两种文件——本程序导出的 .json 档案包，或别人给的 .docx 文档 --- */
       var fin = document.getElementById('importFile');
       if (fin) fin.onchange = function () {
         var f = fin.files && fin.files[0];
         if (!f) return;
+        fin.value = '';                       // 清掉，允许再选同一个文件
+        var ext = String(f.name || '').split('.').pop().toLowerCase();
+        if (ext === 'docx') return importWordFile(f);
+        if (ext === 'doc') return toast('老的 .doc 读不了，请用 Word/WPS 另存为 .docx 再导');
         if (f.size > 200 * 1024 * 1024) return toast('这个文件超过 200MB，先删掉一些再导');
         var reader = new FileReader();
         reader.onload = function () {
           var pack;
           try { pack = JSON.parse(String(reader.result)); }
           catch (e) { return toast('文件读不出来，不是完整的导出文件'); }
-          toast('正在导入……');
-          DB.importArchive(pack).then(function (r) {
-            toast('导入完成，去验收');
-            go('#/a/' + r.archiveId);
-          }).catch(fail);
+          if (!pack || pack.format !== 'mylife-archive' || !pack.archive) {
+            return toast('这不是本程序导出的档案文件（要 .mylife.json，或者 .docx 文档）');
+          }
+          startImport(pack, 'json');
         };
         reader.readAsText(f);
       };
@@ -468,6 +469,128 @@
     }).then(function (id) {
       toast('建好了，目录已按人生阶段排好，点一章就能开始写');
       go('#/a/' + id);
+    }).catch(fail);
+  }
+
+  /* ---------------- 导入：Word / 档案包 ---------------- */
+
+  /** 大文件转 base64：一次 apply 几 MB 会爆栈，分块拼 */
+  function bytesToB64(u8) {
+    var CH = 0x8000, out = '';
+    for (var i = 0; i < u8.length; i += CH) {
+      out += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+    }
+    return btoa(out);
+  }
+
+  function importWordFile(f) {
+    if (f.size > 60 * 1024 * 1024) return toast('这个 Word 超过 60MB，先用 Word 压一下图片再导');
+    toast('正在读这本 Word……');
+    var fr = new FileReader();
+    fr.onerror = function () { toast('文件读不出来'); };
+    fr.onload = function () {
+      var b64;
+      try { b64 = bytesToB64(new Uint8Array(fr.result)); }
+      catch (e) { return toast('文件读不出来'); }
+      API.docxParse({ base64: b64, name: f.name }).then(function (r) {
+        if (!r || r.ok !== true) throw new Error((r && r.message) || '这个 Word 读不出内容');
+        showWordPreview(r);
+      }).catch(fail);
+    };
+    fr.readAsArrayBuffer(f);
+  }
+
+  /** Word 读出来了先给人看一眼：多少章、多少字、几章，名字能改 */
+  function showWordPreview(r) {
+    var st = r.stats || {};
+    var chs = r.chapters || [];
+    var listHtml = '';
+    for (var i = 0; i < chs.length && i < 12; i++) {
+      var n = 0, imgs = 0;
+      var blocks = chs[i].blocks || [];
+      for (var b = 0; b < blocks.length; b++) {
+        if (blocks[b].type === 'photo') imgs++; else n++;
+      }
+      listHtml += '<div class="imp-row"><b>' + (i + 1) + '</b><span>' + esc(chs[i].title || '（无题）') +
+        '</span><i class="dim">' + (chs[i].years ? esc(chs[i].years) + ' · ' : '') + n + ' 段' +
+        (imgs ? ' · ' + imgs + ' 图' : '') + '</i></div>';
+    }
+    if (chs.length > 12) listHtml += '<p class="hint dim">还有 ' + (chs.length - 12) + ' 章没列出来……</p>';
+    var warn = (r.warnings && r.warnings.length)
+      ? '<p class="hint warn">' + esc(r.warnings.join('；')) + '</p>' : '';
+
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal book-modal imp-modal">' +
+      '<h3>这本 Word 读成了 ' + st.chapters + ' 章</h3>' +
+      '<p class="hint dim">确认名字就能建成一本新档案：</p>' +
+      '<label class="imp-fld"><span>档案姓名</span>' +
+      '<input id="impName" value="' + esc(r.suggest_name || (r.archive && r.archive.subject_name) || '') + '"></label>' +
+      '<p class="imp-stat">' + st.paragraphs + ' 段 · ' + st.words + ' 字 · ' + st.photos + ' 张图片' +
+      (r.archive && r.archive.archive_no ? ' · 文档里的编号 ' + esc(r.archive.archive_no) : '') + '</p>' +
+      warn +
+      '<div class="imp-list">' + listHtml + '</div>' +
+      '<div class="ml-modal-acts"><button class="btn" data-imp="cancel">取消</button>' +
+      '<button class="btn primary" data-imp="go">导入成档案</button></div>' +
+      '<div class="ml-modal-msg" id="impMsg"></div></div>';
+    document.body.appendChild(ov);
+
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov) { close(); return; }
+      var btn = ev.target.closest && ev.target.closest('[data-imp]');
+      if (!btn) return;
+      if (btn.getAttribute('data-imp') === 'cancel') { close(); return; }
+      var nm = String(ov.querySelector('#impName').value || '').trim();
+      if (!nm) { ov.querySelector('#impMsg').textContent = '先写个名字'; return; }
+      var pack = DB.docxToPack(r);
+      if (!pack) { ov.querySelector('#impMsg').textContent = '这份文档没有可用内容'; return; }
+      pack.archive.subject_name = nm;
+      close();
+      startImport(pack, 'docx');
+    });
+  }
+
+  /** 入库前先看库里有没有同一本（同编号或同名）——有就问是覆盖还是另存 */
+  function startImport(pack, from) {
+    DB.findImportTargets(pack).then(function (hits) {
+      if (!hits || !hits.length) return doImport(pack, { mode: 'copy' }, from);
+      askImportMode(pack, hits[0], from);
+    }).catch(fail);
+  }
+
+  function askImportMode(pack, hit, from) {
+    var what = esc(hit.subject_name || '这本档案') +
+      (hit.archive_no ? '（' + esc(hit.archive_no) + '）' : '');
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal book-modal">' +
+      '<h3>库里已经有「' + what + '」了</h3>' +
+      '<p class="hint dim">上次导入没问你，结果多出一本一模一样的。这次你想怎么办：</p>' +
+      '<button class="ex-card" data-im="replace"><b>覆盖现在这一本</b>' +
+      '<small>先清掉它现有的 ' + (hit.chapter_count || 0) + ' 章、' + (hit.entry_count || 0) +
+      ' 条内容、' + (hit.photo_count || 0) + ' 张照片，再按文件重建；编号和名字都不变</small></button>' +
+      '<button class="ex-card" data-im="copy"><b>当成另一本存进来</b>' +
+      '<small>名字自动加「（副本）」，编号重新分配，原来那本一点都不动</small></button>' +
+      '<div class="ml-modal-acts"><button class="btn" data-im="cancel">算了，不导了</button></div></div>';
+    document.body.appendChild(ov);
+
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov) { ov.parentNode.removeChild(ov); return; }
+      var btn = ev.target.closest && ev.target.closest('[data-im]');
+      if (!btn) return;
+      var act = btn.getAttribute('data-im');
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+      if (act === 'replace') doImport(pack, { mode: 'replace', intoId: hit.id }, from);
+      else if (act === 'copy') doImport(pack, { mode: 'copy' }, from);
+    });
+  }
+
+  function doImport(pack, opts, from) {
+    toast(opts.mode === 'replace' ? '正在覆盖这本……' : (from === 'docx' ? '正在把 Word 存成档案……' : '正在导入……'));
+    DB.importArchive(pack, opts).then(function (r) {
+      toast(opts.mode === 'replace' ? '已按文件重建完成' : '导入完成，去验收');
+      go('#/a/' + r.archiveId);
     }).catch(fail);
   }
 
@@ -2290,7 +2413,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.5';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.6';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
