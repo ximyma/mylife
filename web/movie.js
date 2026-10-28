@@ -23,13 +23,37 @@
 
   var BGM = [
     { k: 'none', n: '不配乐' },
-    { k: 'calm', n: '安静（C 和弦）' },
-    { k: 'warm', n: '温暖（F 和弦）' },
+    { k: 'calm', n: '安静（C 大调）' },
+    { k: 'warm', n: '温暖（F 大调）' },
     { k: 'old', n: '旧时光（D 小调）' },
-    { k: 'bright', n: '明亮（A 和弦）' },
+    { k: 'bright', n: '明亮（A 大调）' },
   ];
 
   var state = { archiveId: 0, plan: null, jobId: 0, ticker: null, ffmpeg: false };
+
+  /** 成片结果里「声音」那一行：说清楚配音成没成、几格没配上、配乐是哪种 */
+  function soundLine(r) {
+    var bits = [];
+    if (r.voice === 'ok') {
+      bits.push('配音 ' + (Number(r.voiceDone) || 0) + ' 格' +
+        (r.voiceFailed ? '（' + r.voiceFailed + ' 格没合成出来）' : ''));
+    } else if (r.voice === 'off') {
+      bits.push('没要配音');
+    } else {
+      bits.push('配音没成' + (r.voiceReason ? '：' + r.voiceReason : ''));
+    }
+    if (r.bgm && r.bgm !== 'none') {
+      var name = r.bgm;
+      for (var i = 0; i < BGM.length; i++) {
+        if (BGM[i].k === r.bgm) { name = BGM[i].n; break; }
+      }
+      bits.push('配乐 ' + name);
+    } else {
+      bits.push('没配乐');
+    }
+    if (r.cards) bits.push(r.cards + ' 格是文字卡');
+    return bits.join(' · ');
+  }
 
   function render(host, archiveId) {
     state.archiveId = archiveId;
@@ -144,7 +168,8 @@
       '</section>' +
 
       (plan.missing ? '<p class="tip-warn">有 ' + plan.missing +
-        ' 格没有图，会渲染成深色底 + 字幕。去「插图」补几张会好看很多。</p>' : '') +
+        ' 格没有图：这些格子会排成「文字卡」——米色纸底 + 大字正文 + 顶部章节名，' +
+        '不再是压着黑底的一条字幕。去「插图」补几张会更像片子。</p>' : '') +
 
       '<section class="mv-list">' + rows + '</section>' +
       '<section id="mvProg"></section>';
@@ -165,13 +190,35 @@
       };
     }
 
+    // 勾上配音先探一句：没绑朗读模型的话，别等合成到一半才发现这片子没声音
+    var vck = body.querySelector('#mvVoice');
+    if (vck) vck.onchange = function () {
+      if (!this.checked) return;
+      var self = this;
+      self.disabled = true;
+      toast('正在试朗读模型……');
+      API.tts({ text: '好', speed: 1 }).then(function (r) {
+        self.disabled = false;
+        if (r && r.ok) { toast('朗读模型能用：' + (r.model || '默认音色')); return; }
+        toast('朗读模型用不了：' + ((r && r.message) || '还没配') +
+          '。去 设置 → 各环节用哪个模型 → 语音朗读 绑一个（硅基流动可用 FunAudioLLM/CosyVoice2-0.5B，免费）');
+      }).catch(function (e) {
+        self.disabled = false;
+        toast('朗读模型试不通：' + (e.message || e));
+      });
+    };
+
     body.querySelector('#mvGo').onclick = function () {
       if (!state.ffmpeg) { toast('这个包里没有 ffmpeg'); return; }
       var payload = {
         archiveId: state.archiveId,
         title: plan.title,
         frames: frames.map(function (f) {
-          return { image: f.image, text: f.text, sec: Number(f.sec) || 3 };
+          return {
+            image: f.image, text: f.text, sec: Number(f.sec) || 3,
+            // kicker / kind 要带上：没图的格子会排成文字卡，顶部那行章节小标就靠它们
+            kicker: f.kicker || '', kind: f.kind || '', year: f.year || null,
+          };
         }),
         voice: !!body.querySelector('#mvVoice').checked,
         bgm: body.querySelector('#mvBgm').value,
@@ -214,6 +261,7 @@
               '<video class="mv-video" controls playsinline src="' + esc(fsrc(r2.path)) + '"></video>' +
               '<div class="mv-line"><b>做好了</b><span class="muted">' +
               esc(r2.seconds || '') + ' 秒 · ' + bytes(r2.bytes) + '</span></div>' +
+              '<div class="mv-line"><span class="muted">声音：' + esc(soundLine(r2)) + '</span></div>' +
               '<div class="art-row"><a class="btn tiny" href="' + esc(fsrc(r2.path)) +
               '" download>下载 mp4</a>' +
               '<button class="btn tiny" id="mvAgain">再合成一次</button></div>' +

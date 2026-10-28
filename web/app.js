@@ -2421,7 +2421,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.8';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.9';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2514,6 +2514,10 @@
         { k: 'asr', label: '语音转文字', kind: 'asr',
           rec: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR', 'glm-asr-2512', 'whisper-large-v3-turbo'],
           hint: '能走转写接口的模型不多：SenseVoiceSmall、TeleSpeechASR（硅基流动免费）、glm-asr-2512、whisper-large-v3' },
+        { k: 'tts', label: '语音朗读（配音）', kind: 'tts',
+          rec: ['FunAudioLLM/CosyVoice2-0.5B', 'fnlp/MOSS-TTSD-v0.5'],
+          hint: '短片配音、朗读都走它。不绑的话短片合成时会直接报「配音做不了」——' +
+            'CosyVoice2 在硅基流动是免费的，绑上就有旁白' },
         { k: 'img', label: '图片生成', kind: 't2i',
           rec: ['Kwai-Kolors/Kolors', 'black-forest-labs/FLUX.1-schnell', 'Qwen/Qwen-Image'],
           hint: '文生图，「AI 助手 → 画图」用它。Kolors 免费；FLUX、Qwen-Image 要钱但更好看' },

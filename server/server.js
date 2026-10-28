@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.8';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.9';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -620,9 +620,16 @@ function profileById(id) {
 
 function profileForSlot(slot) {
   const row = ctxDb().prepare('SELECT profile_id, model FROM ai_slots WHERE slot=?').get(slot);
-  if (!row || !row.profile_id) return null;
-  const p = profileById(row.profile_id);
-  return p ? { profile: p, model: row.model || p.default_model } : null;
+  if (!row) return null;
+  // 老库里有把「没绑」写成字符串 'None' 的行（早期版本的坑）：它非空但不是 id，
+  // 直接当空处理，否则会一路回退到默认文本模型去调语音接口，报 403 Illegal operation。
+  const pid = row.profile_id;
+  if (!pid || /^(none|null|undefined)$/i.test(String(pid).trim())) return null;
+  const p = profileById(pid);
+  if (!p) return null;
+  const model = row.model && !/^(none|null|undefined)$/i.test(String(row.model).trim())
+    ? row.model : p.default_model;
+  return { profile: p, model: model };
 }
 
 function defaultProfile() {
@@ -1165,14 +1172,24 @@ async function apiTts(body) {
     return { ok: false, fallback: 'system', message: '还没配「朗读」用的模型，先用系统音色读' };
   }
 
-  const voice = String(body.voice || 'alloy');
   const speed = Number(body.speed) || 1;
   const dir = path.join(ctxFiles(), 'ai', 'tts');
   fs.mkdirSync(dir, { recursive: true });
   const errors = [];
 
+  // 音色名各家不一样，写法还带坑：
+  //   · OpenAI 是 alloy/nova…
+  //   · 硅基流动的 CosyVoice2 必须写成「模型名:音色名」，只给 anna 会报 20047 Invalid voice（实测）
+  // 所以按供应商拼默认值；用户自己传了带冒号的，就用他的。
+  const VOICE_BY_KIND = { siliconflow: 'anna' };
+
   for (const cand of chain.slice(0, 3)) {
     const model = cand.model || 'tts-1';
+    let voice = String(body.voice || '');
+    if (!voice) {
+      const short = VOICE_BY_KIND[cand.profile.kind];
+      voice = short ? (model.indexOf(':') >= 0 ? model : model + ':' + short) : 'alloy';
+    }
     const key = ttsKey(text, voice, speed, model);
 
     try {
@@ -1484,6 +1501,125 @@ function imageOk(bin, file) {
   } catch (e) { return 0; }
 }
 
+/* ---------- 程序化配乐：算出来的，不是素材 ----------
+ *
+ * 早先这里只叠了三路正弦（amix 后再 volume 0.09），实测成片 mean_volume −57dB、max −48dB
+ * ——等于没有声音，用户听到的就是「配的背景音乐没响」。纯正弦也没有音乐性，嗡嗡一片。
+ * 这里改成一段真和弦进行：八分音符琶音 + 低八度长音铺底 + 左右声道轻微失谐，
+ * 仍然不打包任何音频素材（体积为零、不涉版权、断网也算得出来）。
+ */
+const BGM_PROG = {
+  calm: { bar: 4.0, chords: [[60, 64, 67, 72], [57, 60, 64, 69], [53, 57, 60, 65], [55, 59, 62, 67]] },
+  warm: { bar: 4.4, chords: [[53, 57, 60, 65], [50, 53, 57, 62], [46, 50, 53, 58], [48, 52, 55, 60]] },
+  bright: { bar: 3.6, chords: [[57, 61, 64, 69], [54, 57, 61, 66], [50, 54, 57, 62], [52, 56, 59, 64]] },
+  old: { bar: 5.0, chords: [[50, 53, 57, 62], [46, 50, 53, 58], [43, 46, 50, 55], [45, 49, 52, 57]] },
+};
+
+/** MIDI 音高 → 频率。69 = A4 = 440Hz */
+function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+function wavHeader(buf, dataBytes, sr, ch) {
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(ch, 22);
+  buf.writeUInt32LE(sr, 24);
+  buf.writeUInt32LE(sr * ch * 2, 28);
+  buf.writeUInt16LE(ch * 2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataBytes, 40);
+}
+
+/** 往两块缓冲区里叠一个音：pluck 是拨弦（快起快落），pad 是铺底（慢起慢收） */
+function addNote(L, R, SR, hz, startSec, durSec, amp, kind) {
+  const n0 = Math.round(startSec * SR);
+  const n = Math.min(Math.round(durSec * SR), L.length - n0);
+  if (n <= 0) return;
+  const pad = kind === 'pad';
+  const atk = pad ? 0.45 : 0.008;
+  const dec = pad ? 0.22 : 2.2;
+  const harm = pad ? [[1, 1], [2, 0.22], [3, 0.08]]
+    : [[1, 1], [2, 0.46], [3, 0.22], [4, 0.11]];
+  const detune = 1.0009;                 // 右声道差一点点，听上去更宽
+  const fadeFrom = durSec - 0.3;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    let env = Math.min(1, t / atk) * Math.exp(-t * dec);
+    if (t > fadeFrom) env *= Math.max(0, (durSec - t) / 0.3);
+    if (env < 2e-4) continue;
+    let sL = 0, sR = 0;
+    for (let h = 0; h < harm.length; h++) {
+      const k = harm[h][0], a = harm[h][1];
+      const ph = 6.283185307 * hz * k * t;
+      sL += a * Math.sin(ph);
+      sR += a * Math.sin(ph * detune + 0.35);
+    }
+    const g = env * amp;
+    L[n0 + i] += sL * g;
+    R[n0 + i] += sR * g;
+  }
+}
+
+/**
+ * 生成一条配乐 wav。逐小节渲染后立刻落盘，避免十几分钟的片子把内存吃满。
+ * 返回文件路径；算不出来就返回空串（宁可只有配音，也不要整片失败）。
+ */
+function synthBgm(style, seconds, outFile) {
+  const cfg = BGM_PROG[style] || BGM_PROG.calm;
+  const SR = 44100;
+  const total = Math.max(4, Number(seconds) || 0) + 1.5;
+  const barSec = cfg.bar;
+  const barN = Math.max(1, Math.ceil(total / barSec));
+  const barSamples = Math.round(barSec * SR);
+  const dataBytes = barN * barSamples * 4;
+
+  let fd;
+  try {
+    fd = fs.openSync(outFile, 'w');
+    const head = Buffer.alloc(44);
+    wavHeader(head, dataBytes, SR, 2);
+    fs.writeSync(fd, head);
+
+    const L = new Float32Array(barSamples);
+    const R = new Float32Array(barSamples);
+    const pcm = Buffer.alloc(barSamples * 4);
+
+    for (let b = 0; b < barN; b++) {
+      L.fill(0); R.fill(0);
+      const ch = cfg.chords[b % cfg.chords.length];
+      // 低音铺底：根音与三音各低一个八度
+      addNote(L, R, SR, midiHz(ch[0] - 12), 0, barSec, 0.16, 'pad');
+      addNote(L, R, SR, midiHz(ch[1] - 12), 0, barSec, 0.10, 'pad');
+      // 八分音符琶音：上行四音再下行，后半小节抬八度
+      const step = barSec / 8;
+      const seq = [0, 1, 2, 3, 2, 1, 0, 1];
+      for (let k = 0; k < 8; k++) {
+        const note = ch[seq[k]] + (k >= 4 ? 12 : 0);
+        const dur = Math.min(2.0, barSec - k * step);
+        addNote(L, R, SR, midiHz(note), k * step, dur, 0.085, 'pluck');
+      }
+      // 转 16bit PCM 写盘
+      for (let i = 0; i < barSamples; i++) {
+        const l = Math.max(-1, Math.min(1, L[i]));
+        const r = Math.max(-1, Math.min(1, R[i]));
+        pcm.writeInt16LE(Math.round(l * 32767), i * 4);
+        pcm.writeInt16LE(Math.round(r * 32767), i * 4 + 2);
+      }
+      fs.writeSync(fd, pcm);
+    }
+    fs.closeSync(fd);
+    return outFile;
+  } catch (e) {
+    try { if (fd !== undefined) fs.closeSync(fd); } catch (e2) {}
+    console.warn('[bgm] 配乐没算出来：', e.message);
+    return '';
+  }
+}
+
 /** ASS 的时间是「时:分:秒.百分秒」——毫秒必须除 10，写成 .500 会被当成 5 秒 */
 function assTime(sec) {
   const t = Math.max(0, Number(sec) || 0);
@@ -1497,7 +1633,7 @@ function assTime(sec) {
 }
 
 /** 服务端也要一份换行：libass 对超宽长句的自动换行不可靠，得自己插 \N */
-function wrapSub(text, perLine) {
+function wrapSub(text, perLine, maxLines) {
   const src = String(text || '').replace(/\s+/g, ' ').trim();
   if (!src) return '';
   const lines = [];
@@ -1509,9 +1645,22 @@ function wrapSub(text, perLine) {
     cur += ch; w += cw;
   }
   if (cur) lines.push(cur);
-  return lines.slice(0, 4).join('\\N');
+  return lines.slice(0, maxLines || 4).join('\\N');
 }
 
+/** ASS 里 { } 是样式指令的语法，正文里出现会被 libass 吞掉，换成全角 */
+function assEsc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/\{/g, '（').replace(/\}/g, '）');
+}
+
+/**
+ * 字幕样式分两类：
+ *   ① 有图的格子 —— 底部字幕，半透明黑底框（BorderStyle=3），字号 62
+ *   ② 没图的格子 —— 整屏换成「文字卡」：米色纸底 + 居中大字 + 顶部章节小标
+ * 用户的原话是「没有图片的章节全黑的……至少要像播放 PPT 一样能看清楚」，
+ * 所以没图时正文直接当画面主体排版，不再是一条压在黑底上的字幕。
+ */
 function buildAss(title, frames) {
   const head = [
     '[Script Info]',
@@ -1525,8 +1674,18 @@ function buildAss(title, frames) {
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, ' +
       'Alignment, MarginL, MarginR, MarginV, Encoding',
-    'Style: Main,Microsoft YaHei,58,&H00FFFFFF,&H00FFFFFF,&H00202020,&H80000000,' +
-      '0,0,0,0,100,100,1,0,1,3,2,2,70,70,300,1',
+    // 有图：底部字幕，白字 + 半透明黑底框（BorderStyle=3 时 Outline 是框的留白像素）
+    'Style: Sub,Microsoft YaHei,66,&H00FFFFFF,&H00FFFFFF,&HA0000000,&HA0000000,' +
+      '0,0,0,0,100,100,1,0,3,14,0,2,70,70,220,1',
+    // 无图：米色纸底上的深褐正文，居中，不加描边
+    'Style: Card,Microsoft YaHei,80,&H00121B22,&H00121B22,&H00F6F0E2,&H00F6F0E2,' +
+      '0,0,0,0,100,100,2,0,1,0,0,5,100,100,0,1',
+    // 无图：顶部章节小标
+    'Style: Kick,Microsoft YaHei,40,&H007A6A4E,&H007A6A4E,&H00F6F0E2,&H00F6F0E2,' +
+      '0,0,0,0,100,100,6,0,1,0,0,8,80,80,200,1',
+    // 片头：有封面图时的大标题
+    'Style: Title,Microsoft YaHei,92,&H00FFFFFF,&H00FFFFFF,&H00140F08,&H00140F08,' +
+      '0,0,0,0,100,100,3,0,1,6,3,5,80,80,0,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -1534,11 +1693,23 @@ function buildAss(title, frames) {
   let t = 0;
   for (const f of frames) {
     const d = Number(f.sec) || 3;
-    if (f.text) {
-      head.push('Dialogue: 0,' + assTime(t) + ',' + assTime(t + d) + ',Main,,0,0,0,,' + wrapSub(f.text, 13));
+    const a = assTime(t), b = assTime(t + d);
+    const text = assEsc(f.text || '');
+    if (f.hasImage) {
+      if (text) {
+        head.push('Dialogue: 0,' + a + ',' + b + ',' +
+          (f.kind === 'title' ? 'Title' : 'Sub') + ',,0,0,0,,' +
+          wrapSub(text, f.kind === 'title' ? 9 : 13, 4));
+      }
+    } else {
+      // 文字卡：上面一行章节小标，中间正文当主角
+      const kick = assEsc(f.kicker || '');
+      if (kick) head.push('Dialogue: 0,' + a + ',' + b + ',Kick,,0,0,0,,' + kick);
+      if (text) head.push('Dialogue: 0,' + a + ',' + b + ',Card,,0,0,0,,' + wrapSub(text, 11, 6));
     }
     t += d;
   }
+  if (!frames.length && title) head.push('Dialogue: 0,0:00:00.00,0:00:03.00,Card,,0,0,0,,' + assEsc(title));
   return head.join('\n') + '\n';
 }
 
@@ -1586,7 +1757,7 @@ function apiMoviePlan(body) {
   const rawEntries = chId
     ? ctxDb().prepare('SELECT * FROM entries WHERE chapter_id=? ORDER BY COALESCE(sort_key,seq,0), id').all(chId)
     : ctxDb().prepare(
-      'SELECT e.* FROM entries e LEFT JOIN chapters c ON c.id=e.chapter_id ' +
+      'SELECT e.*, c.title AS chapter_title FROM entries e LEFT JOIN chapters c ON c.id=e.chapter_id ' +
       "WHERE e.archive_id=? AND e.kind IN ('text','quote') " +
       'ORDER BY COALESCE(c.seq, 999999), COALESCE(e.sort_key, e.seq, 0), e.id').all(aid);
   const entries = rawEntries.filter(function (e) { return String(e.text || '').trim().length > 0; });
@@ -1627,11 +1798,19 @@ function apiMoviePlan(body) {
       if (cursor < photos.length) { ph = photos[cursor]; used[ph.id] = 1; cursor++; }
     } else { used[ph.id] = 1; }
 
+    // 文字卡顶部那行小标：章节名 + 年份。没图的格子靠它交代「现在讲到哪儿」。
+    // 正文里已经提到这一年就不重复了——否则会出现「1941 年」压着「生于1927年」的怪画面。
+    const chName = String((ch && ch.title) || en.chapter_title || '')
+      .replace(/^[^·]*·\s*/, '').trim();
+
     // 一段可能切成好几格：字幕一行 13 字、最多四行，所以一格不超过 50 字，内容一句不丢
     const parts = splitSubtitle(text, 50);
     parts.forEach(function (piece, pi) {
       if (frames.length >= MAX_FRAMES || totalSec >= MAX_SECONDS) { truncated++; return; }
       const sec = Math.min(12, Math.max(2.8, 2.4 + piece.length / 9));
+      const yearInLine = en.at_year && String(piece).indexOf(String(en.at_year)) >= 0;
+      const kicker = [chName, en.at_year && !yearInLine ? en.at_year + ' 年' : '']
+        .filter(Boolean).join(' · ') || a.subject_name;
       frames.push({
         image: ph ? ph.path : null,
         text: piece,
@@ -1639,6 +1818,7 @@ function apiMoviePlan(body) {
         year: en.at_year || null,
         entryId: en.id,
         part: pi ? pi + 1 : 0,
+        kicker: kicker,
       });
       totalSec += Math.round(sec * 10) / 10;
     });
@@ -1682,10 +1862,28 @@ registerJob('movie', async function (p, ctx) {
   const outRel = relDir + '/movie.mp4';
   const outAbs = path.join(absDir, 'movie.mp4');
 
-  // 配音：逐帧合成，超时就跳过（宁可没声音，也不要整片失败）
+  // 配音：先试一句探通不通，再逐帧合成。
+  // 早先这里是「失败就静音过去」，结果用户拿到一条 73 秒的哑片，界面上一个字都没解释。
+  // 现在探不通直接中止，并把「去哪儿配」写进报错；探通了也记下成功/失败格数给前端看。
+  const voiceStat = { want: wantVoice, done: 0, failed: 0, reason: '' };
   if (wantVoice) {
+    ctx.progress(0.02, '检查朗读模型');
+    let probe = null;
+    try {
+      probe = await apiTts({ text: '好', speed: p.speed || 1 });
+    } catch (e) {
+      probe = { ok: false, message: e.message || String(e) };
+    }
+    if (!probe || !probe.ok) {
+      voiceStat.reason = (probe && probe.message) || '朗读模型没配好';
+      throw new Error('配音做不了：' + voiceStat.reason +
+        '。请去「设置 → 各环节用哪个模型 → 语音朗读」绑一个语音模型' +
+        '（硅基流动可以用 FunAudioLLM/CosyVoice2-0.5B，免费），' +
+        '或者把「配音」取消勾选，只出画面与配乐。');
+    }
+
     for (let i = 0; i < frames.length; i++) {
-      ctx.progress(0.02 + (i / frames.length) * 0.25, '配音 ' + (i + 1) + '/' + frames.length);
+      ctx.progress(0.03 + (i / frames.length) * 0.24, '配音 ' + (i + 1) + '/' + frames.length);
       if (!frames[i].text) continue;
       try {
         const r = await apiTts({ text: frames[i].text, speed: p.speed || 1 });
@@ -1693,8 +1891,19 @@ registerJob('movie', async function (p, ctx) {
           frames[i].voiceFile = path.join(ctx.files, r.path);
           const d = mediaSeconds(bin, frames[i].voiceFile);
           if (d > 0) frames[i].sec = Math.max(Number(frames[i].sec) || 2.8, Math.round((d + 0.45) * 10) / 10);
+          voiceStat.done++;
+        } else {
+          voiceStat.failed++;
+          if (!voiceStat.reason) voiceStat.reason = (r && r.message) || '有一段没合成出来';
         }
-      } catch (e) { /* 这一帧没配上，就静音过去 */ }
+      } catch (e) {
+        voiceStat.failed++;
+        if (!voiceStat.reason) voiceStat.reason = e.message || String(e);
+      }
+    }
+    if (voiceStat.done === 0) {
+      throw new Error('配音全失败了：' + (voiceStat.reason || '朗读模型没响应') +
+        '。可以先取消勾选「配音」，只出画面与配乐。');
     }
   }
 
@@ -1702,25 +1911,33 @@ registerJob('movie', async function (p, ctx) {
   const segs = [];
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
-    ctx.progress(0.28 + (i / frames.length) * 0.55, '渲染第 ' + (i + 1) + '/' + frames.length + ' 格');
+    ctx.progress(0.3 + (i / frames.length) * 0.52, '渲染第 ' + (i + 1) + '/' + frames.length + ' 格');
     const seg = 'seg' + String(i).padStart(3, '0') + '.mp4';
     const d = Number(f.sec) || 3;
 
-    const vf = [
-      'scale=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2) + ':force_original_aspect_ratio=increase',
-      'crop=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2),
-      'zoompan=' + zoomExpr(i) + ":d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=" +
-        MOVIE_W + 'x' + MOVIE_H + ':fps=' + MOVIE_FPS,
-      'format=yuv420p',
-    ].join(',');
+    const imgAbs = f.image ? path.join(ctx.files, f.image) : '';
+    const hasImg = !!(imgAbs && fs.existsSync(imgAbs) && imageOk(bin, imgAbs));
+    f.hasImage = hasImg;      // 字幕排版按这个决定「底部字幕」还是「整屏文字卡」
 
     const args = ['-hide_banner', '-loglevel', 'error'];
-    const imgAbs = f.image ? path.join(ctx.files, f.image) : '';
-    if (imgAbs && fs.existsSync(imgAbs) && imageOk(bin, imgAbs)) {
+    let vf;
+    if (hasImg) {
       args.push('-loop', '1', '-i', imgAbs);
+      vf = [
+        'scale=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2) + ':force_original_aspect_ratio=increase',
+        'crop=' + (MOVIE_W * 3 / 2) + ':' + (MOVIE_H * 3 / 2),
+        'zoompan=' + zoomExpr(i) + ":d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=" +
+          MOVIE_W + 'x' + MOVIE_H + ':fps=' + MOVIE_FPS,
+        'format=yuv420p',
+      ].join(',');
     } else {
-      // 缺图或坏图：给一张深色底，不要中断整片
-      args.push('-f', 'lavfi', '-i', 'color=c=0x2B2723:s=' + MOVIE_W + 'x' + MOVIE_H + ':d=' + d);
+      // 缺图：不再铺深色底（那是「全黑」的来源），改成米色纸底 + 上下两条细线，
+      // 正文由 ASS 以大字排在中间——像一页稿纸，而不是一块黑屏。
+      args.push('-f', 'lavfi', '-i',
+        'color=c=0xF6F0E2:s=' + MOVIE_W + 'x' + MOVIE_H + ':d=' + d + ':r=' + MOVIE_FPS);
+      vf = 'drawbox=x=0:y=0:w=' + MOVIE_W + ':h=14:color=0xC9A87C@0.85:t=fill,' +
+        'drawbox=x=0:y=' + (MOVIE_H - 8) + ':w=' + MOVIE_W + ':h=8:color=0xC9A87C@0.55:t=fill,' +
+        'format=yuv420p';
     }
 
     const hasVoice = f.voiceFile && fs.existsSync(f.voiceFile);
@@ -1752,8 +1969,8 @@ registerJob('movie', async function (p, ctx) {
   await runFfmpeg(bin, ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0',
     '-i', 'list.txt', '-c', 'copy', '-y', joined], { cwd: absDir, what: '拼接', timeout: 180000 });
 
-  // 字幕 + BGM
-  ctx.progress(0.92, '配字幕与配乐');
+  // 字幕 + 配乐
+  ctx.progress(0.86, '配字幕与配乐');
   const assName = 'subs.ass';
   fs.writeFileSync(path.join(absDir, assName), buildAss(p.title || '', frames), 'utf8');
 
@@ -1761,17 +1978,32 @@ registerJob('movie', async function (p, ctx) {
   const args2 = ['-hide_banner', '-loglevel', 'error', '-i', joined];
   let fc = '[0:v]ass=' + assName + '[v]';
 
+  // 配乐：现算一条和弦进行（琶音 + 长音铺底），不再是三路正弦垫。
+  // 音量按「有没有配音」分档：有人说话时音乐退到后面，只有音乐时才推上来。
+  let bgmWav = '';
   if (bgmName !== 'none') {
-    // 三音和弦垫：比单音耐听，又不需要任何音乐文件
-    const roots = { warm: [174, 220, 261], calm: [196, 247, 294], bright: [220, 277, 330], old: [147, 196, 233] };
-    const ch3 = roots[bgmName] || roots.calm;
-    ch3.forEach(function (hz) {
-      args2.push('-f', 'lavfi', '-i', 'sine=frequency=' + hz + ':duration=' + Math.ceil(totalSec + 1));
-    });
-    fc += ';[1:a][2:a][3:a]amix=inputs=3:duration=first,volume=0.09,tremolo=f=0.14:d=0.35[bg]';
-    fc += ';[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0[a]';
+    ctx.progress(0.88, '编配乐');
+    bgmWav = synthBgm(bgmName, totalSec, path.join(absDir, 'bgm.wav'));
+  }
+
+  if (bgmWav && fs.existsSync(bgmWav)) {
+    args2.push('-i', 'bgm.wav');
+    const bgVol = wantVoice ? 0.55 : 1.3;
+    const fadeOutAt = Math.max(0, totalSec - 3);
+    fc += ';[1:a]volume=' + bgVol +
+      ',afade=t=in:st=0:d=1.5,afade=t=out:st=' + fadeOutAt.toFixed(2) + ':d=2.6[bg]';
+    // 语音先做响度归一：各家 TTS 电平差很多（硅基流动 CosyVoice 实测 mean −31.6dB，
+    // 手机外放几乎听不清；OpenAI 的 tts-1 又在 −20dB 上下），固定增益必然一头爆一头闷。
+    // loudnorm 拉到 −18 LUFS，再由 amix 之后补回被平分的那 6dB。
+    fc += wantVoice
+      ? ';[0:a]loudnorm=I=-18:TP=-2:LRA=11,aresample=44100[va]'
+      : ';[0:a]anull[va]';
+    fc += ';[va][bg]amix=inputs=2:duration=first:dropout_transition=0,' +
+      'volume=2.0,alimiter=limit=0.95[a]';
   } else {
-    fc += ';[0:a]anull[a]';
+    fc += wantVoice
+      ? ';[0:a]loudnorm=I=-18:TP=-2:LRA=11,aresample=44100[a]'
+      : ';[0:a]anull[a]';
   }
 
   args2.push('-filter_complex', fc, '-map', '[v]', '-map', '[a]',
@@ -1786,6 +2018,7 @@ registerJob('movie', async function (p, ctx) {
   for (const s2 of segs) { try { fs.unlinkSync(path.join(absDir, s2)); } catch (e) {} }
   try { fs.unlinkSync(listFile); } catch (e) {}
   try { fs.unlinkSync(path.join(absDir, joined)); } catch (e) {}
+  try { fs.unlinkSync(path.join(absDir, 'bgm.wav')); } catch (e) {}
 
   ctx.progress(0.99, '收尾');
   const bytes = fs.existsSync(outAbs) ? fs.statSync(outAbs).size : 0;
@@ -1814,8 +2047,14 @@ registerJob('movie', async function (p, ctx) {
     seconds: Math.round(totalSec * 10) / 10,
     bytes: bytes,
     frames: frames.length,
-    voice: wantVoice,
-    bgm: bgmName,
+    // 前端按这三个字段如实告诉人：配音成没成、几格没配上、有没有配乐
+    voice: wantVoice ? (voiceStat.done > 0 ? 'ok' : 'failed') : 'off',
+    voiceDone: voiceStat.done,
+    voiceFailed: voiceStat.failed,
+    voiceReason: voiceStat.reason || '',
+    bgm: bgmWav ? bgmName : 'none',
+    bgmWant: bgmName,
+    cards: frames.filter(function (f) { return !f.hasImage; }).length,
     archiveId: aid || null,
   };
 });

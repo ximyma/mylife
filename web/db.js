@@ -791,9 +791,12 @@
                 'Qwen/Qwen3-ASR-1.7B'],
           // 图片生成：硅基流动免费款 Kolors。加好配置、拉到模型后自动绑上，
           // 免得「图片生成」停在「默认 / 按规则」，回退到文本默认模型去调图像接口被 403。
-          img: ['Kwai-Kolors/Kolors']
+          img: ['Kwai-Kolors/Kolors'],
+          // 语音朗读：短片配音靠它。不自动绑的话，用户勾了「配音」合成出来是哑片，
+          // 而界面上一个字都不会说为什么（v0.9.9 之前的真实事故）。
+          tts: ['FunAudioLLM/CosyVoice2-0.5B', 'fnlp/MOSS-TTSD-v0.5', 'tts-1']
         };
-        var KIND = { title: 'text', vision: 'vision', asr: 'asr', img: 't2i' };
+        var KIND = { title: 'text', vision: 'vision', asr: 'asr', img: 't2i', tts: 'tts' };
         var done = [];
 
         return self.getSlots().then(function (slots) {
