@@ -1538,7 +1538,7 @@
       '桂芳：（小声）带情绪的台词这样写。\n' +
       '（每个场景之间空一行；对白一行一句；旁白用「旁白：」开头。）',
 
-    generateScript: function (archiveId, chapterId) {
+    generateScript: function (archiveId, chapterId, extra) {
       var chP = chapterId
         ? API.query('SELECT * FROM chapters WHERE id=?', [chapterId])
         : Promise.resolve([]);
@@ -1563,7 +1563,8 @@
           return API.ai({
             messages: [
               { role: 'system', content: DB.SCRIPT_SYS },
-              { role: 'user', content: head + '\n材料（原话）：\n' + material + '\n\n请整理成 3 到 6 场戏。' },
+              { role: 'user', content: head + '\n材料（原话）：\n' + material + '\n\n' +
+                (extra ? '这次的要求：' + extra + '\n\n' : '') + '请整理成 3 到 6 场戏。' },
             ],
             temperature: 0.5,
           }).then(function (out) {

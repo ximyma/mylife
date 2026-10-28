@@ -51,7 +51,7 @@
     return parts.slice(0, 3);
   }
 
-  function buildContext(archiveId, userText) {
+  function buildContext(archiveId, userText, includeRefs) {
     return API.query('SELECT * FROM archives WHERE id=?', [archiveId]).then(function (rows) {
       var a = rows[0];
       if (!a) return { system: '', refs: [] };
@@ -69,7 +69,7 @@
         facts ? '档案信息：' + facts : '',
       ].filter(Boolean).join('\n');
 
-      var keys = grams(userText);
+      var keys = includeRefs === false ? [] : grams(userText);
       var refs = [];
       var q = keys.length
         ? API.query('SELECT id, text FROM entries WHERE archive_id=? AND (' +
@@ -106,6 +106,10 @@
         '<section class="chat-log" id="chatLog"></section>' +
         '<section class="chat-in">' +
         '<div class="chat-priv" id="chatPriv"></div>' +
+        '<div class="chat-opt">' +
+        '<label class="chk"><input type="checkbox" id="chatRefs" checked> 带上档案原文做参考</label>' +
+        '<input class="fi" id="chatExtra" placeholder="附加要求（可选），如：只写 300 字 / 保留方言 / 别用套话">' +
+        '</div>' +
         '<textarea class="say mini" id="chatText" rows="2" placeholder="说点什么……（Ctrl+Enter 发送）"></textarea>' +
         '<div class="chat-acts">' +
         '<button class="btn tiny" id="chatVoice">🎙 说</button>' +
@@ -196,9 +200,13 @@
 
     function updatePriv() {
       var n = (textEl.value || '').length;
-      privEl.textContent = n ? ('本次会带上：档案人物卡 + 相关原文（约 ' + Math.min(1200, n * 3) + ' 字）') : '';
+      var refsChk = host.querySelector('#chatRefs');
+      var on = refsChk ? !!refsChk.checked : true;
+      privEl.textContent = n ? ('本次会带上：人物卡' + (on ? ' + 相关原文' : '（不带原文）') + '（约 ' + Math.min(1200, n * 3) + ' 字）') : '';
     }
     textEl.addEventListener('input', updatePriv);
+    var rc = host.querySelector('#chatRefs');
+    if (rc) rc.addEventListener('change', updatePriv);
     updatePriv();
 
     textEl.addEventListener('keydown', function (ev) {
@@ -211,6 +219,11 @@
       var text = String(textEl.value || '').trim();
       if (!text) return;
       if (cur.streaming) { toast('上一条还在写'); return; }
+
+      var refsChk = host.querySelector('#chatRefs');
+      var extraEl = host.querySelector('#chatExtra');
+      var includeRefs = refsChk ? !!refsChk.checked : true;
+      var extra = extraEl ? String(extraEl.value || '').trim() : '';
 
       textEl.value = '';
       updatePriv();
@@ -231,9 +244,10 @@
         log.scrollTop = log.scrollHeight;
 
         return DB.addMessage(tid, 'user', text).then(function () {
-          return buildContext(archiveId, text);
+          return buildContext(archiveId, text, includeRefs);
         }).then(function (ctx) {
-          var msgs = [{ role: 'system', content: ROLES[cur.role].sys + '\n\n' + ctx.system }];
+          var sys = ROLES[cur.role].sys + '\n\n' + ctx.system + (extra ? '\n\n用户补充要求：' + extra : '');
+          var msgs = [{ role: 'system', content: sys }];
           return DB.messages(tid).then(function (hist) {
             for (var i = 0; i < hist.length; i++) {
               if (hist[i].role === 'user' || hist[i].role === 'assistant') {
@@ -294,11 +308,72 @@
   /* ---------------- 回复插回档案 ---------------- */
 
   function insertToArchive(archiveId, text, host) {
-    var year = window.prompt('这段内容放在哪一年？（只填年份，比如 1962）', '');
-    if (!year) return;
-    DB.insertAt({ archiveId: archiveId, year: Number(year), kind: 'text', text: text })
-      .then(function () { toast('已插入 ' + year + ' 年，去时间轴看看'); })
-      .catch(function (e) { fail(e); });
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal ci-modal"><h3>插入前先看一眼</h3>' +
+      '<p class="hint dim">下面这段可以改，改好再选放到哪里。</p>' +
+      '<textarea id="ciText">' + esc(text) + '</textarea>' +
+      '<div class="ml-modal-acts">' +
+      '<button class="btn primary" data-ci-year="1">放进某一年</button>' +
+      '<button class="btn" data-ci-after="1">插到某段后面</button>' +
+      '<button class="btn" data-ci-cancel="1">取消</button></div></div>';
+    document.body.appendChild(ov);
+    var ta = ov.querySelector('#ciText');
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-ci-cancel]'))) {
+        document.body.removeChild(ov); return;
+      }
+      var v = String(ta.value || '').trim();
+      if (ev.target.closest && ev.target.closest('[data-ci-year]')) {
+        if (!v) return toast('内容不能为空');
+        var year = window.prompt('这段内容放在哪一年？（只填年份，比如 1962）', '');
+        if (!year) return;
+        document.body.removeChild(ov);
+        DB.insertAt({ archiveId: archiveId, year: Number(year), kind: 'text', text: v })
+          .then(function () { toast('已插入 ' + year + ' 年'); }).catch(fail);
+        return;
+      }
+      if (ev.target.closest && ev.target.closest('[data-ci-after]')) {
+        if (!v) return toast('内容不能为空');
+        document.body.removeChild(ov);
+        openParagraphPicker(archiveId, function (entryId) {
+          DB.insertAfter(archiveId, { afterId: entryId, kind: 'text', text: v })
+            .then(function () { toast('已插到那一段后面'); }).catch(fail);
+        });
+      }
+    });
+  }
+
+  /** 选一段，插在它后面——人能自己决定放哪，不用靠"年份"猜 */
+  function openParagraphPicker(archiveId, onPick) {
+    API.query('SELECT id, text, at_year FROM entries WHERE archive_id=? AND kind IN (?,?) ' +
+      'ORDER BY COALESCE(sort_key,seq,0), id LIMIT 300', [archiveId, 'text', 'quote'])
+      .then(function (list) {
+        var rows = '', i;
+        for (i = 0; i < list.length; i++) {
+          var e = list[i];
+          rows += '<button class="pick-ch" data-pick-entry="' + e.id + '">' +
+            '<b>' + (e.at_year ? esc(e.at_year + ' 年') : '未标年份') + '</b> ' +
+            esc(String(e.text || '').slice(0, 60)) + '</button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>插到哪一段后面</h3>' +
+          '<div class="pick-chs">' + (rows || '<p class="muted">还没有段落</p>') + '</div>' +
+          '<div class="ml-modal-acts"><button class="btn" data-pe-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pe-cancel]'))) {
+            document.body.removeChild(ov); return;
+          }
+          var pb = ev.target.closest && ev.target.closest('[data-pick-entry]');
+          if (pb) {
+            var eid = Number(pb.getAttribute('data-pick-entry'));
+            document.body.removeChild(ov);
+            onPick(eid);
+          }
+        });
+      }).catch(fail);
   }
 
   /* ---------------- 语音输入 ---------------- */

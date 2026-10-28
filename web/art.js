@@ -107,6 +107,134 @@
           '画面：' + scene + '。' + (persona ? '人物形象：' + persona + '。' : '') + st.post;
       }
 
+      /** 把参考图缩到 1024 以内再上传，原图动辄几 MB，服务商收不了 */
+      function readRef(file, cb) {
+        var fr = new FileReader();
+        fr.onload = function () {
+          var src = String(fr.result || '');
+          var img = new Image();
+          img.onload = function () {
+            var w = img.width || 1, h = img.height || 1, m = Math.max(w, h), lim = 1024;
+            if (m <= lim) return cb(src);
+            var s = lim / m;
+            var cv = document.createElement('canvas');
+            cv.width = Math.round(w * s); cv.height = Math.round(h * s);
+            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+            try { cb(cv.toDataURL('image/jpeg', 0.9)); } catch (e) { cb(src); }
+          };
+          img.onerror = function () { cb(src); };
+          img.src = src;
+        };
+        fr.readAsDataURL(file);
+      }
+
+      /**
+       * 生成面板：提示词可以改、可以带参考图、出图先看，满意了再决定插到哪。
+       * 不再一点就按段落文字直出。
+       */
+      function openArtPanel(entry) {
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML =
+          '<div class="ml-modal art-panel">' +
+          '<h3>给这一段配一张图</h3>' +
+          '<div class="ap-src"><span class="ap-k">这一段</span><p>' + esc(String(entry.text || '').slice(0, 150)) + '</p></div>' +
+          '<label class="ap-l">提示词<small>已按这段和画风填好，可以随便改</small>' +
+          '<textarea id="apPrompt">' + esc(buildPrompt(entry)) + '</textarea></label>' +
+          '<div class="ap-ref"><span class="ap-k">参考图（可选）</span>' +
+          '<div class="ap-refrow">' +
+          '<button class="btn tiny" id="apRefPick">选一张图做参考</button>' +
+          '<img id="apRefImg" class="ap-refimg" alt="">' +
+          '<button class="btn tiny" id="apRefClear">去掉</button>' +
+          '</div><small class="ap-note">部分模型支持参考图；不支持时服务商会明确报错，去掉参考图或换个模型即可。</small></div>' +
+          '<div class="ml-modal-acts">' +
+          '<button class="btn primary" id="apGo">生成</button>' +
+          '<button class="btn" id="apClose">关闭</button></div>' +
+          '<div class="ml-modal-msg" id="apMsg"></div>' +
+          '<div id="apOut"></div>' +
+          '</div>';
+        document.body.appendChild(ov);
+
+        var promptEl = ov.querySelector('#apPrompt');
+        var refImg = ov.querySelector('#apRefImg');
+        var refClear = ov.querySelector('#apRefClear');
+        var refB64 = '';
+        refClear.style.display = 'none';
+
+        ov.querySelector('#apRefPick').addEventListener('click', function () {
+          var inp = document.createElement('input');
+          inp.type = 'file'; inp.accept = 'image/*';
+          inp.onchange = function () {
+            var f = inp.files && inp.files[0];
+            if (!f) return;
+            readRef(f, function (dataUrl) {
+              refB64 = dataUrl;
+              refImg.src = dataUrl; refImg.style.display = 'block'; refClear.style.display = 'inline-block';
+            });
+          };
+          inp.click();
+        });
+        refClear.addEventListener('click', function () {
+          refB64 = ''; refImg.removeAttribute('src'); refImg.style.display = 'none'; refClear.style.display = 'none';
+        });
+        ov.querySelector('#apClose').addEventListener('click', function () { document.body.removeChild(ov); });
+        ov.addEventListener('click', function (ev) { if (ev.target === ov) document.body.removeChild(ov); });
+
+        var go = ov.querySelector('#apGo');
+        var out = ov.querySelector('#apOut');
+        var msg = ov.querySelector('#apMsg');
+
+        go.addEventListener('click', function () {
+          var p = String(promptEl.value || '').trim();
+          if (!p) { msg.textContent = '提示词不能为空'; return; }
+          go.disabled = true;
+          msg.textContent = '正在画……大概 4–8 秒';
+          out.innerHTML = '<div class="art-load">画布上正在落笔……</div>';
+          var req = { prompt: p, size: '1024x1024' };
+          if (refB64) req.refImage = refB64;
+
+          API.image(req).then(function (r) {
+            go.disabled = false;
+            msg.textContent = '每张约 4–8 秒';
+            if (!r || !r.ok) {
+              out.innerHTML = '<div class="warn-text">' + esc((r && r.message) || '没画出来') + '</div>';
+              return;
+            }
+            var lastPath = r.path;
+            out.innerHTML =
+              '<figure class="ap-fig"><img src="' + esc(fsrc(lastPath)) + '" alt="">' +
+              '<figcaption>' + esc(r.model || '') + (r.cached ? ' · 缓存' : ' · ' + Math.round((r.ms || 0) / 1000) + 's') + '</figcaption></figure>' +
+              '<div class="ap-result">' +
+              '<button class="btn tiny primary" data-ap-insert="1">插到这一段后面</button>' +
+              '<button class="btn tiny" data-ap-again="1">再画一张</button>' +
+              '<button class="btn tiny" data-ap-time="1">存进时间轴</button>' +
+              '</div>';
+
+            out.querySelector('[data-ap-again]').addEventListener('click', function () { go.click(); });
+            out.querySelector('[data-ap-insert]').addEventListener('click', function () {
+              var year = entry.at_year || a.birth_year || 0;
+              API.exec('INSERT INTO photos (archive_id,path,taken_year,place,event,chapter_id,role) VALUES (?,?,?,?,?,?,?)',
+                [archiveId, lastPath, year, 'AI 插图', 'AI 生成的插图', entry.chapter_id || null, 'inline'])
+                .then(function (res) {
+                  return DB.insertAfter(archiveId, { afterId: entry.id, kind: 'photo', photoId: res.lastId });
+                })
+                .then(function () { toast('已插到这一段后面'); document.body.removeChild(ov); })
+                .catch(function (e) { toast(e.message || '没插上'); });
+            });
+            out.querySelector('[data-ap-time]').addEventListener('click', function () {
+              var y = window.prompt('这张图放在哪一年？（只填年份）', String(entry.at_year || a.birth_year || ''));
+              if (!y) return;
+              DB.insertAt({ archiveId: archiveId, year: Number(y), kind: 'photo', photoPath: lastPath, place: 'AI 插图', text: 'AI 生成的插图' })
+                .then(function () { toast('已存进 ' + y + ' 年'); document.body.removeChild(ov); })
+                .catch(function (e) { toast(e.message || '没存上'); });
+            });
+          }, function (e) {
+            go.disabled = false; msg.textContent = '';
+            out.innerHTML = '<div class="warn-text">' + esc(e.message || '请求失败') + '</div>';
+          });
+        });
+      }
+
       function renderList(chId) {
         var mine = entries.filter(function (e) { return !chId || String(e.chapter_id) === String(chId); });
         if (!mine.length) {
@@ -122,8 +250,7 @@
             '<div class="art-when">' + (e.at_year ? e.at_year + ' 年' : '年份未填') + '</div>' +
             '<p>' + esc(String(e.text || '').slice(0, 120)) + '</p>' +
             '</div>' +
-            '<div class="art-acts"><button class="btn tiny" data-draw="' + e.id + '">画一张</button></div>' +
-            '<div class="art-out"></div>' +
+            '<div class="art-acts"><button class="btn tiny" data-art-panel="' + e.id + '">配一张图</button></div>' +
             '</article>';
         }
         list.innerHTML = html;
@@ -137,61 +264,12 @@
       list.addEventListener('click', function (ev) {
         var t = ev.target;
         if (!t.closest) return;
-
-        var db = t.closest('[data-draw]');
-        if (db) {
-          var eid = Number(db.getAttribute('data-draw'));
-          var entry = null;
-          for (var i = 0; i < entries.length; i++) if (String(entries[i].id) === String(eid)) entry = entries[i];
-          if (!entry) return;
-          var item = db.closest('.art-item');
-          var out = item.querySelector('.art-out');
-
-          db.disabled = true;
-          tip.textContent = '正在画……大概 4–8 秒';
-          out.innerHTML = '<div class="art-load">画布上正在落笔……</div>';
-
-          API.image({ prompt: buildPrompt(entry), size: '1024x1024' }).then(function (r) {
-            db.disabled = false;
-            tip.textContent = '每张约 4–8 秒';
-            if (!r || !r.ok) {
-              out.innerHTML = '<div class="warn-text">' + esc((r && r.message) || '没画出来') + '</div>';
-              return;
-            }
-            out.innerHTML = '<figure class="art-fig"><img src="' + esc(fsrc(r.path)) + '" alt="">' +
-              '<figcaption>' +
-              '<span>' + esc(r.model || '') + (r.cached ? ' · 缓存' : ' · ' + Math.round((r.ms || 0) / 1000) + 's') + '</span>' +
-              '<button class="btn tiny primary" data-use="' + r.path + '" data-year="' + (entry.at_year || '') + '">存进档案</button>' +
-              '</figcaption></figure>';
-          }, function (e) {
-            db.disabled = false;
-            tip.textContent = '每张约 4–8 秒';
-            out.innerHTML = '<div class="warn-text">' + esc(e.message || '请求失败') + '</div>';
-          });
-          return;
-        }
-
-        var use = t.closest('[data-use]');
-        if (use) {
-          var path = use.getAttribute('data-use');
-          var year = Number(use.getAttribute('data-year')) || null;
-          if (!year) {
-            var y = window.prompt('这张图放在哪一年？（只填年份）', String(a.birth_year || ''));
-            if (!y) return;
-            year = Number(y);
-          }
-          use.disabled = true;
-          DB.insertAt({
-            archiveId: archiveId, year: year, kind: 'photo', photoPath: path,
-            place: 'AI 插图', text: 'AI 生成的插图',
-          }).then(function () {
-            toast('已存进 ' + year + ' 年，去时间轴或卷宗看看');
-            use.textContent = '已存';
-          }).catch(function (e) {
-            use.disabled = false;
-            toast(e.message || '没存上');
-          });
-        }
+        var b = t.closest('[data-art-panel]');
+        if (!b) return;
+        var eid = Number(b.getAttribute('data-art-panel'));
+        var entry = null;
+        for (var i = 0; i < entries.length; i++) if (String(entries[i].id) === String(eid)) entry = entries[i];
+        if (entry) openArtPanel(entry);
       });
     }).catch(function (e) {
       host.innerHTML = ML.topbar({ back: '#/' }) + '<main class="wrap"><div class="empty">' +

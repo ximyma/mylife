@@ -697,3 +697,31 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .ph-acts{display:flex;gap:4px;flex-wrap:wrap;padding:6px 4px 2px}
 .ph-acts .btn{font-size:11px;padding:3px 7px}
 .ch-hint{font-size:11px;color:var(--muted);font-weight:400;margin-left:8px}
+
+/* 插图生成面板：改提示词 / 传参考图 / 先看再插（v0.9.3） */
+.art-panel{max-width:560px}
+.ap-src{background:var(--paper);border-radius:8px;padding:8px 10px;margin-bottom:10px}
+.ap-src p{margin:4px 0 0;font-size:13px;color:var(--ink2);line-height:1.6;max-height:66px;overflow:auto}
+.ap-k{font-size:12px;color:var(--muted)}
+.ap-l{display:block;font-size:13px;color:var(--ink2);margin-bottom:10px}
+.ap-l small{color:var(--muted);font-size:11px;margin-left:6px}
+.ap-l textarea{width:100%;box-sizing:border-box;min-height:110px;margin-top:6px;font-family:inherit;
+  font-size:13.5px;line-height:1.6;padding:9px;border:1px solid var(--line);border-radius:8px;
+  background:var(--card);color:var(--ink)}
+.ap-ref{margin-bottom:10px}
+.ap-refrow{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}
+.ap-refimg{display:none;width:70px;height:70px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.ap-note{display:block;font-size:11px;color:var(--muted);margin-top:4px}
+.ap-fig{margin:10px 0}
+.ap-fig img{width:100%;border-radius:10px;display:block}
+.ap-fig figcaption{font-size:11px;color:var(--muted);text-align:center;margin-top:4px}
+.ap-result{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+
+/* AI 助手：发送前控制资料 / 插入前编辑（v0.9.3） */
+.chat-opt{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.chat-opt .chk{font-size:12px;color:var(--muted)}
+.chat-opt .fi{font-size:13px;padding:6px 8px}
+.ci-modal{max-width:600px}
+.ci-modal textarea{width:100%;box-sizing:border-box;min-height:240px;font-family:inherit;font-size:14px;
+  line-height:1.7;padding:10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--card);color:var(--ink);margin:6px 0}

@@ -1211,7 +1211,9 @@ async function apiImage(body) {
     const model = body.model
       ? String(body.model)
       : (cand.model && isImageModel(cand.model) ? cand.model : 'Kwai-Kolors/Kolors');
-    const key = imgKey(prompt, model, size);
+    // 参考图（可选）：带上它时缓存键也要变，否则换了参考图还命中旧图
+    const refB64 = body.refImage ? String(body.refImage).replace(/^data:[^,]*,/, '') : '';
+    const key = imgKey(prompt + (refB64 ? '|ref:' + refB64.length + ':' + refB64.slice(0, 24) : ''), model, size);
 
     try {
       const hit = ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='image'").get(key);
@@ -1225,14 +1227,20 @@ async function apiImage(body) {
       const r = await fetchJson(endpointOf(cand.profile) + '/images/generations', {
         method: 'POST',
         headers: authHeaders(cand.profile),
-        body: JSON.stringify({
-          model: model,
-          prompt: prompt,
-          image_size: size,
-          batch_size: 1,
-          num_inference_steps: Number(body.steps) || 20,
-          guidance_scale: Number(body.cfg) || 7.5,
-        }),
+        body: JSON.stringify((function () {
+          const pl = {
+            model: model,
+            prompt: prompt,
+            image_size: size,
+            batch_size: 1,
+            num_inference_steps: Number(body.steps) || 20,
+            guidance_scale: Number(body.cfg) || 7.5,
+          };
+          // 参考图：只有部分图生图模型认 `image` 字段。不认的服务商会直接报错，
+          // 前端会把错误原样显示，用户可以去掉参考图或换个支持图生图的模型。
+          if (refB64) pl.image = refB64;
+          return pl;
+        })()),
       }, 180000);
 
       if (!r.ok) {

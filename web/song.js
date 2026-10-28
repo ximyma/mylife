@@ -33,6 +33,8 @@
         '<main class="wrap">' +
         '<section class="tl-hd"><h1 class="h1">为 ' + esc(a.subject_name) + ' 写一首歌</h1>' +
         '<p class="muted">只用档案里真实的地名、物件和事。写完可以改，改完能念给你听。</p></section>' +
+        '<section class="sc-req"><label class="ap-l">写词要求<small>可以改；留空按默认（三段式、每句 7–11 字、用真实地名物件）</small>' +
+        '<textarea id="songExtra" placeholder="例如：轻快一点；写童年在乡下的部分；提到稻田和石桥"></textarea></label></section>' +
         '<section class="song-card">' +
         '<div class="song-lyr" id="songLyr">' + (saved ? esc(saved) : '') + '</div>' +
         '<div class="song-acts">' +
@@ -49,6 +51,8 @@
 
       host.querySelector('#songGen').addEventListener('click', function () {
         var btn = this;
+        var extraEl = host.querySelector('#songExtra');
+        var extra = extraEl ? String(extraEl.value || '').trim() : '';
         btn.disabled = true;
         tip.textContent = '正在写……';
 
@@ -74,6 +78,7 @@
           (facts ? '信息：' + facts + '\n' : '') +
           (chron ? '章节：' + chron + '\n' : '') +
           (lines ? '原话片段：' + lines + '\n' : '') +
+          (extra ? '额外要求：' + extra + '\n' : '') +
           '\n请写这首歌的歌词。';
 
         API.ai({ messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], temperature: 0.9 })

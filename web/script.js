@@ -43,6 +43,8 @@
         '<select class="fi" id="scCh" style="max-width:240px">' + opts + '</select>' +
         '<button class="btn primary" id="scGen">生成剧本</button>' +
         '</section>' +
+        '<section class="sc-req"><label class="ap-l">生成要求<small>可以改；留空按默认（3–6 场，只用档案事实）</small>' +
+        '<textarea id="scExtra" placeholder="例如：只写 1960 年代；每场一个地点；对白保留方言；多写母亲的部分"></textarea></label></section>' +
         '<p class="hint dim" id="scTip">生成会用「设置 → 模型来源」里的文字模型，一次约一两千字。</p>' +
         (listHtml ? '<div class="sc-list" id="scList">' + listHtml + '</div>' : '') +
         '<section id="scBody"></section></main>';
@@ -53,9 +55,11 @@
       host.querySelector('#scGen').addEventListener('click', function () {
         var btn = this;
         var chId = host.querySelector('#scCh').value;
+        var extraEl = host.querySelector('#scExtra');
+        var extra = extraEl ? String(extraEl.value || '').trim() : '';
         btn.disabled = true;
         tip.textContent = '正在排场次……';
-        DB.generateScript(archiveId, chId ? Number(chId) : null).then(function (res) {
+        DB.generateScript(archiveId, chId ? Number(chId) : null, extra).then(function (res) {
           btn.disabled = false;
           tip.textContent = '排好了 ' + res.scenes.length + ' 场。不满意可以再生成一次。';
           showScript(res.id);
