@@ -489,6 +489,25 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .dots{color:var(--muted)}
 .chat-in{position:sticky;bottom:0;background:var(--paper);padding-top:8px;
   border-top:1px solid var(--line2)}
+
+/* 模型选择栏：聊天 / 画图 / 视频，一行说清"这次用谁干活" */
+.chat-model{background:var(--card);border:1px solid var(--line);border-radius:9px;
+  padding:8px 10px;margin-bottom:10px}
+.cm-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cm-tabs{display:flex;gap:0;border:1px solid var(--line);border-radius:20px;overflow:hidden}
+.cm-tab{border:none;background:transparent;padding:5px 12px;font-size:12.5px;
+  color:var(--ink2);cursor:pointer}
+.cm-tab.on{background:var(--accent-soft);color:var(--accent)}
+.cm-sel{flex:1;min-width:130px;font-size:12.5px;padding:5px 8px}
+.cm-note{font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:6px}
+.cm-empty{font-size:12px;color:var(--warn-text, #a06020);margin-top:6px}
+.chat-img{display:block;width:100%;max-width:320px;border-radius:8px;margin-bottom:6px}
+.chat-video{display:block;width:100%;max-width:260px;border-radius:8px;background:#000;margin-bottom:6px}
+.chat-media-ops{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.chat-note{font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:6px}
+.chat-ok{font-size:11.5px;color:#3E6B4A}
+.chat-sys{font-size:11.5px;color:var(--muted);background:var(--card);border:1px dashed var(--line);
+  border-radius:8px;padding:8px 10px}
 .chat-priv{font-size:11px;color:var(--muted);min-height:16px;margin-bottom:4px}
 .chat-acts{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 

@@ -42,6 +42,24 @@
 
   var cur = { threadId: null, role: 'interviewer', streaming: null, archiveId: null, atts: [] };
 
+  /* ---------------- 用哪个模型干活 ----------------
+   * 三个用途：聊天（文字/看图）、画图、生成视频。
+   * 选中的模型跟着这条消息发出去，不再受「设置里绑了哪条」限制——
+   * 想用贵一点的模型写一段悼词，不必先去设置里改全局绑定。
+   */
+  var MODES = {
+    chat: { n: '聊天', kinds: ['text', 'vision'],
+      ph: '说点什么……（Ctrl+Enter 发送）' },
+    img: { n: '画图', kinds: ['t2i'],
+      ph: '想要什么画面？比如：1962 年的车间，天窗漏下一道光，墙上贴着红纸标语' },
+    vid: { n: '视频', kinds: ['t2v'],
+      ph: '要一段什么画面？写清动作、场景、镜头，比如：老人坐在竹椅上摇蒲扇，镜头缓慢推近' }
+  };
+
+  var pick = { mode: 'chat', profileId: null, model: '' };
+  var modelCache = [];      // [{ pid, pname, model, kind, free }]
+  var pulledOnce = false;   // 自动拉模型清单只做一次，别每次进页面都打一遍服务商
+
   /* ---------------- 附件：图片走视觉模型，文本类文档直接读正文 ---------------- */
 
   var ATT_MAX = 4;
@@ -146,6 +164,417 @@
     return arr;
   }
 
+  /* ---------------- 模型选择栏 ---------------- */
+
+  function buildModelCache(profiles) {
+    var out = [], seen = {}, i, j;
+    for (i = 0; i < profiles.length; i++) {
+      var pf = profiles[i];
+      if (Number(pf.enabled) !== 1) continue;
+      var ms = [];
+      try { ms = JSON.parse(pf.models_json || '[]'); } catch (e) { ms = []; }
+      if (pf.default_model) ms = [pf.default_model].concat(ms);
+      for (j = 0; j < ms.length; j++) {
+        var mid = String(ms[j] || '');
+        if (!mid) continue;
+        var key = pf.id + '|' + mid;
+        if (seen[key]) continue;
+        seen[key] = 1;
+        out.push({ pid: pf.id, pname: pf.name, model: mid,
+          kind: DB.modelKind(mid), free: DB.isFreeModel(mid) });
+      }
+    }
+    return out;
+  }
+
+  function savePick() {
+    try { DB.saveSetting('chat.model', JSON.stringify(pick)); } catch (e) {}
+  }
+
+  function loadModels(host) {
+    var after = function () {
+      DB.getSettings().then(function (cfg) {
+        try {
+          var o = JSON.parse(cfg['chat.model'] || '{}');
+          if (o && o.mode && MODES[o.mode]) pick.mode = o.mode;
+          if (o && o.profileId) pick.profileId = o.profileId;
+          if (o && o.model) pick.model = o.model;
+        } catch (e) {}
+        return DB.listProfiles();
+      }).then(function (profiles) {
+        modelCache = buildModelCache(profiles);
+        renderModelBar(host);
+      }).catch(function () {});
+    };
+
+    DB.listProfiles().then(function (profiles) {
+      // 一条模型都没拉过的配置，顺手拉一次：不然下拉里空空，用户以为没得选
+      var need = [], i;
+      for (i = 0; i < profiles.length; i++) {
+        var ms = [];
+        try { ms = JSON.parse(profiles[i].models_json || '[]'); } catch (e) {}
+        if (!ms.length && Number(profiles[i].enabled) === 1) need.push(profiles[i].id);
+      }
+      if (!need.length || pulledOnce) { after(); return; }
+      pulledOnce = true;
+      var chain = Promise.resolve();
+      need.slice(0, 3).forEach(function (pid) {
+        chain = chain.then(function () { return API.aiModels(pid).catch(function () {}); });
+      });
+      chain.then(after, after);
+    }).catch(after);
+  }
+
+  function renderModelBar(host) {
+    var bar = host.querySelector('#chatModel');
+    if (!bar) return;
+    var m = MODES[pick.mode] || MODES.chat;
+    var list = [], i;
+    for (i = 0; i < modelCache.length; i++) {
+      if (m.kinds.indexOf(modelCache[i].kind) !== -1) list.push(modelCache[i]);
+    }
+
+    var tabs = '';
+    for (var k in MODES) {
+      if (!Object.prototype.hasOwnProperty.call(MODES, k)) continue;
+      tabs += '<button class="cm-tab' + (pick.mode === k ? ' on' : '') +
+        '" data-cm-mode="' + k + '">' + MODES[k].n + '</button>';
+    }
+
+    var selVal = pick.model ? (pick.profileId + '|' + pick.model) : '';
+    var opts = '<option value=""' + (pick.model ? '' : ' selected') + '>自动（按设置里绑的）</option>';
+    var hasSel = !pick.model;
+    for (i = 0; i < list.length; i++) {
+      var it = list[i], v = it.pid + '|' + it.model;
+      if (v === selVal) hasSel = true;
+      // 下拉里只写模型名最后一段（deepseek-ai/DeepSeek-V3.2 → DeepSeek-V3.2）：
+      // 手机屏幕上全名会被截成半截，反而看不出是哪个
+      var short = String(it.model).split('/').pop();
+      opts += '<option value="' + esc(v) + '"' + (v === selVal ? ' selected' : '') + '>' +
+        esc(short) + ' · ' + esc(it.pname) + (it.free ? ' · 免费' : ' · 付费') + '</option>';
+    }
+    // 存过的模型这次没在清单里（换过 Key、没拉到），也别悄悄丢掉
+    if (!hasSel && pick.model) {
+      opts += '<option value="' + esc(selVal) + '" selected>' + esc(pick.model) + ' · 已选</option>';
+    }
+    opts += '<option value="__custom">＋ 手填模型名……</option>';
+
+    var note;
+    if (pick.mode === 'chat') {
+      note = pick.model
+        ? ('用 ' + pick.model + '（' + (DB.isFreeModel(pick.model) ? '免费' : '按 token 计费，长对话会贵一些') + '）')
+        : '用「设置 → 各环节用哪个模型」里绑的那条；想换更聪明的模型，在上面选一个';
+    } else if (pick.mode === 'img') {
+      note = (pick.model ? pick.model + ' · ' : '') +
+        '画一张通常 4–10 秒。免费的只有 Kolors，付费的（FLUX、Qwen-Image 等）画质更好';
+    } else {
+      note = (pick.model ? pick.model + ' · ' : '') +
+        '一条一般 1–4 分钟，按条计费。交出去后关掉页面也会继续跑，做完在档案首页「合成的片子」里';
+    }
+
+    bar.innerHTML =
+      '<div class="cm-row">' +
+      '<div class="cm-tabs">' + tabs + '</div>' +
+      '<select class="fi cm-sel" id="cmSel">' + opts + '</select>' +
+      '<button class="btn tiny ghost" id="cmRefresh" title="重新向服务商拉一次模型清单">刷新</button>' +
+      '</div>' +
+      '<div class="cm-note">' + esc(note) + '</div>' +
+      (list.length ? '' : '<div class="cm-empty">这个用途还没有可用模型。' +
+        '<a href="#/settings" class="linkbtn">去设置里加一条 →</a></div>');
+
+    var ta = host.querySelector('#chatText');
+    if (ta) ta.setAttribute('placeholder', m.ph);
+  }
+
+  function bindModelBar(host) {
+    var bar = host.querySelector('#chatModel');
+    if (!bar) return;
+
+    bar.addEventListener('click', function (ev) {
+      if (!ev.target.closest) return;
+      var t = ev.target.closest('[data-cm-mode]');
+      if (t) {
+        var mode = t.getAttribute('data-cm-mode');
+        if (!MODES[mode] || mode === pick.mode) return;
+        pick.mode = mode;
+        // 换了用途，原来那个模型多半不是这一类的，先清掉（同类就留着）
+        if (pick.model && MODES[mode].kinds.indexOf(DB.modelKind(pick.model)) === -1) {
+          pick.model = ''; pick.profileId = null;
+        }
+        savePick();
+        renderModelBar(host);
+        return;
+      }
+      var rf = ev.target.closest('#cmRefresh');
+      if (rf) {
+        rf.disabled = true;
+        rf.textContent = '拉取中';
+        DB.listProfiles().then(function (profiles) {
+          var chain = Promise.resolve();
+          profiles.forEach(function (pf) {
+            if (Number(pf.enabled) !== 1) return;
+            chain = chain.then(function () { return API.aiModels(pf.id).catch(function () {}); });
+          });
+          return chain;
+        }).then(function () { return DB.listProfiles(); })
+          .then(function (ps) {
+            modelCache = buildModelCache(ps);
+            renderModelBar(host);
+            toast('模型清单已更新');
+          }).catch(function () { renderModelBar(host); });
+      }
+    });
+
+    bar.addEventListener('change', function (ev) {
+      var s = ev.target;
+      if (!s || s.id !== 'cmSel') return;
+      var v = String(s.value || '');
+      if (v === '__custom') {
+        var name = String(window.prompt('填服务商那边的模型 ID（照模型广场上写的那样）', pick.model || '') || '').trim();
+        if (!name) { renderModelBar(host); return; }
+        var pid = pick.profileId;
+        if (!pid && modelCache.length) pid = modelCache[0].pid;
+        pick.profileId = pid;
+        pick.model = name;
+        // 手填的也放进候选，下次打开还能看见
+        var kd = DB.modelKind(name);
+        if (MODES[pick.mode].kinds.indexOf(kd) === -1) kd = MODES[pick.mode].kinds[0];
+        modelCache.push({ pid: pid, pname: '手填', model: name, kind: kd, free: DB.isFreeModel(name) });
+        savePick();
+        renderModelBar(host);
+        return;
+      }
+      if (!v) { pick.profileId = null; pick.model = ''; }
+      else {
+        var parts = v.split('|');
+        pick.profileId = Number(parts[0]);
+        pick.model = parts.slice(1).join('|');
+      }
+      savePick();
+      renderModelBar(host);
+    });
+
+    loadModels(host);
+  }
+
+  /* ---------------- 画图 / 生成视频：同一个输入框，换个干活的模型 ---------------- */
+
+  function pushAI(host, placeholder) {
+    var log = host.querySelector('#chatLog');
+    if (!log) return null;
+    var node = document.createElement('div');
+    node.innerHTML = bubble('assistant', '');
+    var aiEl = node.firstChild;
+    var ops = aiEl.querySelector('.msg-ops');
+    if (ops) aiEl.removeChild(ops);      // 图/片子没法"插入档案"，给它一个真正的存进档案按钮
+    log.appendChild(aiEl);
+    var tEl = aiEl.querySelector('.msg-t');
+    tEl.innerHTML = '<span class="dots">' + esc(placeholder || '……') + '</span>';
+    log.scrollTop = log.scrollHeight;
+    return { log: log, aiEl: aiEl, tEl: tEl };
+  }
+
+  /** 图/视频这类不走对话的消息，也在对话记录里留一笔，翻历史时不至于断片 */
+  function logMedia(userText, aiText) {
+    var ensure = cur.threadId ? Promise.resolve(cur.threadId)
+      : DB.createThread(cur.archiveId, cur.role, String(userText || '生成').slice(0, 18))
+        .then(function (id) { cur.threadId = id; return id; });
+    ensure.then(function (tid) {
+      return DB.addMessage(tid, 'user', userText || '（生成）');
+    }).then(function () {
+      return DB.addMessage(cur.threadId, 'assistant', aiText);
+    }).catch(function () {});
+  }
+
+  function clearInput(host) {
+    var te = host.querySelector('#chatText');
+    if (te) te.value = '';
+    cur.atts = [];
+    renderAtts(host);
+  }
+
+  function doImage(host, text, atts, extra, again) {
+    var prompt = text || '';
+    if (extra) prompt = prompt ? (prompt + '\n' + extra) : extra;
+    var ref = null, i;
+    for (i = 0; i < atts.length; i++) if (atts[i].kind === 'image') { ref = atts[i]; break; }
+    if (!prompt && ref) prompt = '照着这张照片画一幅';
+    if (!prompt) { toast('写一句画面描述吧'); return; }
+
+    clearInput(host);
+    var ui = pushAI(host, '正在画……');
+    if (!ui) return;
+    ui.tEl.textContent = again ? '重新画一张……（大概 4–10 秒）' : '正在画……（一般 4–10 秒）';
+
+    var o = { prompt: prompt, size: '1024x1024' };
+    if (pick.profileId) o.profileId = pick.profileId;
+    if (pick.model) o.model = pick.model;
+    if (ref) o.refImage = ref.dataUrl;
+    if (again) o.again = 1;      // 绕过缓存：同一句话也能再画一版
+
+    API.image(o).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.message) || '没画出来');
+      // 同一个描述缓存的是同一个文件名，加个时间戳免得浏览器拿旧图
+      var url = ML.fsrc ? ML.fsrc(r.path) : ('/files/' + r.path);
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+      ui.tEl.innerHTML =
+        '<img class="chat-img" src="' + esc(url) + '" alt="AI 生成的图">' +
+        '<div class="chat-media-ops">' +
+        '<a class="linkbtn" href="' + esc(url) + '" download>下载</a>' +
+        '<button class="linkbtn" data-save-media="1">存进档案</button>' +
+        '<button class="linkbtn" data-redraw="1">重画一张</button></div>' +
+        '<div class="chat-note">' +
+        esc(r.note || (r.cached ? '这张是之前画过的，直接给你（没重复扣费）。想换个样子就点「重画一张」' : '')) + '</div>';
+      var b = ui.tEl.querySelector('[data-save-media]');
+      if (b) b.onclick = function () { saveToArchive('photo', r.path, r.bytes || 0, prompt, b); };
+      var rd = ui.tEl.querySelector('[data-redraw]');
+      if (rd) rd.onclick = function () { doImage(host, prompt, [], '', true); };
+      logMedia(prompt, '（画了一张图：' + r.path + '）');
+    }).catch(function (e) {
+      ui.tEl.textContent = '（没画出来：' + ((e && e.message) || e) + '）';
+    });
+  }
+
+  function doVideo(host, text, atts, extra) {
+    var prompt = text || '';
+    if (extra) prompt = prompt ? (prompt + '\n' + extra) : extra;
+    var ref = null, i;
+    for (i = 0; i < atts.length; i++) if (atts[i].kind === 'image') { ref = atts[i]; break; }
+    if (!prompt && ref) prompt = '让这张照片里的人动起来，镜头缓慢推近';
+    if (!prompt) { toast('写一句画面描述吧'); return; }
+
+    clearInput(host);
+    var ui = pushAI(host, '正在排任务……');
+    if (!ui) return;
+
+    var payload = { prompt: prompt, size: '720x1280' };
+    if (pick.profileId) payload.profileId = pick.profileId;
+    if (pick.model) payload.model = pick.model;
+    if (cur.archiveId) payload.archiveId = cur.archiveId;
+
+    var start = function () {
+      ui.tEl.textContent = '已交给服务商，排队中……';
+      API.job.create('aivideo', payload).then(function (r) {
+        if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
+        pollVideo(r.id, ui, prompt, redo);
+      }).catch(function (e) {
+        ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
+      });
+    };
+
+    // 同一句描述默认复用上次的成片（不重复扣费）；想换个版本点「再来一版」
+    var redo = function () {
+      payload.again = 1;
+      ui.tEl.textContent = '再来一版……';
+      API.job.create('aivideo', payload).then(function (r) {
+        if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
+        pollVideo(r.id, ui, prompt, redo);
+      }).catch(function (e) {
+        ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
+      });
+    };
+
+    if (ref) {
+      var raw = String(ref.dataUrl || '');
+      var comma = raw.indexOf(',');
+      ui.tEl.textContent = '正在上传参考图……';
+      API.file({ op: 'save', dir: 'video-src', name: 'v' + Date.now() + '.jpg',
+        base64: comma > 0 ? raw.slice(comma + 1) : raw })
+        .then(function (f) {
+          if (!f || !f.ok) throw new Error((f && f.message) || '参考图没存下来');
+          payload.imagePath = f.path;
+          start();
+        }).catch(function (e) {
+          ui.tEl.textContent = '（参考图没传上去：' + ((e && e.message) || e) + '）';
+        });
+      return;
+    }
+    start();
+  }
+
+  function pollVideo(id, ui, prompt, redo) {
+    var t0 = Date.now();
+    var timer = setInterval(function () {
+      API.job.get(id).then(function (r) {
+        var j = r && r.job;
+        if (!j) { clearInterval(timer); return; }
+        var secs = Math.round((Date.now() - t0) / 1000);
+        var pct = Math.round((Number(j.progress) || 0) * 100);
+        // 兜底：万一是任务丢了状态，别无限轮询把页面拖住
+        if (secs > 900) {
+          clearInterval(timer);
+          ui.tEl.textContent = '（等了 15 分钟还没出片，去「设置 → 用量与任务」看看这条任务）';
+          return;
+        }
+        if (j.status === 'done' && j.result && j.result.path) {
+          clearInterval(timer);
+          var res = j.result;
+          var url = ML.fsrc ? ML.fsrc(res.path) : ('/files/' + res.path);
+          var size = ML.bytes ? ML.bytes(res.bytes) : (Math.round((res.bytes || 0) / 1024) + ' KB');
+          ui.tEl.innerHTML =
+            '<video class="chat-video" controls playsinline preload="metadata" src="' + esc(url) + '"></video>' +
+            '<div class="chat-media-ops">' +
+            '<a class="linkbtn" href="' + esc(url) + '" download>下载 mp4</a>' +
+            (res.archiveId
+              ? '<span class="chat-ok">已存进档案 · 档案首页「合成的片子」</span>'
+              : '<button class="linkbtn" data-save-media="1">存进档案</button>') +
+            '<button class="linkbtn" data-vid-again="1">再来一版（重新计费）</button></div>' +
+            '<div class="chat-note">' + esc(String(res.model || '')) + ' · ' + size +
+            (res.cached ? ' · 这段描述之前做过，直接给你（没重复扣费）' : '') + '</div>';
+          var b = ui.tEl.querySelector('[data-save-media]');
+          if (b) b.onclick = function () { saveToArchive('video', res.path, res.bytes || 0, prompt, b); };
+          var ag = ui.tEl.querySelector('[data-vid-again]');
+          if (ag && redo) ag.onclick = function () { redo(); };
+          logMedia(prompt, '（生成了一段视频：' + res.path + '）');
+          return;
+        }
+        if (j.status === 'failed' || j.status === 'canceled') {
+          clearInterval(timer);
+          ui.tEl.textContent = '（没做成：' + (j.error || (j.status === 'canceled' ? '已取消' : '失败')) + '）';
+          return;
+        }
+        ui.tEl.innerHTML = '<span class="dots">' + esc(j.stage || '排队中') + ' · ' + pct + '% · ' +
+          secs + ' 秒' + (secs > 60 ? '（一般 1–4 分钟，可以先干别的）' : '') + '</span>';
+      }).catch(function () {});
+    }, 2500);
+  }
+
+  /** 把 AI 产的图/片子落进档案：图进「待归档照片」，片子进「合成的片子」 */
+  function saveToArchive(kind, filePath, bytes, caption, btn) {
+    var doIt = function (aid) {
+      var sql, params;
+      if (kind === 'photo') {
+        sql = 'INSERT INTO photos (archive_id,path,taken_year,place,event) VALUES (?,?,?,?,?)';
+        params = [aid, filePath, null, 'AI 插图', String(caption || 'AI 插图').slice(0, 40)];
+      } else {
+        sql = 'INSERT INTO media (archive_id,kind,path,mime,bytes,caption) VALUES (?,?,?,?,?,?)';
+        params = [aid, 'video', filePath, 'video/mp4', bytes || null, String(caption || 'AI 视频').slice(0, 120)];
+      }
+      API.exec(sql, params).then(function () {
+        if (btn) { btn.textContent = '已存进档案'; btn.disabled = true; }
+        toast(kind === 'photo'
+          ? '存进档案了，在「待归档照片」里能看到'
+          : '存进档案了，在档案首页「合成的片子」里');
+      }).catch(fail);
+    };
+    if (cur.archiveId) { doIt(cur.archiveId); return; }
+    pickArchive(function (aid) { doIt(aid); });
+  }
+
+  /** 上次没等完就走了：回来提一句它在后台继续跑 */
+  function noticeRunningVideos(host) {
+    API.job.list().then(function (r) {
+      var n = 0, items = (r && r.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type === 'aivideo' && (items[i].status === 'queued' || items[i].status === 'running')) n++;
+      }
+      if (!n) return;
+      var log = host.querySelector('#chatLog');
+      if (log) log.innerHTML += '<div class="chat-sys">有 ' + n +
+        ' 条视频还在后台生成。做完会出现在档案首页「合成的片子」里，不用守在这里。</div>';
+    }).catch(function () {});
+  }
+
   /* ---------------- 上下文 ---------------- */
 
   function grams(text) {
@@ -222,6 +651,7 @@
           : 'AI 写作助手 <small>没绑档案也能用，写完可以插进任何一本</small>') + '</div>' +
         '<div class="chat-roles" id="chatRoles"></div>' +
         '</section>' +
+        '<section class="chat-model" id="chatModel"></section>' +
         '<section class="chat-log" id="chatLog"></section>' +
         '<section class="chat-in">' +
         '<div class="chat-priv" id="chatPriv"></div>' +
@@ -241,7 +671,8 @@
 
       renderRoles(host);
       bind(host, archiveId, a);
-      loadThread(host);
+      // 日志先渲染完再加提示，否则会被 loadThread 的 innerHTML 冲掉
+      Promise.resolve(loadThread(host)).then(function () { noticeRunningVideos(host); });
     }).catch(function (e) { fail(e); });
   }
 
@@ -273,9 +704,9 @@
         '<button class="chip" data-say="1962 年换车间那天，你还记得什么？">1962 年换车间那天，你还记得什么？</button>' +
         '<button class="chip" data-say="帮我把「进厂」那一段整理成剧本">帮我把「进厂」那一段整理成剧本</button>' +
         '</div>';
-      return;
+      return Promise.resolve();
     }
-    DB.messages(cur.threadId).then(function (list) {
+    return DB.messages(cur.threadId).then(function (list) {
       var html = '';
       for (var i = 0; i < list.length; i++) {
         var refs = null;
@@ -294,6 +725,7 @@
     var attWrap = host.querySelector('#chatAtt');
 
     host.querySelector('#chatFile').addEventListener('click', function () { pickAtts(host); });
+    bindModelBar(host);
     if (attWrap) {
       attWrap.addEventListener('click', function (ev) {
         var b = ev.target.closest ? ev.target.closest('[data-att-del]') : null;
@@ -361,6 +793,13 @@
       var hasImg = false, i0;
       for (i0 = 0; i0 < atts.length; i0++) if (atts[i0].kind === 'image') hasImg = true;
 
+      // 换个干活的模型：画图、做视频，都不走对话接口
+      if (pick.mode === 'img') { doImage(host, text, atts, extra); return; }
+      if (pick.mode === 'vid') { doVideo(host, text, atts, extra); return; }
+      if (hasImg && pick.model && DB.modelKind(pick.model) === 'text') {
+        toast('选中的这个模型不看图，换成「看图」类的更稳');
+      }
+
       textEl.value = '';
       cur.atts = [];
       renderAtts(host);
@@ -402,8 +841,13 @@
             var acc = '';
             var streamErr = null;
             var req = { messages: msgs };
-            // 带图时必须走视觉模型：设置 → 模型来源里「识图」绑哪条就用哪条
-            if (hasImg) req.slot = 'vision';
+            // 选定了模型就按它走；没选才回落到「看照片」那一环
+            if (pick.profileId && pick.model) {
+              req.profileId = pick.profileId;
+              req.model = pick.model;
+            } else if (hasImg) {
+              req.slot = 'vision';
+            }
             cur.streaming = API.chatStream(req, function (evt) {
               if (evt.t === 'd') {
                 acc += evt.v;
@@ -433,7 +877,12 @@
               if (acc) {
                 return DB.addMessage(tid, 'assistant', acc, ctx.refs).catch(function () {});
               }
-              return API.ai(hasImg ? { messages: msgs, slot: 'vision' } : { messages: msgs }).then(function (r) {
+              return API.ai((function () {
+                var fb = { messages: msgs };
+                if (pick.profileId && pick.model) { fb.profileId = pick.profileId; fb.model = pick.model; }
+                else if (hasImg) { fb.slot = 'vision'; }
+                return fb;
+              })()).then(function (r) {
                 if (!r.ok) throw new Error(r.message || '调用失败');
                 tEl.textContent = r.text;
                 return DB.addMessage(tid, 'assistant', r.text, ctx.refs);

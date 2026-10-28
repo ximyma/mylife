@@ -726,19 +726,22 @@
         html += '</section>';
       }
 
-      /* 合成过的短片：成片是档案资产（存在 media 表里），关掉页面、换设备回来都还在 */
-      if (d.movies && d.movies.length) {
+      /* 合成过的片子：成片是档案资产（存在 media 表里），关掉页面、换设备回来都还在。
+         两种来源都列：程序合成的短片（movie）+ 聊天里让 AI 生成的视频（video）。 */
+      var clips = (d.movies || []).concat(d.videos || []);
+      if (clips.length) {
         html += '<section class="mv-hist" id="archiveMovies"><div class="toc-head">' +
           '<h2 class="sec-label">合 成 的 片 子</h2>' +
-          '<span class="toc-hint">' + d.movies.length + ' 条 · 点播放看，点「下载」存到手机或电脑</span></div>' +
+          '<span class="toc-hint">' + clips.length + ' 条 · 点播放看，点「下载」存到手机或电脑</span></div>' +
           '<div class="mv-hist-list">';
-        for (var mv = 0; mv < d.movies.length; mv++) {
-          var mm = d.movies[mv];
+        for (var mv = 0; mv < clips.length; mv++) {
+          var mm = clips[mv];
           var msec = Math.round((Number(mm.duration_ms) || 0) / 1000);
           html += '<div class="mv-hist-item">' +
             '<video preload="metadata" playsinline controls src="' + esc(fsrc(mm.path)) + '"></video>' +
             '<div class="mv-line"><span class="muted">' +
-            (msec ? msec + ' 秒' : '') + (mm.bytes ? ' · ' + bytes(mm.bytes) : '') + '</span>' +
+            (String(mm.kind) === 'video' ? 'AI 生成' : '程序合成') +
+            (msec ? ' · ' + msec + ' 秒' : '') + (mm.bytes ? ' · ' + bytes(mm.bytes) : '') + '</span>' +
             '<a class="linkbtn" href="' + esc(fsrc(mm.path)) + '" download>下载</a></div>' +
             (mm.caption ? '<div class="mv-cap">' + esc(String(mm.caption).slice(0, 40)) + '</div>' : '') +
             '</div>';
@@ -2415,7 +2418,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.6';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.7';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2465,12 +2468,15 @@
         '<dt>看照片</dt><dd><code>deepseek-ai/DeepSeek-OCR</code> <span class="muted">0.3 秒</span></dd>' +
         '<dt>语音转文字</dt><dd><code>Qwen/Qwen3-ASR-1.7B</code> <span class="muted">0.4 秒</span></dd>' +
         '<dt>要更好文笔</dt><dd><code>Qwen/Qwen3-8B</code> <span class="muted">免费但慢些（会先思考）</span></dd>' +
-        '<dt>图片生成</dt><dd><code>Kwai-Kolors/Kolors</code> <span class="muted">免费，功能接入前可先配好</span></dd>' +
-        '<dt>视频生成</dt><dd><code>Wan-AI/Wan2.2-T2V-A14B</code> 等 <span class="warn-text">很贵，一条几块钱起，慎重</span></dd>' +
+        '<dt>图片生成</dt><dd><code>Kwai-Kolors/Kolors</code> <span class="muted">免费</span> · ' +
+        '<code>black-forest-labs/FLUX.1-schnell</code> <span class="muted">付费，更细腻</span></dd>' +
+        '<dt>视频生成</dt><dd><code>Wan-AI/Wan2.2-T2V-A14B</code> <span class="muted">文生视频</span> · ' +
+        '<code>Wan-AI/Wan2.2-I2V-A14B</code> <span class="muted">拿照片当第一帧</span></dd>' +
         '</dl>' +
         '<p class="hint dim">想让程序真正「看懂」照片场景而不只是认字，' +
         '可以去智谱开个号用 <code>GLM-4.6V-Flash</code>，那是免费的多模态模型。' +
-        '视频生成模型普遍较贵，等功能接入再配不迟。</p>';
+        '付费模型不用改这里：<b>AI 助手页顶部的「聊天 / 画图 / 视频」</b>可以逐次挑模型，' +
+        '挑完只影响这一次，不会动全局绑定。</p>';
 
       /* ---- 去哪拿 Key（常驻，不只在没配置时才出现） ---- */
       var links = '';
@@ -2505,12 +2511,12 @@
         { k: 'asr', label: '语音转文字', kind: 'asr',
           rec: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR', 'glm-asr-2512', 'whisper-large-v3-turbo'],
           hint: '能走转写接口的模型不多：SenseVoiceSmall、TeleSpeechASR（硅基流动免费）、glm-asr-2512、whisper-large-v3' },
-        { k: 'img', label: '图片生成（预留）', kind: 't2i',
-          rec: ['Kwai-Kolors/Kolors'],
-          hint: '文生图，功能快来了，先配好备用。Kolors 免费' },
-        { k: 'vid', label: '视频生成（预留）', kind: 't2v',
-          rec: ['Wan-AI/Wan2.2-T2V-A14B'],
-          hint: '文生视频，普遍很贵（一条几块钱起）。功能接入前配好备用即可，不配不影响其它功能' }
+        { k: 'img', label: '图片生成', kind: 't2i',
+          rec: ['Kwai-Kolors/Kolors', 'black-forest-labs/FLUX.1-schnell', 'Qwen/Qwen-Image'],
+          hint: '文生图，「AI 助手 → 画图」用它。Kolors 免费；FLUX、Qwen-Image 要钱但更好看' },
+        { k: 'vid', label: '视频生成', kind: 't2v',
+          rec: ['Wan-AI/Wan2.2-T2V-A14B', 'Wan-AI/Wan2.2-I2V-A14B'],
+          hint: '文生视频 / 图生视频，「AI 助手 → 视频」用它。按条计费，一条几毛到一块多，出片 1–4 分钟' }
       ];
 
       for (var p = 0; p < profiles.length; p++) {
@@ -2568,7 +2574,8 @@
 
       /* ---- 用途绑定 ---- */
       html += '<h2 class="set-h">各环节用哪个模型</h2>' +
-        '<p class="hint">留空就用上面第一条可用的配置。这三个环节可以同时用不同家的服务。</p>';
+        '<p class="hint">留空就用上面第一条可用的配置；每个环节都能绑不同家的服务。' +
+        '这里定的是「平时默认用谁」——<b>AI 助手页顶部还能逐次挑模型</b>，不用回来改这里。</p>';
 
       for (var si = 0; si < SLOTS.length; si++) {
         var sl = SLOTS[si];

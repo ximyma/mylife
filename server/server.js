@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.6';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.7';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1277,7 +1277,8 @@ async function apiImage(body) {
     const key = imgKey(prompt + (refB64 ? '|ref:' + refB64.length + ':' + refB64.slice(0, 24) : ''), model, size);
 
     try {
-      const hit = ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='image'").get(key);
+      const hit = body.again ? null
+        : ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='image'").get(key);
       if (hit && hit.path && fs.existsSync(path.join(ctxFiles(), hit.path))) {
         return { ok: true, path: hit.path, cached: true, model: model };
       }
@@ -1817,6 +1818,172 @@ registerJob('movie', async function (p, ctx) {
     bgm: bgmName,
     archiveId: aid || null,
   };
+});
+
+/* ---------------- AI 视频：文生 / 图生（硅基流动 /video/submit + /video/status） ----------------
+ * 为什么要做成后台任务：一条 Wan2.2 通常要一两分钟，最长见过四分钟。
+ * 挂在前端一个请求上，用户切个页面就断了。这里提交拿到 requestId 后按间隔问状态，
+ * Succeed 时把临时链接当场下载落盘——官方链接 1 小时就失效，只存链接等于没存。
+ * 同一个描述 + 模型 + 尺寸只花一次钱：命中 ai_assets 直接返回旧片子。
+ */
+function isVideoModel(model) {
+  return /cogvideo|seedance|video|t2v|i2v|wan2|veo|kling|hailuo|sora/i.test(String(model || '').toLowerCase());
+}
+
+function videoKey(prompt, model, size) {
+  return crypto.createHash('sha1')
+    .update([prompt, model, size].join('|')).digest('hex').slice(0, 16);
+}
+
+const MIME_BY_EXT = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
+};
+
+registerJob('aivideo', async function (p, ctx) {
+  const prompt = String(p.prompt || '').trim();
+  if (!prompt) throw new Error('没有画面描述');
+  if (prompt.length > 1200) throw new Error('画面描述太长了（最多 1200 字）');
+
+  const size = /^\d{3,4}x\d{3,4}$/.test(String(p.size || '')) ? String(p.size) : '720x1280';
+  const chain = profileChain({ slot: 'vid', profileId: p.profileId, model: p.model });
+  if (!chain.length) {
+    throw new Error('还没配「视频生成」的模型。设置 → 模型来源 → 加一条，模型填 Wan-AI/Wan2.2-T2V-A14B（图生视频填 Wan-AI/Wan2.2-I2V-A14B）。');
+  }
+
+  // 图生视频：参考图已经在 users/<uid>/files 里，读成 data URL 发出去
+  let image = '';
+  if (p.imagePath) {
+    const rel = safePath(p.imagePath);
+    const abs = path.join(ctx.files, rel);
+    if (rel && abs.startsWith(ctx.files) && fs.existsSync(abs)) {
+      const buf = fs.readFileSync(abs);
+      if (buf.length > 10 * 1024 * 1024) throw new Error('参考图超过 10MB，先缩小一点');
+      image = 'data:' + (MIME_BY_EXT[path.extname(abs).toLowerCase()] || 'image/jpeg') +
+        ';base64,' + buf.toString('base64');
+    }
+  }
+
+  const step = Math.max(500, Number(p.pollMs) || 5000);
+  const maxPoll = Math.max(6, Number(p.maxPoll) || 120);   // 默认 5 秒 × 120 ≈ 10 分钟
+  const errors = [];
+
+  for (const cand of chain.slice(0, 2)) {
+    const model = p.model
+      ? String(p.model)
+      : (cand.model && isVideoModel(cand.model) ? cand.model : 'Wan-AI/Wan2.2-T2V-A14B');
+    const key = videoKey(prompt, model, size);
+
+    // 已经生成过同一段：直接给旧片子，不再扣一次钱（想要新的一版就带 again=1）
+    if (!p.again) {
+      try {
+        const hit = ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='video'").get(key);
+        if (hit && hit.path && fs.existsSync(path.join(ctx.files, hit.path))) {
+          return { ok: true, path: hit.path, bytes: fs.statSync(path.join(ctx.files, hit.path)).size,
+            model: model, cached: true, archiveId: Number(p.archiveId) || null };
+        }
+      } catch (e) {}
+    }
+
+    try {
+      ctx.progress(0.08, '提交给 ' + cand.profile.name);
+      const pl = { model: model, prompt: prompt, image_size: size };
+      if (image) pl.image = image;
+      if (p.seed) pl.seed = Number(p.seed);
+
+      const sub = await fetchJson(endpointOf(cand.profile) + '/video/submit', {
+        method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(pl),
+      }, 90000);
+
+      if (!sub.ok) {
+        errors.push(cand.profile.name + ' 提交失败 HTTP ' + sub.status + '：' + describeErr(sub));
+        continue;
+      }
+      const rid = String((sub.json && (sub.json.requestId || sub.json.request_id)) || '');
+      if (!rid) { errors.push(cand.profile.name + ' 没给任务号'); continue; }
+
+      let url = '', bad = '';
+      const t0 = Date.now();
+      for (let i = 1; i <= maxPoll; i++) {
+        await new Promise(r => setTimeout(r, step));
+        const secs = Math.round((Date.now() - t0) / 1000);
+        ctx.progress(Math.min(0.9, 0.08 + 0.8 * (i / maxPoll)), '生成中 · 已等 ' + secs + ' 秒');
+        if (i % 12 === 0) ctx.progress(0.08 + 0.8 * (i / maxPoll), '生成中 · 已等 ' + secs + ' 秒（一般 1–4 分钟）');
+
+        const st = await fetchJson(endpointOf(cand.profile) + '/video/status', {
+          method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify({ requestId: rid }),
+        }, 30000);
+
+        if (!st.ok) {
+          // 5xx 多半是排队时抖动，接着问；4xx 说明任务号或权限有问题，别再耗
+          if (st.status >= 500) continue;
+          bad = cand.profile.name + ' 查状态失败 HTTP ' + st.status + '：' + describeErr(st);
+          break;
+        }
+        const js = st.json || {};
+        const status = String(js.status || '');
+        if (status === 'Succeed') {
+          const vids = (js.results && js.results.videos) || [];
+          url = String((vids[0] && vids[0].url) || '');
+          if (!url) { bad = cand.profile.name + ' 说成功了但没给视频地址'; }
+          break;
+        }
+        if (status === 'Failed') {
+          bad = cand.profile.name + ' 生成失败：' + String(js.reason || '服务商没给原因');
+          break;
+        }
+        // InQueue / InProgress：继续等
+      }
+
+      if (!url) {
+        errors.push(bad || (cand.profile.name + ' 等了 ' + Math.round(step * maxPoll / 1000) + ' 秒还没出片'));
+        continue;
+      }
+
+      ctx.progress(0.94, '下载成片');
+      const got = await fetch(url);
+      if (!got.ok) { errors.push('取成片失败 HTTP ' + got.status); continue; }
+      const buf = Buffer.from(await got.arrayBuffer());
+      if (!buf.length) { errors.push('成片是空的'); continue; }
+
+      const rel = 'ai/video/' + key + '.mp4';
+      const abs = path.join(ctx.files, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buf);
+      try {
+        ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
+          .run('video', key, rel, prompt.slice(0, 300), model);
+      } catch (e) {}
+      usageAdd('video', model, 1, 'clip', 0, 'chat');
+
+      // 登记进这本档案：变成档案资产，导出整本时也会带上
+      const aid = Number(p.archiveId) || 0;
+      if (aid) {
+        try {
+          const dup = ctx.db.prepare("SELECT id FROM media WHERE archive_id=? AND kind='video' AND path=?").get(aid, rel);
+          if (dup) {
+            ctx.db.prepare('UPDATE media SET bytes=?, caption=? WHERE id=?')
+              .run(buf.length, prompt.slice(0, 120), dup.id);
+          } else {
+            ctx.db.prepare(
+              'INSERT INTO media (archive_id, kind, path, mime, bytes, caption) VALUES (?,?,?,?,?,?)')
+              .run(aid, 'video', rel, 'video/mp4', buf.length, prompt.slice(0, 120));
+          }
+        } catch (e) { /* 登记失败不影响成片 */ }
+      }
+
+      return {
+        ok: true, path: rel, bytes: buf.length, model: model,
+        requestId: rid, archiveId: aid || null, cached: false,
+      };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (msg === '__canceled__') throw e;
+      errors.push(cand.profile.name + ' 连不上：' + msg);
+    }
+  }
+
+  throw new Error('没做出片子：' + (errors.join('；') || '未知原因'));
 });
 
 /* ---------------- 能力网关 ----------------
