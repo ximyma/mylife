@@ -467,7 +467,11 @@
 
   /* ---------------- 档案页 ---------------- */
 
+  var entrySel = {};          // 勾选了哪些条目（换页保留，切档案清空）
+  var entrySelArchive = null;
+
   function renderArchive(id) {
+    if (entrySelArchive !== String(id)) { entrySel = {}; entrySelArchive = String(id); }
     app.innerHTML = topbar({ back: '#/', right: [{ href: '#/a/' + id + '/collect', text: '补内容' }] }) +
       '<main class="wrap"><div class="boot">正在装订……</div></main>';
 
@@ -617,9 +621,18 @@
 
       html += '<footer class="doc-foot"><span>' + esc(a.archive_no || '') + ' · ' +
         esc(a.subject_name) + '</span><span>由 AI 协助整理 · 可随时修改</span></footer>';
+      // 批量操作条：勾选若干段后可整块上下移 / 归到某章
+      html += '<div class="sel-bar" id="selBar">' +
+        '<span class="sel-n" id="selCount">已选 0 段</span>' +
+        '<button class="btn tiny" data-sel-move="-1">↑ 上移</button>' +
+        '<button class="btn tiny" data-sel-move="1">↓ 下移</button>' +
+        '<button class="btn tiny" data-sel-chap="1">归到某章</button>' +
+        '<button class="btn tiny" data-sel-clear="1">清空</button>' +
+        '</div>';
       html += '</main>';
       app.innerHTML = html;
       bindArchive(id);
+      updateSelBar();
     }).catch(function (e) {
       app.innerHTML = topbar({ back: '#/' }) + '<main class="wrap"><div class="empty">' +
         esc(e.message) + '</div></main>';
@@ -629,6 +642,15 @@
   /** 卷宗里的改与删：条目改字、改章名、删条目 */
   function bindArchive(id) {
     if (archiveClickHandler) app.removeEventListener('click', archiveClickHandler);
+    if (archiveChangeHandler) app.removeEventListener('change', archiveChangeHandler);
+    archiveChangeHandler = function (ev) {
+      var cb = ev.target;
+      if (!cb || !cb.getAttribute || !cb.getAttribute('data-check-entry')) return;
+      var cid = cb.getAttribute('data-check-entry');
+      if (cb.checked) entrySel[cid] = 1; else delete entrySel[cid];
+      updateSelBar();
+    };
+    app.addEventListener('change', archiveChangeHandler);
     archiveClickHandler = function (ev) {
       var t = ev.target.closest ? ev.target : null;
       if (!t) return;
@@ -696,6 +718,42 @@
         DB.setEntryPhoto(ue, null).then(function () { toast('已去图'); route(); }).catch(fail);
         return;
       }
+      if ((b = t.closest('[data-sel-move]'))) {
+        var sdir = Number(b.getAttribute('data-sel-move')) || 1;
+        var sids = [], sk;
+        for (sk in entrySel) if (entrySel.hasOwnProperty(sk)) sids.push(Number(sk));
+        if (!sids.length) return toast('先勾选几段');
+        DB.moveEntries(sids, sdir).then(function (r) {
+          if (!r || !r.moved) toast('已经到头了');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-sel-clear]'))) {
+        entrySel = {};
+        route();
+        return;
+      }
+      if ((b = t.closest('[data-sel-chap]'))) {
+        var cids = [], ck;
+        for (ck in entrySel) if (entrySel.hasOwnProperty(ck)) cids.push(Number(ck));
+        if (!cids.length) return toast('先勾选几段');
+        openChapterPicker(id, function (chId) {
+          var chain = Promise.resolve();
+          cids.forEach(function (eid) {
+            chain = chain.then(function () { return DB.setEntryChapter(eid, chId); });
+          });
+          chain.then(function () { entrySel = {}; toast('归好了'); route(); }).catch(fail);
+        });
+        return;
+      }
+      if ((b = t.closest('[data-assign-chapter]'))) {
+        var ae = Number(b.getAttribute('data-assign-chapter'));
+        openChapterPicker(id, function (chId) {
+          DB.setEntryChapter(ae, chId).then(function () { toast('归好了'); route(); }).catch(fail);
+        });
+        return;
+      }
       if ((b = t.closest('[data-ch-edit]'))) {
         var chid = Number(b.getAttribute('data-ch-edit'));
         var el = document.querySelector('[data-ch-title="' + chid + '"]');
@@ -749,8 +807,21 @@
 
   /** 上下移动按钮：给条目、照片、媒体都用，dir=-1 上移 / 1 下移 */
   function moveActs(e) {
-    return '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="-1" title="上移">↑</button>' +
-      '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="1" title="下移">↓</button>';
+    return '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="-1" title="上移（可跨章）">↑</button>' +
+      '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="1" title="下移（可跨章）">↓</button>';
+  }
+
+  /** 勾选框：选中后可批量上下移 / 归章 */
+  function selCheck(e) {
+    return '<label class="en-check" title="勾选后可批量移动">' +
+      '<input type="checkbox" data-check-entry="' + e.id + '"' +
+      (entrySel[e.id] ? ' checked' : '') + '></label>';
+  }
+
+  /** 没归章的碎片，给一个「归章」入口 */
+  function assignAct(e) {
+    return e.chapter_id ? '' :
+      '<button class="linkbtn" data-assign-chapter="' + e.id + '" title="归到某一章">归章</button>';
   }
 
   function renderEntry(e) {
@@ -762,7 +833,7 @@
         '<span class="ph-event">' + esc(e.text || '') + '</span>' +
         (e.match_reason ? '<span class="ph-why">归位理由：' + esc(e.match_reason) + '</span>' : '') +
         '</figcaption>' +
-        '<div class="en-acts">' + moveActs(e) + '</div></figure>';
+        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) + '</div></figure>';
     }
     if (e.kind === 'media') {
       var url = fsrc(e.media_path || '');
@@ -777,7 +848,7 @@
       }
       return '<div class="md">' + inner +
         (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') +
-        '<div class="en-acts">' + moveActs(e) + '</div></div>';
+        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) + '</div></div>';
     }
     // 文字条目：可就地改，可删，可配图，还能往后面传图片/视频/录音
     if (isEdit('entry', e.id)) {
@@ -796,7 +867,7 @@
     }
     return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
       paired +
-      '<div class="en-acts">' + moveActs(e) +
+      '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) +
       '<button class="linkbtn" data-polish="' + e.id + '" title="AI 润色，原文不动">润</button>' +
       '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
       '<button class="linkbtn" data-pair-entry="' + e.id + '" title="给这一段配一张照片">' +
@@ -838,6 +909,46 @@
           }
         });
       }).catch(fail);
+  }
+
+  /** 选一章（0 = 退回「待归档」） */
+  function openChapterPicker(aid, onPick) {
+    API.query('SELECT id, title, year_from, year_to FROM chapters WHERE archive_id=? ORDER BY seq, id', [aid])
+      .then(function (chs) {
+        var rows = '<button class="pick-ch" data-pick-ch="0">（退回待归档）</button>', i;
+        for (i = 0; i < chs.length; i++) {
+          var t = String(chs[i].title || '').replace(/^[^·]*·\s*/, '') || ('第 ' + (i + 1) + ' 章');
+          rows += '<button class="pick-ch" data-pick-ch="' + chs[i].id + '">' + (i + 1) + '. ' + esc(t) + '</button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>归到哪一章</h3>' +
+          '<div class="pick-chs">' + rows + '</div>' +
+          '<div class="ml-modal-acts"><button class="btn" data-pick-ch-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-ch-cancel]'))) {
+            document.body.removeChild(ov);
+            return;
+          }
+          var pb = ev.target.closest && ev.target.closest('[data-pick-ch]');
+          if (pb) {
+            var cid = Number(pb.getAttribute('data-pick-ch'));
+            document.body.removeChild(ov);
+            onPick(cid);
+          }
+        });
+      }).catch(fail);
+  }
+
+  /** 刷新底部批量条：选中数量 + 是否显示 */
+  function updateSelBar() {
+    var n = 0, k;
+    for (k in entrySel) if (entrySel.hasOwnProperty(k)) n++;
+    var bar = document.getElementById('selBar');
+    var cnt = document.getElementById('selCount');
+    if (cnt) cnt.textContent = '已选 ' + n + ' 段';
+    if (bar) { if (n) bar.className = 'sel-bar on'; else bar.className = 'sel-bar'; }
   }
 
   /* ---------------- 补内容 ---------------- */
@@ -1608,11 +1719,12 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.2';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.3';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
   var archiveClickHandler = null;    // 同上，卷宗页的改与删
+  var archiveChangeHandler = null;   // 卷宗页勾选框
   var homeClickHandler = null;       // 同上，首页的导出
 
   /* 就地编辑：哪一条正在被改。type 为 seg / photo / entry / chapter，null 表示没在改 */

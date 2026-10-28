@@ -1246,33 +1246,90 @@
     },
 
     /**
-     * 上下移动一条。只在同一章内换位（不跨章），换完把整章的 sort_key 归一成 10/20/30……
-     * 这样顺序永远是显式、稳定的，不会因为你以前没写过 sort_key 而乱跳。
+     * 整个档案的显示顺序：先按章节 seq，再按章内 sort_key（没有就退回 seq、id），
+     * 没归章的碎片排最后。所有"上移/下移"都基于这一条顺序，所以能跨越章节移动。
+     */
+    _orderedEntries: function (archiveId) {
+      return API.query(
+        'SELECT e.id, e.chapter_id, COALESCE(c.seq, 1000000000) cseq, COALESCE(e.sort_key, e.seq, 0) k ' +
+        'FROM entries e LEFT JOIN chapters c ON c.id = e.chapter_id ' +
+        'WHERE e.archive_id=? ' +
+        'ORDER BY (e.chapter_id IS NULL), COALESCE(c.seq, 1000000000), COALESCE(e.sort_key, e.seq, 0), e.id',
+        [archiveId]);
+    },
+
+    /**
+     * 上下移动一条。跨章也能移：挪到相邻位置后，那条属于哪一章，这一条就跟着归到哪一章，
+     * 所以章节边界不再是"墙"。移完把整个档案的 sort_key 归一成 10/20/30……，顺序显式稳定。
      * dir < 0 上移，dir > 0 下移。
      */
     moveEntry: function (entryId, dir) {
-      return API.query('SELECT id, archive_id, chapter_id FROM entries WHERE id=?', [entryId]).then(function (rows) {
-        if (!rows.length) return { moved: false };
-        var e = rows[0];
-        var where = e.chapter_id ? 'chapter_id=?' : 'archive_id=? AND chapter_id IS NULL';
-        var args = e.chapter_id ? [e.chapter_id] : [e.archive_id];
-        return API.query('SELECT id FROM entries WHERE ' + where +
-          ' ORDER BY COALESCE(sort_key, seq, 0), id', args).then(function (list) {
+      var self = this;
+      return API.query('SELECT archive_id FROM entries WHERE id=?', [entryId]).then(function (r0) {
+        if (!r0.length) return { moved: false };
+        return self._orderedEntries(r0[0].archive_id).then(function (list) {
           var idx = -1, i;
           for (i = 0; i < list.length; i++) if (String(list[i].id) === String(entryId)) { idx = i; break; }
           if (idx < 0) return { moved: false };
           var j = dir < 0 ? idx - 1 : idx + 1;
           if (j < 0 || j >= list.length) return { moved: false };
+          var newChapter = list[j].chapter_id;
           var ids = [];
           for (i = 0; i < list.length; i++) ids.push(list[i].id);
-          var tmp = ids[idx]; ids[idx] = ids[j]; ids[j] = tmp;
+          var movedId = ids.splice(idx, 1)[0];
+          ids.splice(j, 0, movedId);
           var chain = Promise.resolve();
           ids.forEach(function (id2, k) {
             chain = chain.then(function () {
               return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [(k + 1) * 10, id2]);
             });
           });
-          return chain.then(function () { return { moved: true }; });
+          chain = chain.then(function () {
+            return API.exec('UPDATE entries SET chapter_id=? WHERE id=?', [newChapter, entryId]);
+          });
+          return chain.then(function () { return { moved: true, chapter: newChapter }; });
+        });
+      });
+    },
+
+    /** 批量上下移动：选中的几条作为一个整体各挪一格（逐条挪，整块一起走） */
+    moveEntries: function (ids, dir) {
+      var self = this;
+      var list = (ids || []).slice();
+      if (!list.length) return Promise.resolve({ moved: false, count: 0 });
+      return API.query('SELECT archive_id FROM entries WHERE id=?', [list[0]]).then(function (r0) {
+        if (!r0.length) return { moved: false, count: 0 };
+        return self._orderedEntries(r0[0].archive_id).then(function (order) {
+          var pos = {}, i;
+          for (i = 0; i < order.length; i++) pos[order[i].id] = i;
+          var sel = [];
+          for (i = 0; i < list.length; i++) if (pos.hasOwnProperty(list[i])) sel.push(list[i]);
+          // 上移按从上到下、下移按从下到上，保证整块一起挪，不会互相顶住
+          sel.sort(function (a, b) { return dir < 0 ? pos[a] - pos[b] : pos[b] - pos[a]; });
+          var chain = Promise.resolve(), moved = 0;
+          sel.forEach(function (id) {
+            chain = chain.then(function () {
+              return self.moveEntry(id, dir).then(function (r) { if (r && r.moved) moved++; });
+            });
+          });
+          return chain.then(function () { return { moved: moved > 0, count: moved }; });
+        });
+      });
+    },
+
+    /** 把一条归到某章（chapterId 传 0/null 即退回「待归档」），排到该章末尾 */
+    setEntryChapter: function (entryId, chapterId) {
+      var cid = chapterId ? Number(chapterId) : null;
+      return API.query('SELECT archive_id FROM entries WHERE id=?', [entryId]).then(function (r) {
+        if (!r.length) return { ok: false };
+        var aid = r[0].archive_id;
+        var q = cid
+          ? API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE archive_id=? AND chapter_id=?', [aid, cid])
+          : API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE archive_id=? AND chapter_id IS NULL', [aid]);
+        return q.then(function (kk) {
+          var k = Number(kk[0].k || 0) + 10;
+          return API.exec('UPDATE entries SET chapter_id=?, sort_key=? WHERE id=?', [cid, k, entryId])
+            .then(function () { return { ok: true }; });
         });
       });
     },
