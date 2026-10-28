@@ -592,10 +592,14 @@
         html += '</section>';
       }
 
-      /* 待归档照片 */
+      /* 待归档照片：已经配到段落或已有照片条目的，不再重复列在这里 */
+      var usedPhotoIds = {};
+      for (var up = 0; up < d.entries.length; up++) {
+        if (d.entries[up].photo_id) usedPhotoIds[d.entries[up].photo_id] = 1;
+      }
       var pending = [];
       for (var pp = 0; pp < d.photos.length; pp++) {
-        if (!d.photos[pp].chapter_id) pending.push(d.photos[pp]);
+        if (!d.photos[pp].chapter_id && !usedPhotoIds[d.photos[pp].id]) pending.push(d.photos[pp]);
       }
       if (pending.length) {
         html += '<section class="pending"><h2>还有 ' + pending.length +
