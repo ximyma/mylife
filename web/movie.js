@@ -304,7 +304,7 @@
    */
   function showHistory(body, archiveId) {
     Promise.all([
-      API.query("SELECT path, bytes, duration_ms, caption FROM media WHERE archive_id=? AND kind='movie' ORDER BY id DESC", [archiveId])
+      API.query("SELECT id, path, bytes, duration_ms, caption FROM media WHERE archive_id=? AND kind='movie' ORDER BY id DESC", [archiveId])
         .catch(function () { return []; }),
       API.job.list().catch(function () { return { items: [] }; }),
     ]).then(function (r) {
@@ -313,6 +313,7 @@
       for (i = 0; i < rows.length; i++) {
         seen[rows[i].path] = 1;
         list.push({
+          id: rows[i].id,
           path: rows[i].path,
           seconds: Math.round((Number(rows[i].duration_ms) || 0) / 1000) || '',
           bytes: rows[i].bytes,
@@ -326,6 +327,7 @@
         if (seen[j.result.path]) continue;
         seen[j.result.path] = 1;
         list.push({
+          id: 0,
           path: j.result.path, seconds: j.result.seconds || '',
           bytes: j.result.bytes, caption: '早先合成的',
         });
@@ -335,18 +337,45 @@
 
       var html = '<section class="mv-hist"><div class="mv-line" style="justify-content:space-between">' +
         '<h2 class="sec-label" style="margin:0">合 成 过 的</h2>' +
-        '<span class="muted">存在这本档案里，点下载能存到手机</span></div><div class="mv-hist-list">';
+        '<span class="muted">存在这本档案里：「下载」能存走，「删除」不要了</span></div><div class="mv-hist-list">';
       list.forEach(function (x) {
-        html += '<div class="mv-hist-item"><video preload="metadata" playsinline controls src="' +
+        html += '<div class="mv-hist-item" data-mv-item="' + esc(x.path) + '">' +
+          '<video preload="metadata" playsinline controls src="' +
           esc(fsrc(x.path)) + '"></video><div class="mv-line"><span class="muted">' +
           esc(x.seconds || '') + (x.seconds ? ' 秒' : '') +
           (x.bytes ? ' · ' + bytes(x.bytes) : '') + '</span>' +
-          '<a class="linkbtn" href="' + esc(fsrc(x.path)) + '" download>下载</a></div>' +
+          '<a class="linkbtn" href="' + esc(fsrc(x.path)) + '" download>下载</a>' +
+          '<button class="linkbtn danger-t" data-mv-del="' + (x.id ? Number(x.id) : '') +
+          '" data-mv-path="' + esc(x.path) + '">删除</button></div>' +
           (x.caption ? '<div class="mv-cap">' + esc(String(x.caption).slice(0, 40)) + '</div>' : '') +
           '</div>';
       });
       html += '</div></section>';
       body.innerHTML = html;
+
+      body.onclick = function (ev) {
+        var btn = ev.target.closest && ev.target.closest('[data-mv-del]');
+        if (!btn) return;
+        var mid = Number(btn.getAttribute('data-mv-del')) || 0;
+        var p = btn.getAttribute('data-mv-path') || '';
+        if (!confirm('删掉这条片子？视频文件也会一起删，删了就找不回来了。')) return;
+        var chain;
+        if (mid) {
+          chain = DB.deleteMedia(mid);
+        } else {
+          // 早期合成、没登记进档案的：把文件删掉就行，media 表里没有它的记录
+          chain = API.file({ op: 'del', path: p }).catch(function () {});
+        }
+        chain.then(function () {
+          toast('删了');
+          var item = btn.closest('[data-mv-item]');
+          if (item && item.parentNode) item.parentNode.removeChild(item);
+          if (!body.querySelector('[data-mv-item]')) {
+            var sec = body.querySelector('.mv-hist');
+            if (sec && sec.parentNode) sec.parentNode.removeChild(sec);
+          }
+        }).catch(function (e) { toast(e && e.message ? e.message : '删除失败'); });
+      };
     }).catch(function () {});
   }
 

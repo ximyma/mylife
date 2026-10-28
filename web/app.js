@@ -732,7 +732,7 @@
       if (clips.length) {
         html += '<section class="mv-hist" id="archiveMovies"><div class="toc-head">' +
           '<h2 class="sec-label">合 成 的 片 子</h2>' +
-          '<span class="toc-hint">' + clips.length + ' 条 · 点播放看，点「下载」存到手机或电脑</span></div>' +
+          '<span class="toc-hint">' + clips.length + ' 条 · 点播放看，「下载」存到手机，「删除」不要了</span></div>' +
           '<div class="mv-hist-list">';
         for (var mv = 0; mv < clips.length; mv++) {
           var mm = clips[mv];
@@ -745,7 +745,8 @@
             '<span class="mv-badge">' + (String(mm.kind) === 'video' ? 'AI 生成' : '程序合成') + '</span>' +
             '</div>' +
             '<div class="mv-line"><span class="muted">' + esc(meta) + '</span>' +
-            '<a class="linkbtn" href="' + esc(fsrc(mm.path)) + '" download>下载</a></div>' +
+            '<a class="linkbtn" href="' + esc(fsrc(mm.path)) + '" download>下载</a>' +
+            '<button class="linkbtn danger-t" data-mv-del="' + Number(mm.id) + '">删除</button></div>' +
             (mm.caption ? '<div class="mv-cap">' + esc(String(mm.caption).slice(0, 40)) + '</div>' : '') +
             '</div>';
         }
@@ -1214,6 +1215,12 @@
         var dph = Number(b.getAttribute('data-ph-del'));
         if (!confirm('删掉这张照片？文件也会一起删。')) return;
         DB.deletePhotoSafe(dph).then(function () { toast('删了'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-mv-del]'))) {
+        var dmv = Number(b.getAttribute('data-mv-del'));
+        if (!confirm('删掉这条片子？视频文件也会一起删，删了就找不回来了。')) return;
+        DB.deleteMedia(dmv).then(function () { toast('删了'); route(); }).catch(fail);
         return;
       }
       if ((b = t.closest('[data-ch-edit]'))) {
@@ -2421,7 +2428,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.9';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.10';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」

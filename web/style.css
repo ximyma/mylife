@@ -662,6 +662,8 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
   gap:6px;flex-wrap:nowrap;margin-top:5px;font-size:11px;line-height:1.5}
 .mv-hist-item .mv-line .muted{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mv-hist-item .mv-line .linkbtn{flex:0 0 auto}
+/* 「下载」「删除」成组靠右：下载吃掉弹性空白，删除只留一个固定间距 */
+.mv-hist-item .mv-line .linkbtn + .linkbtn{margin-left:8px}
 /* 宽屏时片子放大一点，一屏能看四五条 */
 @media(min-width:720px){
   .mv-hist-item{flex:0 0 168px}
