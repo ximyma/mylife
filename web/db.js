@@ -257,9 +257,18 @@
     getArchive: function (id) {
       return Promise.all([
         API.query('SELECT * FROM archives WHERE id=?', [id]),
-        API.query('SELECT * FROM chapters WHERE archive_id=? ORDER BY seq', [id]),
-        API.query('SELECT * FROM entries WHERE archive_id=? ORDER BY seq', [id]),
-        API.query('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year', [id]),
+        API.query('SELECT * FROM chapters WHERE archive_id=? ORDER BY seq, id', [id]),
+        // 照片/媒体条目要把真实路径一并带出来，否则档案页里是空 src（破图）；
+        // 排序统一走 sort_key（手动顺序），没有就退回 seq，再退回 id —— 三处视图用同一口径。
+        API.query(
+          'SELECT e.*, p.path AS photo_path, p.taken_year AS taken_year, p.place AS place, ' +
+          'p.match_reason AS match_reason, ' +
+          'm.path AS media_path, m.kind AS media_kind, m.poster AS media_poster ' +
+          'FROM entries e ' +
+          'LEFT JOIN photos p ON p.id = e.photo_id ' +
+          'LEFT JOIN media m ON m.id = e.media_id ' +
+          'WHERE e.archive_id=? ORDER BY COALESCE(e.sort_key, e.seq, 0), e.id', [id]),
+        API.query('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year, id', [id]),
         API.query('SELECT * FROM segments WHERE archive_id=? ORDER BY id', [id])
       ]).then(function (r) {
         return {
@@ -1236,23 +1245,66 @@
       });
     },
 
-    /** 上下移动一条：交换 sort_key，不重排全章（改一次只写两行） */
+    /**
+     * 上下移动一条。只在同一章内换位（不跨章），换完把整章的 sort_key 归一成 10/20/30……
+     * 这样顺序永远是显式、稳定的，不会因为你以前没写过 sort_key 而乱跳。
+     * dir < 0 上移，dir > 0 下移。
+     */
     moveEntry: function (entryId, dir) {
-      return API.query('SELECT * FROM entries WHERE id=?', [entryId]).then(function (rows) {
+      return API.query('SELECT id, archive_id, chapter_id FROM entries WHERE id=?', [entryId]).then(function (rows) {
         if (!rows.length) return { moved: false };
         var e = rows[0];
-        var k = Number(e.sort_key || e.seq || 0);
-        var sql = dir < 0
-          ? 'SELECT * FROM entries WHERE archive_id=? AND sort_key<? ORDER BY sort_key DESC, id DESC LIMIT 1'
-          : 'SELECT * FROM entries WHERE archive_id=? AND sort_key>? ORDER BY sort_key ASC, id ASC LIMIT 1';
-        return API.query(sql, [e.archive_id, k]).then(function (nb) {
-          if (!nb.length) return { moved: false };
-          var other = nb[0];
-          return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [Number(other.sort_key), e.id])
-            .then(function () { return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [k, other.id]); })
-            .then(function () { return { moved: true }; });
+        var where = e.chapter_id ? 'chapter_id=?' : 'archive_id=? AND chapter_id IS NULL';
+        var args = e.chapter_id ? [e.chapter_id] : [e.archive_id];
+        return API.query('SELECT id FROM entries WHERE ' + where +
+          ' ORDER BY COALESCE(sort_key, seq, 0), id', args).then(function (list) {
+          var idx = -1, i;
+          for (i = 0; i < list.length; i++) if (String(list[i].id) === String(entryId)) { idx = i; break; }
+          if (idx < 0) return { moved: false };
+          var j = dir < 0 ? idx - 1 : idx + 1;
+          if (j < 0 || j >= list.length) return { moved: false };
+          var ids = [];
+          for (i = 0; i < list.length; i++) ids.push(list[i].id);
+          var tmp = ids[idx]; ids[idx] = ids[j]; ids[j] = tmp;
+          var chain = Promise.resolve();
+          ids.forEach(function (id2, k) {
+            chain = chain.then(function () {
+              return API.exec('UPDATE entries SET sort_key=? WHERE id=?', [(k + 1) * 10, id2]);
+            });
+          });
+          return chain.then(function () { return { moved: true }; });
         });
       });
+    },
+
+    /** 章节上下移动：交换 seq，同样归一成 10/20/30…… */
+    moveChapter: function (chapterId, dir) {
+      return API.query('SELECT id, archive_id FROM chapters WHERE id=?', [chapterId]).then(function (rows) {
+        if (!rows.length) return { moved: false };
+        var aid = rows[0].archive_id;
+        return API.query('SELECT id FROM chapters WHERE archive_id=? ORDER BY seq, id', [aid]).then(function (list) {
+          var idx = -1, i;
+          for (i = 0; i < list.length; i++) if (String(list[i].id) === String(chapterId)) { idx = i; break; }
+          if (idx < 0) return { moved: false };
+          var j = dir < 0 ? idx - 1 : idx + 1;
+          if (j < 0 || j >= list.length) return { moved: false };
+          var ids = [];
+          for (i = 0; i < list.length; i++) ids.push(list[i].id);
+          var tmp = ids[idx]; ids[idx] = ids[j]; ids[j] = tmp;
+          var chain = Promise.resolve();
+          ids.forEach(function (id2, k) {
+            chain = chain.then(function () {
+              return API.exec('UPDATE chapters SET seq=? WHERE id=?', [(k + 1) * 10, id2]);
+            });
+          });
+          return chain.then(function () { return { moved: true }; });
+        });
+      });
+    },
+
+    /** 给一条文字/引用配一张照片（传 null 就是去掉配图） */
+    setEntryPhoto: function (entryId, photoId) {
+      return API.exec('UPDATE entries SET photo_id=? WHERE id=?', [photoId || null, entryId]);
     },
 
     /* ================= v0.5：版本（原文只读） ================= */

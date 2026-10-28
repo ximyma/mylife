@@ -571,6 +571,8 @@
           '<span class="ch-name">' + esc(String(c.title || '').replace(/^[^·]*·\s*/, '')) + '</span>' +
           '<span class="ch-year">' + esc(c.year_from ? DB.yearLabel(c.year_from, c.year_to) : '') + '</span>' +
           '<button class="ch-read" data-read-ch="' + c.id + '" title="从这一章开头朗读">读</button>' +
+          '<button class="ch-mv" data-move-chapter="' + c.id + '" data-dir="-1" title="本章上移">↑</button>' +
+          '<button class="ch-mv" data-move-chapter="' + c.id + '" data-dir="1" title="本章下移">↓</button>' +
           '<button class="ch-edit" data-ch-edit="' + c.id + '" title="改章名">改</button></h2>';
         if (c.stage) html += '<div class="ch-kicker">' + esc(c.stage) +
           (a.birth_year && c.year_from ? ' · ' + (c.year_from - a.birth_year) + ' 岁' : '') + '</div>';
@@ -660,6 +662,36 @@
         uploadToEntry(id, ch ? Number(ch) : null, route);
         return;
       }
+      if ((b = t.closest('[data-move-entry]'))) {
+        var meid = Number(b.getAttribute('data-move-entry'));
+        var mdir = Number(b.getAttribute('data-dir')) || 1;
+        DB.moveEntry(meid, mdir).then(function (r) {
+          if (!r || !r.moved) toast('已经到头了');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-move-chapter]'))) {
+        var mc = Number(b.getAttribute('data-move-chapter'));
+        var cdir = Number(b.getAttribute('data-dir')) || 1;
+        DB.moveChapter(mc, cdir).then(function (r) {
+          if (!r || !r.moved) toast('已经到头了');
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-pair-entry]'))) {
+        var pe = Number(b.getAttribute('data-pair-entry'));
+        openPhotoPicker(id, function (pid) {
+          DB.setEntryPhoto(pe, pid).then(function () { toast('配好了'); route(); }).catch(fail);
+        });
+        return;
+      }
+      if ((b = t.closest('[data-unpair-entry]'))) {
+        var ue = Number(b.getAttribute('data-unpair-entry'));
+        DB.setEntryPhoto(ue, null).then(function () { toast('已去图'); route(); }).catch(fail);
+        return;
+      }
       if ((b = t.closest('[data-ch-edit]'))) {
         var chid = Number(b.getAttribute('data-ch-edit'));
         var el = document.querySelector('[data-ch-title="' + chid + '"]');
@@ -711,14 +743,22 @@
     inp.click();
   }
 
-  function renderEntry(e) {    if (e.kind === 'photo') {
+  /** 上下移动按钮：给条目、照片、媒体都用，dir=-1 上移 / 1 下移 */
+  function moveActs(e) {
+    return '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="-1" title="上移">↑</button>' +
+      '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="1" title="下移">↓</button>';
+  }
+
+  function renderEntry(e) {
+    if (e.kind === 'photo') {
       return '<figure class="ph">' +
-        '<img src="' + esc(fsrc(e.photo_path || '')) + '" alt="" loading="lazy">' +
+        (e.photo_path ? '<img src="' + esc(fsrc(e.photo_path)) + '" alt="" loading="lazy">' : '') +
         '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
         (e.place ? ' · ' + esc(e.place) : '') + '</span>' +
         '<span class="ph-event">' + esc(e.text || '') + '</span>' +
         (e.match_reason ? '<span class="ph-why">归位理由：' + esc(e.match_reason) + '</span>' : '') +
-        '</figcaption></figure>';
+        '</figcaption>' +
+        '<div class="en-acts">' + moveActs(e) + '</div></figure>';
     }
     if (e.kind === 'media') {
       var url = fsrc(e.media_path || '');
@@ -732,9 +772,10 @@
         inner = '<img src="' + url + '" alt="" loading="lazy">';
       }
       return '<div class="md">' + inner +
-        (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') + '</div>';
+        (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') +
+        '<div class="en-acts">' + moveActs(e) + '</div></div>';
     }
-    // 文字条目：可就地改，可删，还能往后面传图片/视频/录音
+    // 文字条目：可就地改，可删，可配图，还能往后面传图片/视频/录音
     if (isEdit('entry', e.id)) {
       return '<div class="en editing">' +
         '<textarea class="say mini" data-entry-text="' + e.id + '">' + esc(e.text) + '</textarea>' +
@@ -742,14 +783,57 @@
         '<button class="btn tiny primary" data-entry-save="' + e.id + '">保存</button>' +
         '<button class="btn tiny" data-edit-cancel="1">取消</button></div></div>';
     }
+    var paired = '';
+    if (e.photo_path) {
+      paired = '<figure class="ph en-photo">' +
+        '<img src="' + esc(fsrc(e.photo_path)) + '" alt="" loading="lazy">' +
+        '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
+        (e.place ? ' · ' + esc(e.place) : '') + '</span></figcaption></figure>';
+    }
     return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
-      '<div class="en-acts">' +
+      paired +
+      '<div class="en-acts">' + moveActs(e) +
       '<button class="linkbtn" data-polish="' + e.id + '" title="AI 润色，原文不动">润</button>' +
       '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
+      '<button class="linkbtn" data-pair-entry="' + e.id + '" title="给这一段配一张照片">' +
+        (e.photo_path ? '换图' : '配图') + '</button>' +
+      (e.photo_path ? '<button class="linkbtn" data-unpair-entry="' + e.id + '" title="拿掉配图">去图</button>' : '') +
       '<button class="linkbtn" data-entry-upload="' + e.id + '" data-ch="' +
         (e.chapter_id || '') + '">传</button>' +
       '<button class="linkbtn danger-t" data-entry-del="' + e.id + '">删</button>' +
       '</div></div>';
+  }
+
+  /** 选一张档案里的照片配到某一段 */
+  function openPhotoPicker(aid, onPick) {
+    API.query('SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ORDER BY taken_year, id', [aid])
+      .then(function (photos) {
+        var grid = '', i;
+        for (i = 0; i < photos.length; i++) {
+          var p = photos[i];
+          grid += '<button class="pick-ph" data-pick-ph="' + p.id + '">' +
+            '<img src="' + esc(fsrc(p.path)) + '" alt="">' +
+            '<span>' + esc(p.taken_year || '') + (p.place ? ' · ' + esc(p.place) : '') + '</span></button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选一张照片配到这一段</h3>' +
+          '<div class="pick-grid">' + (grid || '<p class="muted">这本档案还没有照片</p>') + '</div>' +
+          '<div class="ml-modal-acts"><button class="btn" data-pick-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-cancel]'))) {
+            document.body.removeChild(ov);
+            return;
+          }
+          var pb = ev.target.closest && ev.target.closest('[data-pick-ph]');
+          if (pb) {
+            var pid = Number(pb.getAttribute('data-pick-ph'));
+            document.body.removeChild(ov);
+            onPick(pid);
+          }
+        });
+      }).catch(fail);
   }
 
   /* ---------------- 补内容 ---------------- */
@@ -1520,7 +1604,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.1';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.2';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」

@@ -55,12 +55,20 @@
 
       var cfg = DB.coverConfig(a);
 
+      // 哪些照片已经被条目引用（照片条目 / 文字配图），用于最后补「没被引用的照片」
+      var usedPhoto = {};
+
+      function photoBlockOf(p, caption) {
+        return { type: 'photo', path: p.path, year: p.taken_year, place: p.place || '',
+          caption: caption || p.event || '' };
+      }
+
       function blockOf(e) {
         if (e.kind === 'photo') {
           var p = photoById[e.photo_id];
           if (!p) return null;
-          return { type: 'photo', path: p.path, year: p.taken_year, place: p.place,
-            caption: e.text || p.event || '' };
+          usedPhoto[p.id] = 1;
+          return photoBlockOf(p, e.text);
         }
         if (e.kind === 'media') {
           var m = mediaById[e.media_id];
@@ -72,9 +80,18 @@
         return { type: 'text', text: e.text || '' };
       }
 
+      // 已经被「配到某段文字」的照片集合：这类照片在导出里跟着文字出现，
+      // 就不再作为独立照片条目重复出现（同一张照片只出一次）。
+      var pairedPhoto = {};
+      for (i = 0; i < d.entries.length; i++) {
+        var pe0 = d.entries[i];
+        if ((pe0.kind === 'text' || pe0.kind === 'quote') && pe0.photo_id) pairedPhoto[pe0.photo_id] = 1;
+      }
+
       var byChapter = {}, orphans = [];
       for (i = 0; i < d.entries.length; i++) {
         var e = d.entries[i];
+        if (e.kind === 'photo' && e.photo_id && pairedPhoto[e.photo_id]) { usedPhoto[e.photo_id] = 1; continue; }
         var b = blockOf(e);
         if (!b) continue;
         if (e.chapter_id) {
@@ -82,6 +99,15 @@
           byChapter[e.chapter_id].push({ block: b, e: e });
         } else {
           orphans.push({ block: b, e: e });
+        }
+        // 文字/引用配了图：图紧跟在文字后面（图文一体，排序跟着段落走）
+        if ((e.kind === 'text' || e.kind === 'quote') && e.photo_id && photoById[e.photo_id]) {
+          var pp = photoById[e.photo_id];
+          usedPhoto[pp.id] = 1;
+          var keyBase = Number(e.sort_key || e.seq || 0);
+          var paired = { block: photoBlockOf(pp, ''), e: { sort_key: keyBase + 0.5, seq: e.seq, id: e.id } };
+          if (e.chapter_id) byChapter[e.chapter_id].push(paired);
+          else orphans.push(paired);
         }
       }
 
@@ -115,6 +141,45 @@
           id: 0, seq: chapters.length + 1, title: '待归档', fullTitle: '待归档',
           years: '', stage: '', quote: '', summary: '',
           blocks: sortItems(orphans).map(function (x) { return x.block; }),
+        });
+      }
+
+      // 上传了但没被任何条目引用的照片，按各自的 chapter_id 归到对应章（年份排序）；
+      // 归不进去的并成一本「影像」放最后。上传多少张就导出多少张，不再出现"7 张只进 2 张"。
+      function unusedFor(chId) {
+        var arr = [];
+        for (var k = 0; k < d.photos.length; k++) {
+          var p = d.photos[k];
+          if (usedPhoto[p.id]) continue;
+          if (String(p.chapter_id || '') !== String(chId || '')) continue;
+          arr.push(p);
+        }
+        arr.sort(function (x, y) {
+          return (Number(x.taken_year || 0) - Number(y.taken_year || 0)) || (Number(x.id) - Number(y.id));
+        });
+        for (var m = 0; m < arr.length; m++) usedPhoto[arr[m].id] = 1;
+        return arr;
+      }
+      for (i = 0; i < chapters.length; i++) {
+        var extra = unusedFor(chapters[i].id);
+        for (var ei2 = 0; ei2 < extra.length; ei2++) chapters[i].blocks.push(photoBlockOf(extra[ei2], ''));
+      }
+      var restPhotos = [];
+      for (var rp = 0; rp < d.photos.length; rp++) {
+        if (!usedPhoto[d.photos[rp].id]) restPhotos.push(d.photos[rp]);
+      }
+      restPhotos.sort(function (x, y) {
+        return (Number(x.taken_year || 0) - Number(y.taken_year || 0)) || (Number(x.id) - Number(y.id));
+      });
+      if (restPhotos.length) {
+        var restBlocks = [];
+        for (var rp2 = 0; rp2 < restPhotos.length; rp2++) {
+          usedPhoto[restPhotos[rp2].id] = 1;
+          restBlocks.push(photoBlockOf(restPhotos[rp2], ''));
+        }
+        chapters.push({
+          id: 0, seq: chapters.length + 1, title: '影像', fullTitle: '影像',
+          years: '', stage: '', quote: '', summary: '', blocks: restBlocks,
         });
       }
 
@@ -157,7 +222,13 @@
   function imageData(path, maxPx) {
     return API.file({ op: 'read', path: path }).then(function (f) {
       if (!f || !f.base64) return null;
-      var src = 'data:image/jpeg;base64,' + f.base64;
+      // 按文件头判断真实类型，别一律当 jpeg（PNG 标错 MIME，某些环境会解不出来）
+      var mime = 'image/jpeg';
+      var head = String(f.base64).slice(0, 12);
+      if (head.indexOf('iVBORw0KGgo') === 0) mime = 'image/png';
+      else if (head.indexOf('R0lGOD') === 0) mime = 'image/gif';
+      else if (head.indexOf('UklGR') === 0) mime = 'image/webp';
+      var src = 'data:' + mime + ';base64,' + f.base64;
       return new Promise(function (resolve) {
         var img = new Image();
         img.onload = function () {
