@@ -99,7 +99,7 @@
      只放纯工具与导航，不放业务——拆出去是为了不再把 app.js 撑大。 */
   window.ML = {
     esc: esc, fsrc: fsrc, toast: toast, fail: fail, go: go,
-    topbar: topbar, bytes: bytes,
+    topbar: topbar, bytes: bytes, qs: qs,
     openChangePassword: openChangePassword,
     openSetSecurity: openSetSecurity,
     openResetPassword: openResetPassword,
@@ -318,7 +318,10 @@
         '<li><b>点一下生成</b><span>自动按年份分章、排目录、把照片放回原位。</span></li>' +
         '</ol></section>';
 
-      app.innerHTML = topbar({ right: [{ href: '#/settings', text: '设置' }] }) +
+      app.innerHTML = topbar({ right: [
+        { href: '#/chat', text: 'AI 助手' },
+        { href: '#/settings', text: '设置' }
+      ] }) +
         '<main class="wrap">' +
         '<section class="hello"><h1 class="h1">我的档案</h1>' +
         '<p class="muted">一个人，一本档案。</p></section>' +
@@ -458,10 +461,13 @@
   function askNew() {
     var name = prompt('这部档案是谁的？（写名字就行）');
     if (!name || !name.trim()) return;
-    var birth = prompt('出生年份？（可以留空）');
+    var birth = prompt('出生年份？（可以留空，填了目录会带上具体年份）');
     DB.createArchive(name, parseInt(birth, 10) || null, '').then(function (id) {
-      toast('建好了');
-      go('#/a/' + id + '/collect');
+      // 建完先把人生阶段目录搭好——一进来看到的是「目录」，不是一个空白页
+      return DB.buildOutline(id).then(function () { return id; }, function () { return id; });
+    }).then(function (id) {
+      toast('建好了，目录已按人生阶段排好，点一章就能开始写');
+      go('#/a/' + id);
     }).catch(fail);
   }
 
@@ -538,33 +544,93 @@
       }
 
       if (!d.chapters.length) {
-        html += '<section class="wrap"><div class="empty-guide">' +
-          '<h2>这本档案还是空的</h2>' +
-          '<ol class="steps">' +
-          '<li><b>说一段</b><span>想到哪说到哪，不用按顺序。</span></li>' +
-          '<li><b>加几张照片</b><span>标上哪一年、在哪儿、什么事。</span></li>' +
-          '<li><b>点一下生成</b><span>自动分章、排目录、照片归位。</span></li>' +
-          '</ol>' +
-          '<a class="btn primary" href="#/a/' + id + '/collect">去说第一段 →</a>' +
+        html += '<section class="outline-empty">' +
+          '<h2 class="sec-label">还 没 有 目 录</h2>' +
+          '<p class="muted">' + ((d.entries.length || d.segments.length)
+            ? '材料已经有了。点一下，按「出生与家世 → 童年 → 求学 → 工作 → 婚姻 → 子女 → 事业 → 晚年」把内容排成目录。'
+            : '先把目录搭起来，一章一章往里写。以后录的音、打的字会自动归到对应的章。') + '</p>' +
+          '<div class="row">' +
+          '<button class="btn primary" data-outline="1">按人生阶段生成目录</button>' +
+          '<button class="btn" data-ch-add="1">自己加一章</button>' +
+          '<a class="btn ghost" href="#/a/' + id + '/collect">先去说一段</a>' +
           '</div></section>';
-        html += '</main>';
-        app.innerHTML = html;
-        return;
       }
 
-      /* 目录 */
-      html += '<section class="toc"><h2 class="sec-label">目 录</h2>';
-      for (var t = 0; t < d.chapters.length; t++) {
-        var ch = d.chapters[t];
-        var title = String(ch.title || '').replace(/^[^·]*·\s*/, '');
-        html += '<a class="toc-row" href="#ch-' + ch.id + '">' +
-          '<span class="toc-idx">' + (t + 1) + '</span>' +
-          '<span class="toc-title">' + esc(title) +
-          (ch.stage ? '<em class="toc-stage">' + esc(ch.stage) + '</em>' : '') + '</span>' +
-          '<span class="toc-year">' + esc(ch.year_from ? DB.yearLabel(ch.year_from, ch.year_to) : '') + '</span>' +
-          '</a>';
+      /* 目录：一章一行，点进去是这一章自己的页面 */
+      if (d.chapters.length) {
+        html += '<section class="toc" id="toc"><div class="toc-head"><h2 class="sec-label">目 录</h2>' +
+          '<span class="toc-hint">点一章进去，读、写、听、改都在那一页</span></div>';
+        for (var t = 0; t < d.chapters.length; t++) {
+          var ch = d.chapters[t];
+          var title = String(ch.title || '').replace(/^[^·]*·\s*/, '');
+          var cEnt = byChapter[ch.id] || [];
+          var cWords = 0;
+          for (var cw = 0; cw < cEnt.length; cw++) cWords += String(cEnt[cw].text || '').length;
+          html += '<div class="toc-item">' +
+            '<a class="toc-row" href="#/a/' + id + '/ch/' + ch.id + '">' +
+            '<span class="toc-idx">' + (t + 1) + '</span>' +
+            '<span class="toc-title">' + esc(title) +
+            (ch.stage ? '<em class="toc-stage">' + esc(ch.stage) + '</em>' : '') + '</span>' +
+            '<span class="toc-year">' + esc(ch.year_from ? DB.yearLabel(ch.year_from, ch.year_to) : '') + '</span>' +
+            '<span class="toc-n">' + (cEnt.length ? cEnt.length + ' 段' +
+              (cWords ? ' · ' + cWords + ' 字' : '') : '还没写') + '</span>' +
+            '<span class="toc-go">›</span></a>' +
+            '<div class="toc-tools">' +
+            '<button class="linkbtn" data-move-chapter="' + ch.id + '" data-dir="-1" title="这一章上移">↑</button>' +
+            '<button class="linkbtn" data-move-chapter="' + ch.id + '" data-dir="1" title="这一章下移">↓</button>' +
+            '<button class="linkbtn" data-ch-edit="' + ch.id + '" title="改章名">改</button>' +
+            '<button class="linkbtn danger-t" data-ch-del="' + ch.id + '" title="删这一章（内容退回待归档）">删</button>' +
+            '</div></div>';
+        }
+        if (orphans.length) {
+          html += '<a class="toc-row toc-orphan" href="#/a/' + id + '/ch/0">' +
+            '<span class="toc-idx">·</span>' +
+            '<span class="toc-title">待归档</span>' +
+            '<span class="toc-year"></span>' +
+            '<span class="toc-n">' + orphans.length + ' 段</span>' +
+            '<span class="toc-go">›</span></a>';
+        }
+        html += '<div class="toc-add">' +
+          '<button class="btn tiny" data-ch-add="1">＋ 新增一章</button>' +
+          (d.entries.length ? '<button class="btn tiny ghost" data-outline="force">' +
+            '按年份重排目录</button>' : '') +
+          '<button class="btn tiny ghost" data-toggle-full="1">整本阅读</button>' +
+          '</div>';
+        html += '</section>';
       }
-      html += '</section>';
+
+      /* 待归档照片：已经配到段落或已有照片条目的，不再重复列在这里 */
+      var usedPhotoIds = {};
+      for (var up = 0; up < d.entries.length; up++) {
+        if (d.entries[up].photo_id) usedPhotoIds[d.entries[up].photo_id] = 1;
+      }
+      var pending = [];
+      for (var pp = 0; pp < d.photos.length; pp++) {
+        // 只要还没被任何条目引用，就列出来让人能放进去（哪怕它身上有旧的章节号）
+        if (!usedPhotoIds[d.photos[pp].id]) pending.push(d.photos[pp]);
+      }
+      if (pending.length) {
+        html += '<section class="pending"><h2>这 ' + pending.length +
+          ' 张照片还没放进正文 <small>点「放进某章」，或展开全文在某一章里点「＋」插到任意位置</small></h2>' +
+          '<div class="pending-grid">';
+        for (var pg = 0; pg < pending.length; pg++) {
+          var ph = pending[pg];
+          html += '<figure class="ph small"><img src="' + esc(fsrc(ph.path)) + '" alt="" loading="lazy">' +
+            '<figcaption><span class="ph-meta">' + esc(ph.taken_year || '') + ' · ' + esc(ph.place || '') + '</span>' +
+            '<span class="ph-event">' + esc(ph.event || '') + '</span>' +
+            '</figcaption>' +
+            '<div class="ph-acts">' +
+            '<button class="btn tiny" data-ph-place="' + ph.id + '">放进某章</button>' +
+            '<button class="btn tiny" data-ph-meta="' + ph.id + '">改说明</button>' +
+            '<button class="btn tiny" data-ph-cover="' + ph.id + '">设为封面</button>' +
+            '<button class="btn tiny danger" data-ph-del="' + ph.id + '">删</button>' +
+            '</div></figure>';
+        }
+        html += '</div></section>';
+      }
+
+      /* 全文：默认收起，只看目录。要通读时点「整本阅读」展开 */
+      html += '<section class="full-wrap"><div class="full-body" id="fullBody" hidden>';
 
       /* 章节 */
       for (var ci = 0; ci < d.chapters.length; ci++) {
@@ -592,7 +658,7 @@
 
       /* 手写补充 */
       if (orphans.length) {
-        html += '<section class="chapter"><h2 class="ch-title"><span class="ch-name">待归档</span>' +
+        html += '<section class="chapter" id="ch-orphan"><h2 class="ch-title"><span class="ch-name">待归档</span>' +
           '<small class="ch-hint">给这些段落点「归章」，或直接上移到某一章</small></h2>';
         for (var oi = 0; oi < orphans.length; oi++) {
           html += renderEntry(orphans[oi]);
@@ -601,34 +667,7 @@
         html += '</section>';
       }
 
-      /* 待归档照片：已经配到段落或已有照片条目的，不再重复列在这里 */
-      var usedPhotoIds = {};
-      for (var up = 0; up < d.entries.length; up++) {
-        if (d.entries[up].photo_id) usedPhotoIds[d.entries[up].photo_id] = 1;
-      }
-      var pending = [];
-      for (var pp = 0; pp < d.photos.length; pp++) {
-        // 只要还没被任何条目引用，就列出来让人能放进去（哪怕它身上有旧的章节号）
-        if (!usedPhotoIds[d.photos[pp].id]) pending.push(d.photos[pp]);
-      }
-      if (pending.length) {
-        html += '<section class="pending"><h2>这 ' + pending.length +
-          ' 张照片还没放进正文 <small>点「放进某章」，或往上翻在正文里点「＋」插到任意位置</small></h2>' +
-          '<div class="pending-grid">';
-        for (var pg = 0; pg < pending.length; pg++) {
-          var ph = pending[pg];
-          html += '<figure class="ph small"><img src="' + esc(fsrc(ph.path)) + '" alt="" loading="lazy">' +
-            '<figcaption><span class="ph-meta">' + esc(ph.taken_year || '') + ' · ' + esc(ph.place || '') + '</span>' +
-            '<span class="ph-event">' + esc(ph.event || '') + '</span>' +
-            '</figcaption>' +
-            '<div class="ph-acts">' +
-            '<button class="btn tiny" data-ph-place="' + ph.id + '">放进某章</button>' +
-            '<button class="btn tiny" data-ph-cover="' + ph.id + '">设为封面</button>' +
-            '<button class="btn tiny danger" data-ph-del="' + ph.id + '">删</button>' +
-            '</div></figure>';
-        }
-        html += '</div></section>';
-      }
+      html += '</div></section>';
 
       html += '<footer class="doc-foot"><span>' + esc(a.archive_no || '') + ' · ' +
         esc(a.subject_name) + '</span><span>由 AI 协助整理 · 可随时修改</span></footer>';
@@ -647,6 +686,145 @@
     }).catch(function (e) {
       app.innerHTML = topbar({ back: '#/' }) + '<main class="wrap"><div class="empty">' +
         esc(e.message) + '</div></main>';
+    });
+  }
+
+  /* ---------------- 章节页：一章一个页面，读、写、听、改都在这里 ---------------- */
+
+  function renderChapterPage(id, chId) {
+    app.innerHTML = topbar({ back: '#/a/' + id, title: '正在翻页……' }) +
+      '<main class="wrap"><div class="boot">正在翻页……</div></main>';
+
+    DB.getArchive(id).then(function (d) {
+      var a = d.archive;
+      if (!a) throw new Error('找不到这本档案');
+
+      var ch = null, idx = -1, i;
+      if (String(chId) === '0') {
+        ch = { id: 0, title: '待归档', stage: '', quote: '', summary: '' };
+        idx = d.chapters.length;
+      } else {
+        for (i = 0; i < d.chapters.length; i++) {
+          if (String(d.chapters[i].id) === String(chId)) { ch = d.chapters[i]; idx = i; }
+        }
+      }
+      if (!ch) throw new Error('这一章不存在，可能已经被删掉了。');
+
+      /* 本章的条目：待归档那页收的是没有章号的 */
+      var entries = [];
+      for (i = 0; i < d.entries.length; i++) {
+        var e = d.entries[i];
+        if (String(chId) === '0') {
+          if (!e.chapter_id) entries.push(e);
+        } else if (String(e.chapter_id) === String(ch.id)) entries.push(e);
+      }
+      var words = 0;
+      for (i = 0; i < entries.length; i++) words += String(entries[i].text || '').length;
+
+      var prevCh = idx > 0 ? d.chapters[idx - 1] : (String(chId) === '0' ? d.chapters[d.chapters.length - 1] : null);
+      var nextCh = String(chId) === '0' ? null : d.chapters[idx + 1];
+
+      /* 本章里的照片（照片条目 + 直接挂在章上的照片） */
+      var chPhotos = [], usedIds = {};
+      for (i = 0; i < entries.length; i++) {
+        if (entries[i].photo_id) usedIds[entries[i].photo_id] = 1;
+      }
+      for (i = 0; i < d.photos.length; i++) {
+        var ph = d.photos[i];
+        if (String(chId) === '0') {
+          if (!ph.chapter_id && !usedIds[ph.id]) chPhotos.push(ph);
+        } else if (String(ph.chapter_id) === String(ch.id)) {
+          chPhotos.push(ph);
+        }
+      }
+
+      var titleTxt = String(ch.title || '').replace(/^[^·]*·\s*/, '');
+      var html = topbar({
+        back: '#/a/' + id,
+        title: String(chId) === '0' ? '待归档' : ('第 ' + (idx + 1) + ' 章'),
+        right: [{ href: '#/a/' + id, text: '目录' }]
+      });
+
+      html += '<main class="paper chapter-paper">';
+
+      html += '<section class="ch-page-hd">' +
+        '<div class="ch-crumb">' +
+        '<a href="#/a/' + id + '">目录</a>' +
+        '<span>' + (String(chId) === '0' ? '待归档' : '第 ' + (idx + 1) + ' / ' + d.chapters.length + ' 章') + '</span>' +
+        '</div>' +
+        '<h1 class="ch-page-title">' + esc(titleTxt) + '</h1>' +
+        '<div class="ch-page-meta">' +
+        (ch.year_from ? esc(DB.yearLabel(ch.year_from, ch.year_to)) : '') +
+        (ch.stage ? ' · ' + esc(ch.stage) : '') +
+        ' · ' + entries.length + ' 段' + (words ? ' · 约 ' + words + ' 字' : '') +
+        '</div>' +
+        '<div class="ch-page-tools">' +
+        (entries.length ? '<button class="btn tiny" data-read-ch="' + ch.id + '">朗读这一章</button>' : '') +
+        '<button class="btn tiny" data-ch-edit="' + ch.id + '">改章名</button>' +
+        (String(chId) === '0' ? '' :
+          '<button class="btn tiny" data-move-chapter="' + ch.id + '" data-dir="-1">上移</button>' +
+          '<button class="btn tiny" data-move-chapter="' + ch.id + '" data-dir="1">下移</button>' +
+          '<button class="btn tiny danger-t" data-ch-del="' + ch.id + '">删这一章</button>') +
+        '<a class="btn tiny" href="#/a/' + id + '/art' + (ch.id ? '?ch=' + ch.id : '') + '">配插图</a>' +
+        '<a class="btn tiny" href="#/a/' + id + '/comic' + (ch.id ? '?ch=' + ch.id : '') + '">做漫画</a>' +
+        '<a class="btn tiny" href="#/a/' + id + '/script' + (ch.id ? '?ch=' + ch.id : '') + '">写成剧本</a>' +
+        '<a class="btn tiny" href="#/a/' + id + '/movie' + (ch.id ? '?ch=' + ch.id : '') + '">做成短片</a>' +
+        '<a class="btn tiny" href="#/a/' + id + '/collect">录音 / 上传</a>' +
+        '</div></section>';
+
+      if (ch.quote) html += '<blockquote class="ch-quote">“' + esc(ch.quote) + '”</blockquote>';
+      if (ch.summary) html += '<p class="ch-sum">' + esc(ch.summary) + '</p>';
+
+      html += '<section class="chapter ch-page-body" id="ch-' + ch.id + '">';
+      if (!entries.length) {
+        html += '<p class="empty-line">这一章还没有内容。在下面写第一段，或者回去说一段录音。</p>';
+      }
+      for (i = 0; i < entries.length; i++) {
+        html += renderEntry(entries[i]);
+        html += insPoint(entries[i].id, ch.id);
+      }
+      html += '</section>';
+
+      /* 就地写一段：不用回「补内容」页 */
+      html += '<section class="ch-quick">' +
+        '<h2 class="sec-label">往这一章里写</h2>' +
+        '<textarea class="say mini" id="chQuickText" rows="4" placeholder="想到什么写什么，写完点「写进这一章」"></textarea>' +
+        '<div class="row end"><button class="btn primary" data-ch-quick="' + ch.id + '">写进这一章</button></div>' +
+        (String(chId) === '0' ? '<p class="hint">写在这里的内容还没有归章。可以写完用每段下面的「归章」放进某一章。</p>' : '') +
+        '</section>';
+
+      /* 本章照片 */
+      if (chPhotos.length) {
+        html += '<section class="ch-photos"><h2 class="sec-label">这一章的照片</h2><div class="pending-grid">';
+        for (i = 0; i < chPhotos.length; i++) {
+          var cp = chPhotos[i];
+          html += '<figure class="ph small"><img src="' + esc(fsrc(cp.path)) + '" alt="" loading="lazy">' +
+            '<figcaption><span class="ph-meta">' + esc(cp.taken_year || '') +
+            (cp.place ? ' · ' + esc(cp.place) : '') + '</span>' +
+            '<span class="ph-event">' + esc(cp.event || '') + '</span></figcaption>' +
+            '<div class="ph-acts">' +
+            '<button class="btn tiny" data-ph-meta="' + cp.id + '">改说明</button>' +
+            '<button class="btn tiny" data-ph-cover="' + cp.id + '">设为封面</button>' +
+            '<button class="btn tiny danger" data-ph-del="' + cp.id + '">删</button>' +
+            '</div></figure>';
+        }
+        html += '</div></section>';
+      }
+
+      /* 上一章 / 下一章 */
+      html += '<nav class="ch-page-nav">' +
+        (prevCh ? '<a class="pn prev" href="#/a/' + id + '/ch/' + prevCh.id + '">' +
+          '<small>上一章</small><b>' + esc(String(prevCh.title || '').replace(/^[^·]*·\s*/, '')) + '</b></a>' : '<span></span>') +
+        (nextCh ? '<a class="pn next" href="#/a/' + id + '/ch/' + nextCh.id + '">' +
+          '<small>下一章</small><b>' + esc(String(nextCh.title || '').replace(/^[^·]*·\s*/, '')) + '</b></a>' : '<span></span>') +
+        '</nav>';
+
+      html += '</main>';
+      app.innerHTML = html;
+      bindArchive(id);
+    }).catch(function (e) {
+      app.innerHTML = topbar({ back: '#/a/' + id }) + '<main class="wrap"><div class="empty">' +
+        esc(e.message || '这一章打不开') + '</div></main>';
     });
   }
 
@@ -706,6 +884,57 @@
           if (!r || !r.moved) toast('已经到头了');
           route();
         }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ph-meta]'))) {
+        openPhotoMeta(Number(b.getAttribute('data-ph-meta')));
+        return;
+      }
+      if ((b = t.closest('[data-ch-quick]'))) {
+        var qch = Number(b.getAttribute('data-ch-quick'));
+        var qta = document.getElementById('chQuickText');
+        var qtxt = qta ? String(qta.value || '').trim() : '';
+        if (!qtxt) return toast('先写点什么');
+        b.disabled = true;
+        DB.insertAfter(id, { chapterId: qch || null, kind: 'text', text: qtxt })
+          .then(function () { toast('写进去了'); route(); })
+          .catch(function (e) { b.disabled = false; fail(e); });
+        return;
+      }
+      if ((b = t.closest('[data-outline]'))) {
+        var force = b.getAttribute('data-outline') === 'force';
+        b.disabled = true;
+        b.textContent = '正在排……';
+        DB.buildOutline(id, { force: force }).then(function (r) {
+          toast(r && r.created
+            ? '目录排好了：' + r.created + ' 章'
+            : (r && r.homed ? '把 ' + r.homed + ' 段补进了对应的章' : '目录没有变化'));
+          route();
+        }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ch-add]'))) {
+        var ntitle = prompt('新的一章叫什么？（比如「1978 年，进城打工」）');
+        if (!ntitle || !ntitle.trim()) return;
+        var yr = prompt('大概哪一年？（可留空）');
+        DB.addChapter(id, ntitle.trim(), parseInt(yr, 10) || null, parseInt(yr, 10) || null)
+          .then(function (r) { toast('加好了'); go('#/a/' + id + '/ch/' + r.id); })
+          .catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ch-del]'))) {
+        var delCh = Number(b.getAttribute('data-ch-del'));
+        if (!confirm('删掉这一章？章里的内容不会丢，会退回「待归档」。')) return;
+        DB.deleteChapter(delCh).then(function () { toast('删了，内容退到待归档'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-toggle-full]'))) {
+        var fb = document.getElementById('fullBody');
+        if (fb) {
+          fb.hidden = !fb.hidden;
+          b.textContent = fb.hidden ? '整本阅读' : '收起全文';
+          if (!fb.hidden) fb.scrollIntoView({ block: 'start' });
+        }
         return;
       }
       if ((b = t.closest('[data-move-chapter]'))) {
@@ -915,6 +1144,43 @@
   }
 
   /** 选一张档案里的照片配到某一段 */
+  /** 改照片的「哪一年 / 在哪儿 / 什么事」——三样决定它排进哪一章 */
+  function openPhotoMeta(pid) {
+    API.query('SELECT * FROM photos WHERE id=?', [pid]).then(function (rows) {
+      if (!rows.length) return toast('这张照片已经删了');
+      var p = rows[0];
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal"><h3>这张照片</h3>' +
+        '<p class="hint dim">填准这三样，它才能被排进对应的那一章。</p>' +
+        '<label>哪一年<input class="fi" id="pmYear" type="number" value="' +
+        esc(p.taken_year || '') + '" placeholder="1968"></label>' +
+        '<label>在哪儿<input class="fi" id="pmPlace" value="' + esc(p.place || '') +
+        '" placeholder="老屋门口"></label>' +
+        '<label>什么事<input class="fi" id="pmEvent" value="' + esc(p.event || '') +
+        '" placeholder="全家合影"></label>' +
+        '<div class="ml-modal-acts">' +
+        '<button class="btn primary" data-pm-save="1">保存</button>' +
+        '<button class="btn" data-pm-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', function (ev) {
+        if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pm-cancel]'))) {
+          document.body.removeChild(ov); return;
+        }
+        if (ev.target.closest && ev.target.closest('[data-pm-save]')) {
+          var y = Number(ov.querySelector('#pmYear').value) || null;
+          var pl = String(ov.querySelector('#pmPlace').value || '').trim();
+          var evt = String(ov.querySelector('#pmEvent').value || '').trim();
+          DB.updatePhoto(pid, { year: y, place: pl, event: evt }).then(function () {
+            document.body.removeChild(ov);
+            toast('改好了');
+            route();
+          }).catch(fail);
+        }
+      });
+    }).catch(fail);
+  }
+
   function openPhotoPicker(aid, onPick) {
     API.query('SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ORDER BY taken_year, id', [aid])
       .then(function (photos) {
@@ -1212,8 +1478,10 @@
         '<div>' + (mats || '<p class="muted">还没有讲述。</p>') + '</div>' +
         // 转写失败时把原始信息摊在这里：是网络、Key、模型名还是音频本身的问题，一眼能分
         '<div class="last-diag" id="trDiag" hidden></div>' +
-        '<div class="row"><button class="btn primary block" id="genBtn">生成档案</button></div>' +
-        '<p class="hint" id="genHint">生成会把讲述按年份排好、分成章、把照片放回原位。你手改过的内容不会被覆盖。</p>' +
+        '<div class="row"><button class="btn primary block" id="genBtn">整理进目录</button></div>' +
+        '<p class="hint" id="genHint">把刚说的、传的，按人生阶段归进目录里对应的章。已经排好的章不会被打乱。</p>' +
+        '<div class="row end"><button class="btn tiny ghost" id="genRebuild">' +
+        '按年份重建整本目录（会拆掉现有章节，内容不丢）</button></div>' +
         '</section>' +
 
         '</main>';
@@ -1755,6 +2023,24 @@
     document.getElementById('genBtn').onclick = function () {
       var btn = this, hint = document.getElementById('genHint');
       btn.disabled = true;
+      hint.textContent = '正在把材料归进目录……';
+      DB.buildOutline(id).then(function (r) {
+        hint.textContent = (r && r.created)
+          ? ('建好了 ' + r.created + ' 章，正在打开')
+          : ('归好了 ' + ((r && r.homed) || 0) + ' 段，正在打开');
+        setTimeout(function () { go('#/a/' + id); }, 400);
+      }).catch(function (e) {
+        hint.textContent = '';
+        btn.disabled = false;
+        fail(e);
+      });
+    };
+
+    var rb = document.getElementById('genRebuild');
+    if (rb) rb.onclick = function () {
+      if (!confirm('会按年份把整本目录重新拆排一遍。内容和照片都不会丢，但你手动改过的章节顺序会变。继续吗？')) return;
+      var btn = this, hint = document.getElementById('genHint');
+      btn.disabled = true;
       hint.textContent = '正在读你的讲述……';
       DB.generate(id).then(function () {
         hint.textContent = '装订完成，正在打开';
@@ -1854,7 +2140,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.3';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.4';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2754,6 +3040,7 @@
     if (h === '#/login') return renderLogin();
     var m;
 
+    if ((m = /^#\/a\/(\d+)\/ch\/(\d+)/.exec(h))) return renderChapterPage(m[1], m[2]);
     if ((m = /^#\/a\/(\d+)\/collect/.exec(h))) return renderCollect(m[1]);
     if ((m = /^#\/a\/(\d+)\/timeline/.exec(h))) return renderTimeline(m[1]);
     if ((m = /^#\/a\/(\d+)\/chat/.exec(h))) return renderChat(m[1]);
@@ -2763,6 +3050,7 @@
     if ((m = /^#\/a\/(\d+)\/comic/.exec(h))) return renderComic(m[1]);
     if ((m = /^#\/a\/(\d+)\/movie/.exec(h))) return renderMovie(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
+    if (h === '#/chat') return renderChat(null);
     if (h === '#/users') return renderUsers();
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
@@ -2805,9 +3093,10 @@
   }
 
   function renderChat(id) {
-    app.innerHTML = topbar({ back: '#/a/' + id }) +
+    var aid = id ? Number(id) : null;
+    app.innerHTML = topbar({ back: aid ? '#/a/' + aid : '#/' }) +
       '<main class="wrap"><div class="boot">正在打开助手……</div></main>';
-    window.ChatUI.render(app, Number(id));
+    window.ChatUI.render(app, aid);
   }
 
   window.addEventListener('hashchange', function () {
@@ -2852,12 +3141,72 @@
   }
 
   /** 导出抽屉：打印版 / PDF / Word / PPT，一次说清各要多久、靠什么 */
+  /**
+   * 成书预览：先把排版结果放进 iframe，让人看清章节、图片、顺序对不对，
+   * 再决定导出 Word / PDF / PPT。不再是「点一下就给个文件」。
+   */
+  function openDocPreview(m, opts) {
+    opts = opts || {};
+    var back = document.createElement('div');
+    back.className = 'sheet-back pv-back';
+    back.innerHTML = '<div class="sheet pv-sheet">' +
+      '<div class="sheet-hd"><b>成书预览 · ' + esc(m.meta.title) + '</b>' +
+      '<button class="sheet-x" data-pv-close="1">✕</button></div>' +
+      '<div class="pv-body"><div class="pv-tip" id="pvTip">正在把图片装进去……</div>' +
+      '<iframe class="pv-frame" id="pvFrame" title="成书预览"></iframe></div>' +
+      '<div class="pv-acts">' +
+      '<button class="btn tiny" data-pv-close="1">返回</button>' +
+      '<span class="pv-note">这里只是排版检查，还没生成文件</span>' +
+      '<button class="btn tiny" data-pv="docx">导出 Word</button>' +
+      '<button class="btn tiny" data-pv="pdf">导出 PDF</button>' +
+      '<button class="btn tiny primary" data-pv="print">打印 / 存 PDF</button>' +
+      '</div></div>';
+    document.body.appendChild(back);
+
+    var tip = back.querySelector('#pvTip');
+    var frame = back.querySelector('#pvFrame');
+
+    window.Exporter.inlineImages(m, 100).then(function (inl) {
+      frame.srcdoc = window.Exporter.html(m, { theme: opts.theme, size: opts.size, images: inl.map });
+      tip.textContent = '共 ' + m.meta.chapters + ' 章 · 约 ' + m.meta.words + ' 字 · ' +
+        m.meta.photos + ' 张照片';
+    }).catch(function (e) {
+      tip.textContent = '预览排版出错：' + (e.message || e);
+    });
+
+    back.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t.closest) return;
+      if (t.closest('[data-pv-close]')) { back.remove(); return; }
+      var b = t.closest('[data-pv]');
+      if (!b) return;
+      var kind = b.getAttribute('data-pv');
+      b.disabled = true;
+      var p;
+      if (kind === 'print') {
+        window.Exporter.print(m, { size: opts.size, theme: opts.theme });
+        back.remove();
+        return;
+      }
+      if (kind === 'pdf') p = window.Exporter.pdf(m, { size: opts.size, theme: opts.theme, archiveId: opts.archiveId });
+      else p = window.Exporter.docx(m, { archiveId: opts.archiveId });
+      Promise.resolve(p).then(function (r) {
+        b.disabled = false;
+        if (r && r.ok === false) return toast(r.message || '导出失败');
+        toast(r && r.path ? '已导出：' + r.path : '好了');
+        back.remove();
+      }).catch(function (e) { b.disabled = false; fail(e); });
+    });
+  }
+
   function openExportSheet(archiveId) {
     var back = document.createElement('div');
     back.className = 'sheet-back';
     back.innerHTML = '<div class="sheet"><div class="sheet-hd"><b>导出这本档案</b>' +
       '<button class="sheet-x" data-ex-close="1">✕</button></div>' +
       '<div class="sheet-bd">' +
+      '<button class="ex-preview" data-ex="preview"><b>先预览成书</b>' +
+      '<small>按你选的开本和纸色排一遍，看清楚了再决定导出哪种</small></button>' +
       '<div class="ex-grid">' +
       '<button class="ex-card" data-ex="print"><b>印刷版</b><small>浏览器里直接看，按 Ctrl+P 存成 PDF</small></button>' +
       '<button class="ex-card" data-ex="pdf"><b>PDF</b><small>一键出文件，需要电脑上装了 Chrome/Edge</small></button>' +
@@ -2892,6 +3241,12 @@
 
       var t0 = Date.now();
       window.Exporter.model(archiveId).then(function (m) {
+        if (kind === 'preview') {
+          busy = false; b.classList.remove('on');
+          tip.textContent = '正在排版预览……';
+          openDocPreview(m, { size: size, theme: theme, archiveId: archiveId });
+          return null;
+        }
         if (kind === 'print') {
           tip.textContent = '已打开新窗口，按 Ctrl+P（Mac 是 ⌘P）→ 目标选「另存为 PDF」。';
           window.Exporter.print(m, { size: size, theme: theme });

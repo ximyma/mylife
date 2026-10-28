@@ -130,6 +130,52 @@
     return '晚年';
   }
 
+  /**
+   * 人生阶段骨架——档案目录的默认结构。
+   * 年龄区间以出生年为基准（不含出生年就靠关键词判断），
+   * 顺序就是一个人一生的顺序：出生 → 童年 → 求学 → 工作 → 婚姻 → 子女 → 事业 → 晚年。
+   */
+  var LIFE_STAGES = [
+    { key: 'origin', title: '出生与家世', ageFrom: -1, ageTo: 2, stage: '幼年',
+      kw: ['出生', '老家', '祖', '宗族', '祠堂', '族谱', '爷爷', '奶奶', '父亲', '母亲',
+        '外公', '外婆', '几口人', '村子', '乡下', '老屋'] },
+    { key: 'child', title: '童年', ageFrom: 3, ageTo: 12, stage: '童年',
+      kw: ['小时候', '童年', '小学', '贪玩', '院子', '放牛', '割草', '邻居', '河边', '过年', '玩伴'] },
+    { key: 'school', title: '求学', ageFrom: 13, ageTo: 19, stage: '求学',
+      kw: ['上学', '初中', '中学', '高中', '老师', '同学', '毕业', '考试', '大学', '读书', '住校', '学费'] },
+    { key: 'work', title: '工作与闯荡', ageFrom: 20, ageTo: 29, stage: '青年',
+      kw: ['工作', '上班', '厂', '参军', '当兵', '进城', '学徒', '第一份', '挣', '工地', '单位', '打工'] },
+    { key: 'marry', title: '婚姻与家庭', ageFrom: 30, ageTo: 39, stage: '成家',
+      kw: ['结婚', '成家', '媳妇', '丈夫', '婚礼', '爱人', '分家', '盖房', '嫁', '娶', '办酒'] },
+    { key: 'kids', title: '子女', ageFrom: 40, ageTo: 49, stage: '成家',
+      kw: ['孩子', '儿子', '女儿', '满月', '带娃', '兄弟', '姐妹', '上学', '嫁人', '成亲'] },
+    { key: 'career', title: '事业与成就', ageFrom: 50, ageTo: 59, stage: '中年',
+      kw: ['事业', '生意', '升', '调', '厂子', '公司', '开店', '获奖', '带头', '承包', '入党', '荣誉'] },
+    { key: 'late', title: '晚年与回望', ageFrom: 60, ageTo: 200, stage: '晚年',
+      kw: ['退休', '孙子', '孙女', '晚年', '现在', '这些年', '回头看', '养老', '身体', '老友'] }
+  ];
+
+  /** 这一段属于哪个阶段：有年份按年龄，没年份按关键词打分；都不沾就返回 null */
+  function stageOfText(text, year, birth) {
+    var i, j;
+    if (year && birth) {
+      var age = year - birth;
+      for (i = 0; i < LIFE_STAGES.length; i++) {
+        if (age >= LIFE_STAGES[i].ageFrom && age <= LIFE_STAGES[i].ageTo) return LIFE_STAGES[i];
+      }
+    }
+    var s = String(text || '');
+    var best = null, bestScore = 0;
+    for (i = 0; i < LIFE_STAGES.length; i++) {
+      var hit = 0;
+      for (j = 0; j < LIFE_STAGES[i].kw.length; j++) {
+        if (s.indexOf(LIFE_STAGES[i].kw[j]) >= 0) hit++;
+      }
+      if (hit > bestScore) { bestScore = hit; best = LIFE_STAGES[i]; }
+    }
+    return bestScore > 0 ? best : null;
+  }
+
   /** 照片归位打分：时间 0.45 + 地点 0.30 + 事件 0.25 */
   function scorePhoto(photo, chapter, chapterText) {
     var score = 0, why = [];
@@ -679,6 +725,239 @@
         [String(title || '').trim(), String(summary || '').trim(), id]);
     },
 
+    /** 新增一章：默认排在最后。返回新章 id，便于建完直接跳进去写 */
+    addChapter: function (archiveId, title, yearFrom, yearTo, stage) {
+      var t = String(title || '').trim() || '新的一章';
+      return API.query('SELECT COALESCE(MAX(seq),0) m FROM chapters WHERE archive_id=?', [archiveId])
+        .then(function (rows) {
+          var seq = (Number(rows[0] && rows[0].m) || 0) + 10;
+          return API.exec(
+            'INSERT INTO chapters (archive_id,seq,title,year_from,year_to,stage) VALUES (?,?,?,?,?,?)',
+            [archiveId, seq, t, yearFrom || null, yearTo || null, stage || null]);
+        })
+        .then(function (r) { return { id: r.lastId, title: t, seq: seq }; });
+    },
+
+    /**
+     * 删一章：章里的段落、照片**退回待归档**，不跟着消失。
+     * 让人敢点——删错了还能从「待归档」里找回来。
+     */
+    deleteChapter: function (chapterId) {
+      return API.query('SELECT id, archive_id FROM chapters WHERE id=?', [chapterId]).then(function (rows) {
+        if (!rows.length) return { ok: false };
+        return API.exec('UPDATE entries SET chapter_id=NULL WHERE chapter_id=?', [chapterId])
+          .then(function () {
+            return API.exec('UPDATE photos SET chapter_id=NULL WHERE chapter_id=?', [chapterId]);
+          })
+          .then(function () { return API.exec('DELETE FROM chapters WHERE id=?', [chapterId]); })
+          .then(function (r) { return { ok: true, changes: Number(r.changes) || 0 }; });
+      });
+    },
+
+    /** 把「讲述」材料转成可排版的段落（只转有文字的；已经转过的按内容前缀跳过，不重复生成） */
+    segmentsToEntries: function (archiveId, d) {
+      var seen = {};
+      for (var i = 0; i < d.entries.length; i++) {
+        var k0 = String(d.entries[i].text || '').replace(/\s+/g, '');
+        if (k0) seen[k0.slice(0, 24)] = 1;
+      }
+      var rows = [];
+      for (i = 0; i < d.segments.length; i++) {
+        var s = d.segments[i];
+        var txt = String(s.raw_text || '');
+        if (!txt || txt.indexOf('待转写') >= 0 || txt.indexOf('录音已保存') >= 0) continue;
+        txt = clean(txt);
+        var key = txt.replace(/\s+/g, '').slice(0, 24);
+        if (key && seen[key]) continue;
+        var year = Number(s.year_hint) || findYear(txt) || null;
+        var lines = splitEntries(txt);
+        for (var j = 0; j < lines.length; j++) {
+          if (String(lines[j] || '').trim()) rows.push({ text: lines[j], year: year });
+        }
+      }
+      var chain = Promise.resolve(), n = 0;
+      for (var k = 0; k < rows.length; k++) {
+        (function (row) {
+          chain = chain.then(function () {
+            return API.exec(
+              'INSERT INTO entries (archive_id,seq,kind,text,at_year,origin) VALUES (?,?,?,?,?,?)',
+              [archiveId, (n + 1) * 10, 'text', row.text, row.year, 'ai']).then(function () { n++; });
+          });
+        })(rows[k]);
+      }
+      return chain.then(function () { return n; });
+    },
+
+    /**
+     * 按人生阶段排目录。
+     *
+     * - 档案还没有目录：直接生成「出生与家世 → 童年 → 求学 → 工作与闯荡 →
+     *   婚姻与家庭 → 子女 → 事业与成就 → 晚年与回望」八章，把现有文字和照片按年份/关键词归位。
+     * - 已经有目录：默认只把「待归档」的内容补进合适的章，不动你排好的结构；
+     *   传 { force: true } 才会按年份重排（旧章节拆掉，内容一条不丢）。
+     * - 一个字都没有：也把八章骨架建出来，让人一进来就有地方写。
+     */
+    buildOutline: function (archiveId, opts) {
+      opts = opts || {};
+      var self = this;
+      return self.getArchive(archiveId).then(function (d) {
+        var birth = parseInt(d.archive && d.archive.birth_year, 10) || 0;
+        // 录音（讲述材料）先转成段落；已经转过的按内容前缀跳过，不会重复
+        if (d.segments.length && (opts.force || !d.chapters.length)) {
+          return self.segmentsToEntries(archiveId, d).then(function () {
+            return self.getArchive(archiveId);
+          });
+        }
+        return d;
+      }).then(function (d) {
+        var birth = parseInt(d.archive && d.archive.birth_year, 10) || 0;
+        var hasCh = d.chapters.length > 0;
+
+        if (hasCh && !opts.force) {
+          return self.homeOrphans(archiveId, d, birth).then(function (n) {
+            return { created: 0, homed: n, kept: true, total: d.chapters.length };
+          });
+        }
+
+        var units = [], u;
+        for (u = 0; u < d.entries.length; u++) {
+          var e = d.entries[u];
+          if (e.kind !== 'text' && e.kind !== 'quote') continue;
+          var txt = String(e.text || '').trim();
+          if (!txt) continue;
+          units.push({
+            id: e.id, text: txt,
+            year: Number(e.at_year) || findYear(txt) || null,
+          });
+        }
+
+        var byStage = {}, orphan = 0;
+        for (u = 0; u < units.length; u++) {
+          var st = stageOfText(units[u].text, units[u].year, birth);
+          if (!st) { orphan++; continue; }
+          if (!byStage[st.key]) byStage[st.key] = { stage: st, list: [] };
+          byStage[st.key].list.push(units[u]);
+        }
+
+        var createAll = units.length === 0 || !Object.keys(byStage).length;
+        var used = [];
+        for (var s1 = 0; s1 < LIFE_STAGES.length; s1++) {
+          if (createAll || byStage[LIFE_STAGES[s1].key]) used.push(LIFE_STAGES[s1]);
+        }
+
+        var chain = Promise.resolve();
+        if (hasCh) {
+          chain = chain
+            .then(function () { return API.exec('UPDATE entries SET chapter_id=NULL WHERE archive_id=?', [archiveId]); })
+            .then(function () { return API.exec('UPDATE photos SET chapter_id=NULL WHERE archive_id=?', [archiveId]); })
+            .then(function () { return API.exec('DELETE FROM chapters WHERE archive_id=?', [archiveId]); });
+        }
+
+        var made = {}, created = 0;
+        used.forEach(function (st) {
+          chain = chain.then(function () {
+            var ys = [];
+            if (byStage[st.key]) {
+              byStage[st.key].list.forEach(function (x) { if (x.year) ys.push(x.year); });
+            }
+            ys.sort(function (a, b) { return a - b; });
+            var yf = ys.length ? ys[0] : null;
+            var yt = ys.length ? ys[ys.length - 1] : null;
+            if (!ys.length && birth) {
+              yf = birth + (st.ageFrom > 0 ? st.ageFrom : 0);
+              yt = birth + st.ageTo;
+            }
+            created++;
+            return API.exec(
+              'INSERT INTO chapters (archive_id,seq,title,year_from,year_to,stage) VALUES (?,?,?,?,?,?)',
+              [archiveId, created * 10, st.title, yf, yt, st.stage]
+            ).then(function (r) { made[st.key] = r.lastId; });
+          });
+        });
+
+        /* 段落归位：同一章内按年份先后排，年份不详的排后面 */
+        chain = chain.then(function () {
+          var sub = Promise.resolve();
+          LIFE_STAGES.forEach(function (st) {
+            var box = byStage[st.key], cid = made[st.key];
+            if (!box || !cid) return;
+            box.list.sort(function (a, b) {
+              return ((a.year || 9999) - (b.year || 9999)) || (a.id - b.id);
+            });
+            box.list.forEach(function (unit, idx) {
+              sub = sub.then(function () {
+                return API.exec('UPDATE entries SET chapter_id=?, sort_key=? WHERE id=?',
+                  [cid, (idx + 1) * 10, unit.id]);
+              });
+            });
+          });
+          return sub;
+        });
+
+        /* 照片也按年份跟着进章，没年份的留在「待归档照片」里让人自己放 */
+        chain = chain.then(function () {
+          var sub = Promise.resolve();
+          for (var k = 0; k < d.photos.length; k++) {
+            (function (ph) {
+              var st = stageOfText(ph.event || '', Number(ph.taken_year) || 0, birth);
+              if (!st || !made[st.key]) return;
+              sub = sub.then(function () {
+                return API.exec('UPDATE photos SET chapter_id=?, match_reason=? WHERE id=?',
+                  [made[st.key], '按年份自动归入「' + st.title + '」', ph.id]);
+              });
+            })(d.photos[k]);
+          }
+          return sub;
+        });
+
+        return chain.then(function () {
+          return API.exec("UPDATE archives SET status='ready', updated_at=? WHERE id=?", [nowSql(), archiveId]);
+        }).then(function () {
+          return { created: created, homed: units.length - orphan, orphan: orphan, kept: false };
+        });
+      });
+    },
+
+    /** 已有目录时：只把没归章的段落按年份/关键词塞进现成的章 */
+    homeOrphans: function (archiveId, d, birth) {
+      var chs = d.chapters.slice();
+      var chain = Promise.resolve(), n = 0;
+      for (var i = 0; i < d.entries.length; i++) {
+        (function (e) {
+          if (e.chapter_id) return;
+          if (e.kind !== 'text' && e.kind !== 'quote') return;
+          var txt = String(e.text || '').trim();
+          if (!txt) return;
+          var year = Number(e.at_year) || findYear(txt) || null;
+          var target = null;
+          if (year) {
+            for (var c = 0; c < chs.length; c++) {
+              var yf = Number(chs[c].year_from) || 0;
+              var yt = Number(chs[c].year_to) || yf;
+              if (yf && year >= yf && year <= yt) { target = chs[c]; break; }
+            }
+          }
+          if (!target) {
+            var st = stageOfText(txt, 0, 0);
+            if (st) {
+              for (var c2 = 0; c2 < chs.length; c2++) {
+                if (String(chs[c2].title || '').indexOf(st.title) >= 0) { target = chs[c2]; break; }
+              }
+            }
+          }
+          if (!target) return;
+          chain = chain.then(function () {
+            return API.query('SELECT COALESCE(MAX(sort_key),MAX(seq),0)+10 s FROM entries WHERE chapter_id=?',
+              [target.id]).then(function (r) {
+              return API.exec('UPDATE entries SET chapter_id=?, sort_key=? WHERE id=?',
+                [target.id, Number(r[0] && r[0].s) || 10, e.id]);
+            }).then(function () { n++; });
+          });
+        })(d.entries[i]);
+      }
+      return chain.then(function () { return n; });
+    },
+
     updateEntry: function (id, text) {
       var t = String(text || '').trim();
       if (!t) return Promise.reject(new Error('内容不能是空的'));
@@ -687,21 +966,9 @@
       return API.exec('UPDATE entries SET text=?, origin=\'user\', edited=1 WHERE id=?', [t, id]);
     },
 
-    /** 删条目。章里一条不剩就把章也收走，免得留下空标题 */
+    /** 删条目。章留着——目录是骨架，空章让人继续往里写，不要突然消失 */
     deleteEntry: function (id) {
-      return API.query('SELECT chapter_id FROM entries WHERE id=?', [id]).then(function (rows) {
-        var cid = rows.length ? rows[0].chapter_id : null;
-        return API.exec('DELETE FROM entries WHERE id=?', [id]).then(function (r) {
-          if (!cid) return r;
-          return API.query('SELECT count(*) n FROM entries WHERE chapter_id=?', [cid])
-            .then(function (c) {
-              if (c[0].n === 0) {
-                return API.exec('DELETE FROM chapters WHERE id=?', [cid]).then(function () { return r; });
-              }
-              return r;
-            });
-        });
-      });
+      return API.exec('DELETE FROM entries WHERE id=?', [id]);
     },
 
     deleteMedia: function (id) {

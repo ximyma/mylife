@@ -49,8 +49,11 @@
         return;
       }
 
+      var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
       var opts = chapters.map(function (c, i) {
-        return '<option value="' + c.id + '">' + esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</option>';
+        return '<option value="' + c.id + '"' +
+          (String(c.id) === String(preCh) ? ' selected' : '') + '>' +
+          esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</option>';
       }).join('');
 
       host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: '短片' }) +

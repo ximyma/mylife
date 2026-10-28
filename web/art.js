@@ -44,8 +44,11 @@
       var persona = (personaRow && personaRow.v) || '';
 
       var opts = '<option value="">全部</option>';
+      var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
       for (var i = 0; i < chapters.length; i++) {
-        opts += '<option value="' + chapters[i].id + '">' + esc(chapters[i].title || ('第 ' + (i + 1) + ' 章')) + '</option>';
+        opts += '<option value="' + chapters[i].id + '"' +
+          (String(chapters[i].id) === String(preCh) ? ' selected' : '') + '>' +
+          esc(chapters[i].title || ('第 ' + (i + 1) + ' 章')) + '</option>';
       }
 
       host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: '插图' }) +
@@ -255,7 +258,7 @@
         }
         list.innerHTML = html;
       }
-      renderList('');
+      renderList(preCh || '');
 
       host.querySelector('#artCh').addEventListener('change', function () {
         renderList(this.value);

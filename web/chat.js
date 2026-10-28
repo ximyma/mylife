@@ -52,6 +52,14 @@
   }
 
   function buildContext(archiveId, userText, includeRefs) {
+    // 独立使用（没绑定档案）：不编造、不假装有资料
+    if (!archiveId) {
+      return Promise.resolve({
+        system: '你没有绑定任何一本档案。你可以帮用户写作、改稿、构思、整理口述。' +
+          '需要用到具体的人名、时间、事件时，请让用户先把相关段落贴进来；不要自己编。',
+        refs: [],
+      });
+    }
     return API.query('SELECT * FROM archives WHERE id=?', [archiveId]).then(function (rows) {
       var a = rows[0];
       if (!a) return { system: '', refs: [] };
@@ -92,22 +100,29 @@
   /* ---------------- 渲染 ---------------- */
 
   function render(host, archiveId) {
+    archiveId = archiveId ? Number(archiveId) : null;
     cur.archiveId = archiveId;
-    API.query('SELECT * FROM archives WHERE id=?', [archiveId]).then(function (rows) {
-      var a = rows[0];
-      if (!a) throw new Error('找不到这本档案');
+    var ready = archiveId
+      ? API.query('SELECT * FROM archives WHERE id=?', [archiveId]).then(function (rows) {
+          if (!rows[0]) throw new Error('找不到这本档案');
+          return rows[0];
+        })
+      : Promise.resolve(null);
 
-      host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: 'AI 助手' }) +
+    ready.then(function (a) {
+      host.innerHTML = ML.topbar({ back: archiveId ? '#/a/' + archiveId : '#/', title: 'AI 助手' }) +
         '<main class="wrap chat-wrap">' +
         '<section class="chat-hd">' +
-        '<div class="chat-who">和 ' + esc(a.subject_name) + ' 的档案对话</div>' +
+        '<div class="chat-who">' + (a
+          ? ('和 ' + esc(a.subject_name) + ' 的档案对话')
+          : 'AI 写作助手 <small>没绑档案也能用，写完可以插进任何一本</small>') + '</div>' +
         '<div class="chat-roles" id="chatRoles"></div>' +
         '</section>' +
         '<section class="chat-log" id="chatLog"></section>' +
         '<section class="chat-in">' +
         '<div class="chat-priv" id="chatPriv"></div>' +
         '<div class="chat-opt">' +
-        '<label class="chk"><input type="checkbox" id="chatRefs" checked> 带上档案原文做参考</label>' +
+        (a ? '<label class="chk"><input type="checkbox" id="chatRefs" checked> 带上档案原文做参考</label>' : '') +
         '<input class="fi" id="chatExtra" placeholder="附加要求（可选），如：只写 300 字 / 保留方言 / 别用套话">' +
         '</div>' +
         '<textarea class="say mini" id="chatText" rows="2" placeholder="说点什么……（Ctrl+Enter 发送）"></textarea>' +
@@ -307,7 +322,41 @@
 
   /* ---------------- 回复插回档案 ---------------- */
 
+  /** 独立对话时先问「插进哪一本」，不让人自己去找 */
+  function pickArchive(onPick) {
+    DB.listArchives().then(function (list) {
+      var rows = '';
+      for (var i = 0; i < list.length; i++) {
+        rows += '<button class="pick-ch" data-pick-arc="' + list[i].id + '">' +
+          '<b>' + esc(list[i].subject_name || '') + '</b> ' +
+          esc(DB.yearLabel(list[i].birth_year, list[i].death_year)) +
+          ' · ' + (list[i].chapter_count || 0) + ' 章</button>';
+      }
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal pick-modal"><h3>插进哪一本档案</h3>' +
+        '<div class="pick-chs">' + (rows || '<p class="muted">还没有档案，先去首页新建一本。</p>') + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn" data-pa-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', function (ev) {
+        if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pa-cancel]'))) {
+          if (ov.parentNode) document.body.removeChild(ov);
+          return;
+        }
+        var b = ev.target.closest && ev.target.closest('[data-pick-arc]');
+        if (b) {
+          var aid = Number(b.getAttribute('data-pick-arc'));
+          document.body.removeChild(ov);
+          onPick(aid);
+        }
+      });
+    }).catch(fail);
+  }
+
   function insertToArchive(archiveId, text, host) {
+    if (!archiveId) {
+      return pickArchive(function (aid) { insertToArchive(aid, text, host); });
+    }
     var ov = document.createElement('div');
     ov.className = 'ml-modal-ov';
     ov.innerHTML = '<div class="ml-modal ci-modal"><h3>插入前先看一眼</h3>' +

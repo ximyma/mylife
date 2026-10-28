@@ -26,8 +26,11 @@
       if (!a) throw new Error('找不到这本档案');
 
       var opts = '<option value="">整本（前 30 条）</option>';
+      var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
       for (var i = 0; i < chapters.length; i++) {
-        opts += '<option value="' + chapters[i].id + '">' + esc(chapters[i].title || ('第 ' + (i + 1) + ' 章')) + '</option>';
+        opts += '<option value="' + chapters[i].id + '"' +
+          (String(chapters[i].id) === String(preCh) ? ' selected' : '') + '>' +
+          esc(chapters[i].title || ('第 ' + (i + 1) + ' 章')) + '</option>';
       }
       var listHtml = '';
       for (var k = 0; k < scripts.length; k++) {

@@ -190,8 +190,11 @@
       var a = r[0][0], chapters = r[1], comics = r[2];
       if (!a) throw new Error('找不到这本档案');
 
+      var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
       var chOpts = chapters.map(function (c, i) {
-        return '<option value="' + c.id + '">' + esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</option>';
+        return '<option value="' + c.id + '"' +
+          (String(c.id) === String(preCh) ? ' selected' : '') + '>' +
+          esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</option>';
       }).join('');
 
       var hist = comics.map(function (c) {
