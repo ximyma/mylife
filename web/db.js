@@ -315,14 +315,19 @@
           'LEFT JOIN media m ON m.id = e.media_id ' +
           'WHERE e.archive_id=? ORDER BY COALESCE(e.sort_key, e.seq, 0), e.id', [id]),
         API.query('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year, id', [id]),
-        API.query('SELECT * FROM segments WHERE archive_id=? ORDER BY id', [id])
+        API.query('SELECT * FROM segments WHERE archive_id=? ORDER BY id', [id]),
+        // 成片（短片）也在这本档案里：档案页要能直接看到「合成过的片子」
+        API.query('SELECT * FROM media WHERE archive_id=? ORDER BY id DESC', [id])
       ]).then(function (r) {
+        var media = r[5] || [];
         return {
           archive: r[0][0] || null,
           chapters: r[1],
           entries: r[2],
           photos: r[3],
-          segments: r[4]
+          segments: r[4],
+          media: media,
+          movies: media.filter(function (m) { return String(m.kind) === 'movie'; })
         };
       });
     },

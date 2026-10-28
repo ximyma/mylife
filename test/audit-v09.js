@@ -91,6 +91,7 @@ const ck = (n, c, d) => {
     const job = await S.post('/api/jobs/create', {
       type: 'movie',
       payload: {
+        archiveId: aid,
         title: '审计短片',
         frames: [
           { image: 'photo/p1.png', text: '一九五六年国棉三厂招工', sec: 2 },
@@ -116,6 +117,34 @@ const ck = (n, c, d) => {
       fs.existsSync(abs) ? fs.statSync(abs).size : 'missing');
     ck('时长约等于分镜之和', Math.abs(Number(res.seconds) - 4) < 0.6, res.seconds);
     ck('清理了中间碎片', fs.readdirSync(path.dirname(abs)).filter(f => /^seg\d+\.mp4$/.test(f)).length === 0);
+
+    // 成片要作为「档案资产」登记进 media：这样关掉页面、换设备回来还能在档案里找到
+    const mv = await q("SELECT path, bytes, duration_ms, caption FROM media WHERE archive_id=? AND kind='movie'", [aid]);
+    ck('成片登记进档案 media（能找回、随档案备份）',
+      mv.length === 1 && mv[0].path === res.path && Number(mv[0].bytes) > 20000,
+      JSON.stringify(mv).slice(0, 160));
+    ck('登记了时长与标题', Number((mv[0] || {}).duration_ms) > 3000 && !!mv[0].caption,
+      JSON.stringify(mv[0] || {}).slice(0, 120));
+
+    // 同参数再合成一次（缓存命中同一条 path）不能重复登记
+    const jobSame = await S.post('/api/jobs/create', {
+      type: 'movie',
+      payload: {
+        archiveId: aid, title: '审计短片', voice: false, bgm: 'calm',
+        frames: [
+          { image: 'photo/p1.png', text: '一九五六年国棉三厂招工', sec: 2 },
+          { image: null, text: '车间里上百台机器一起响', sec: 2 },
+        ],
+      },
+    }, t);
+    let stS = null;
+    for (let i = 0; i < 180; i++) {
+      await sleep(1000);
+      stS = (await S.post('/api/jobs', { id: jobSame.id }, t)).job;
+      if (stS.status === 'done' || stS.status === 'failed' || stS.status === 'canceled') break;
+    }
+    const mv2 = await q("SELECT id FROM media WHERE archive_id=? AND kind='movie'", [aid]);
+    ck('重复合成不重复登记（同一条成片只有一条记录）', mv2.length === 1, mv2.length);
 
     if (fs.existsSync(abs)) {
       const info = spawnSync(FF, ['-hide_banner', '-i', abs], { encoding: 'utf8' });

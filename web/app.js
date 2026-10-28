@@ -528,7 +528,8 @@
         '<button class="btn tiny" data-aid="' + id + '" data-goto="script">剧本</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="art">插图</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="comic">漫画</button>' +
-        '<button class="btn tiny" data-aid="' + id + '" data-goto="movie">短片</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-goto="movie">短片' +
+        (d.movies && d.movies.length ? ' · ' + d.movies.length : '') + '</button>' +
         (d.chapters.length ? '<button class="btn tiny" data-read-all="1" data-aid="' + id + '">从头朗读</button>' : '') +
         '</div></section>';
 
@@ -598,6 +599,26 @@
           '<button class="btn tiny" data-whole-book="1">看整本</button>' +
           '</div>';
         html += '</section>';
+      }
+
+      /* 合成过的短片：成片是档案资产（存在 media 表里），关掉页面、换设备回来都还在 */
+      if (d.movies && d.movies.length) {
+        html += '<section class="mv-hist" id="archiveMovies"><div class="toc-head">' +
+          '<h2 class="sec-label">合 成 的 片 子</h2>' +
+          '<span class="toc-hint">' + d.movies.length + ' 条 · 点播放看，点「下载」存到手机或电脑</span></div>' +
+          '<div class="mv-hist-list">';
+        for (var mv = 0; mv < d.movies.length; mv++) {
+          var mm = d.movies[mv];
+          var msec = Math.round((Number(mm.duration_ms) || 0) / 1000);
+          html += '<div class="mv-hist-item">' +
+            '<video preload="metadata" playsinline controls src="' + esc(fsrc(mm.path)) + '"></video>' +
+            '<div class="mv-line"><span class="muted">' +
+            (msec ? msec + ' 秒' : '') + (mm.bytes ? ' · ' + bytes(mm.bytes) : '') + '</span>' +
+            '<a class="linkbtn" href="' + esc(fsrc(mm.path)) + '" download>下载</a></div>' +
+            (mm.caption ? '<div class="mv-cap">' + esc(String(mm.caption).slice(0, 40)) + '</div>' : '') +
+            '</div>';
+        }
+        html += '</div></section>';
       }
 
       /* 待归档照片：已经配到段落或已有照片条目的，不再重复列在这里 */

@@ -625,6 +625,8 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .mv-hist-item{flex:0 0 108px}
 .mv-hist-item video{width:108px;height:192px;border-radius:7px;background:#000;object-fit:cover}
 .mv-hist-item .mv-line{margin-top:4px;justify-content:space-between}
+.mv-cap{font-size:11px;color:var(--muted);line-height:1.4;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* 短片表单：别让 .fi 的 width:100% 把整行撑坏 */
 .mv-ck{display:flex;align-items:flex-start;gap:9px;width:100%;font-size:13px;

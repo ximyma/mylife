@@ -392,7 +392,66 @@ function dbForUser(uid) {
     userDbs.delete(oldest);
   }
   userDbs.set(uid, d);
+  // 老版本合成的成片只躺在磁盘上（那时还不登记 media），等于"任务做完就找不到了"。
+  // 这里补登记一次，让以前的片子也能在档案里出现。
+  try { registerOrphanMovies(uid, d); } catch (e) {}
   return d;
+}
+
+/**
+ * 把 ai/movie 下没登记的成片补进 media。
+ * 归属档案怎么判断：① 任务记录里带 archiveId 的用它；② 否则看分镜里那张照片属于哪本档案；
+ * ③ 还判断不出来就只在用户只有一本档案时挂上去——宁可不挂，也不挂错档案。
+ */
+function registerOrphanMovies(uid, d) {
+  const base = path.join(DATA, 'users', String(uid), 'files', 'ai', 'movie');
+  let dirs = [];
+  try { dirs = fs.readdirSync(base); } catch (e) { return; }
+  if (!dirs.length) return;
+
+  let known;
+  try {
+    known = new Set(d.prepare("SELECT path FROM media WHERE kind='movie'").all().map(function (r) { return r.path; }));
+  } catch (e) { return; }
+
+  let onlyArchive = 0;
+  try {
+    const as = d.prepare('SELECT id FROM archives').all();
+    if (as.length === 1) onlyArchive = Number(as[0].id);
+  } catch (e) {}
+
+  for (const name of dirs) {
+    const rel = 'ai/movie/' + name + '/movie.mp4';
+    if (known.has(rel)) continue;
+    const abs = path.join(base, name, 'movie.mp4');
+    let st = null;
+    try { st = fs.statSync(abs); } catch (e) { continue; }
+    if (!st || !st.size) continue;
+
+    let aid = 0, caption = '';
+    try {
+      const job = d.prepare("SELECT payload_json FROM jobs WHERE type='movie' AND result_json LIKE ? ORDER BY id DESC LIMIT 1")
+        .get('%' + rel + '%');
+      const p = (job && job.payload_json) ? (safeJson(job.payload_json) || {}) : {};
+      caption = String(p.title || '');
+      if (Number(p.archiveId)) aid = Number(p.archiveId);
+      else {
+        const fr = (p.frames || []).filter(function (f) { return f && f.image; })[0];
+        if (fr) {
+          const ph = d.prepare('SELECT archive_id FROM photos WHERE path=?').get(String(fr.image));
+          if (ph) aid = Number(ph.archive_id);
+        }
+      }
+    } catch (e) {}
+    if (!aid) aid = onlyArchive;
+    if (!aid) continue;
+
+    try {
+      d.prepare('INSERT INTO media (archive_id, kind, path, mime, bytes, caption) VALUES (?,?,?,?,?,?)')
+        .run(aid, 'movie', rel, 'video/mp4', st.size, caption.slice(0, 120));
+      console.log('  [movie] 补登记成片 ' + rel + ' → 档案 ' + aid);
+    } catch (e) {}
+  }
 }
 
 /** v0.2 → v0.3 迁移：第一个注册的账号继承旧的单用户库（移动，不是复制）。 */
@@ -1728,6 +1787,26 @@ registerJob('movie', async function (p, ctx) {
 
   ctx.progress(0.99, '收尾');
   const bytes = fs.existsSync(outAbs) ? fs.statSync(outAbs).size : 0;
+
+  // 成片登记进这本档案的媒体表：这样关掉页面、换个设备、或者过几天再回来，
+  // 都能在「档案 → 合成过的片子」里找到（成片是档案资产，不是一次性任务产物）。
+  const aid = Number(p.archiveId) || 0;
+  if (aid && bytes > 0) {
+    try {
+      const dup = ctx.db.prepare("SELECT id FROM media WHERE archive_id=? AND kind='movie' AND path=?")
+        .get(aid, outRel);
+      if (dup) {
+        ctx.db.prepare('UPDATE media SET bytes=?, duration_ms=?, caption=? WHERE id=?')
+          .run(bytes, Math.round(totalSec * 1000), String(p.title || '短片').slice(0, 120), dup.id);
+      } else {
+        ctx.db.prepare(
+          'INSERT INTO media (archive_id, kind, path, mime, bytes, caption, duration_ms) VALUES (?,?,?,?,?,?,?)')
+          .run(aid, 'movie', outRel, 'video/mp4', bytes,
+            String(p.title || '短片').slice(0, 120), Math.round(totalSec * 1000));
+      }
+    } catch (e) { /* 登记失败不影响成片：任务结果里仍旧带 path */ }
+  }
+
   return {
     path: outRel,
     seconds: Math.round(totalSec * 10) / 10,
@@ -1735,6 +1814,7 @@ registerJob('movie', async function (p, ctx) {
     frames: frames.length,
     voice: wantVoice,
     bgm: bgmName,
+    archiveId: aid || null,
   };
 });
 

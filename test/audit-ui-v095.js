@@ -282,6 +282,27 @@ async function waitCdp() {
   await page.click('[data-rd-cancel]');
   await sleep(300);
 
+  /* ---------- 11. 成片是档案里的东西（找得回来） ---------- */
+  console.log('[K] 合成过的片子在档案里');
+  // 直接造一条 media 记录（真合成要看 ffmpeg，见 audit-v09），验档案页与短片页都能列出来
+  await x("INSERT INTO media (archive_id, kind, path, mime, bytes, caption, duration_ms) VALUES (?,?,?,?,?,?,?)",
+    [aid, 'movie', 'ai/movie/abcdef0123456789/movie.mp4', 'video/mp4', 3456789, '小时候的院子', 47000]);
+  await page.goto(S.base + '/#/a/' + aid + Q);
+  const mvBtn = await page.js('(function(){var b=document.querySelector(\'[data-goto="movie"]\');return b?b.textContent:""})()');
+  ck('档案首页的「短片」按钮带条数', /短片/.test(String(mvBtn)) && /1/.test(String(mvBtn)), mvBtn);
+  ck('档案首页有「合成的片子」区块', await page.js('!!document.getElementById("archiveMovies")'));
+  ck('片子能直接在档案页播放', await page.js('document.querySelectorAll("#archiveMovies video").length') === 1,
+    await page.js('document.querySelectorAll("#archiveMovies video").length'));
+  ck('片子给了下载入口', await page.js('!!document.querySelector("#archiveMovies a[download]")'));
+  ck('区块里写了时长与大小', /47 秒/.test(String(await page.js('document.getElementById("archiveMovies").textContent'))),
+    String(await page.js('document.getElementById("archiveMovies").textContent')).slice(0, 80));
+
+  await page.goto(S.base + '/#/a/' + aid + '/movie' + Q);
+  await sleep(1200);
+  ck('短片页顶部「合成过的」也列出来', await page.js('document.querySelectorAll("#mvHist .mv-hist-item").length') >= 1,
+    await page.js('document.querySelectorAll("#mvHist .mv-hist-item").length'));
+  ck('短片页说明了成片存哪儿', /存在这本档案|合成过的/.test(String(await page.js('document.querySelector(".wrap").textContent'))));
+
   ck('全程没有 JS 异常', page.errors.length === 0, (page.errors || []).slice(0, 2).join(' | '));
 
   console.log('\nv0.9.5 体验修复：' + pass + ' 通过 / ' + fail + ' 失败');

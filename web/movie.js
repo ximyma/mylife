@@ -59,7 +59,8 @@
       host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: '短片' }) +
         '<main class="wrap">' +
         '<section class="tl-hd"><h1 class="h1">把档案做成竖屏小片</h1>' +
-        '<p class="muted">片长由内容决定，不再卡在一分钟：一段口述可能拆成几格，字幕烧进画面，导出就是竖屏 mp4。</p></section>' +
+        '<p class="muted">片长由内容决定，不再卡在一分钟：一段口述可能拆成几格，字幕烧进画面，导出就是竖屏 mp4。' +
+        '合成好的片子会存进这本档案——档案首页「合成的片子」和本页顶部「合成过的」都能找到。</p></section>' +
 
         (state.ffmpeg ? '' :
           '<p class="tip-warn">这个安装包里没有渲染引擎（ffmpeg），只能排分镜、不能合成。' +
@@ -90,7 +91,7 @@
         });
       };
 
-      showHistory(host.querySelector('#mvHist'));
+      showHistory(host.querySelector('#mvHist'), archiveId);
     }).catch(function (e) {
       host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: '短片' }) +
         '<main class="wrap"><p class="muted">' + esc(e.message || e) + '</p></main>';
@@ -167,6 +168,7 @@
     body.querySelector('#mvGo').onclick = function () {
       if (!state.ffmpeg) { toast('这个包里没有 ffmpeg'); return; }
       var payload = {
+        archiveId: state.archiveId,
         title: plan.title,
         frames: frames.map(function (f) {
           return { image: f.image, text: f.text, sec: Number(f.sec) || 3 };
@@ -215,11 +217,16 @@
               '<div class="art-row"><a class="btn tiny" href="' + esc(fsrc(r2.path)) +
               '" download>下载 mp4</a>' +
               '<button class="btn tiny" id="mvAgain">再合成一次</button></div>' +
+              '<p class="hint dim">成片存在这本档案里：档案首页 →「合成的片子」，或本页顶部「合成过的」。' +
+              '关掉网页、换个设备回来都还在，随档案一起备份。</p>' +
               '</div>';
             prog.querySelector('#mvAgain').onclick = function () {
               prog.innerHTML = '';
               startJob(body, payload);
             };
+            // 刚出来的这条立刻进「合成过的」，不用刷新页面
+            var hist = document.querySelector('#mvHist');
+            if (hist) showHistory(hist, state.archiveId);
             return;
           }
           if (j.status === 'failed' || j.status === 'canceled') {
@@ -242,20 +249,53 @@
     });
   }
 
-  /** 以前合成的片子：从任务记录里捞，不用另建表 */
-  function showHistory(body) {
-    API.job.list().then(function (r) {
-      var items = (r.items || []).filter(function (j) {
-        return j.type === 'movie' && j.status === 'done' && j.result && j.result.path;
-      }).slice(0, 4);
-      if (!items.length) return;
+  /**
+   * 合成过的片子从哪儿来：
+   *   ① 档案的 media 表（v0.9.5 起，成片登记成档案资产，关掉页面、换设备回来都在）；
+   *   ② 老版本合成的只留在任务记录里，按 jobs 兜底补上，别让人以为丢了。
+   */
+  function showHistory(body, archiveId) {
+    Promise.all([
+      API.query("SELECT path, bytes, duration_ms, caption FROM media WHERE archive_id=? AND kind='movie' ORDER BY id DESC", [archiveId])
+        .catch(function () { return []; }),
+      API.job.list().catch(function () { return { items: [] }; }),
+    ]).then(function (r) {
+      var list = [], seen = {}, i;
+      var rows = r[0] || [];
+      for (i = 0; i < rows.length; i++) {
+        seen[rows[i].path] = 1;
+        list.push({
+          path: rows[i].path,
+          seconds: Math.round((Number(rows[i].duration_ms) || 0) / 1000) || '',
+          bytes: rows[i].bytes,
+          caption: rows[i].caption || '',
+        });
+      }
+      var items = (r[1] && r[1].items) || [];
+      for (i = 0; i < items.length; i++) {
+        var j = items[i];
+        if (j.type !== 'movie' || j.status !== 'done' || !j.result || !j.result.path) continue;
+        if (seen[j.result.path]) continue;
+        seen[j.result.path] = 1;
+        list.push({
+          path: j.result.path, seconds: j.result.seconds || '',
+          bytes: j.result.bytes, caption: '早先合成的',
+        });
+      }
+      list = list.slice(0, 12);
+      if (!list.length) return;
 
-      var html = '<section class="mv-hist"><h2 class="sec-label">合 成 过 的</h2><div class="mv-hist-list">';
-      items.forEach(function (j) {
-        html += '<div class="mv-hist-item"><video preload="metadata" src="' + esc(fsrc(j.result.path)) +
-          '" playsinline></video><div class="mv-line"><span class="muted">' +
-          esc(j.result.seconds || '') + ' 秒 · ' + bytes(j.result.bytes) + '</span>' +
-          '<a class="linkbtn" href="' + esc(fsrc(j.result.path)) + '" download>下载</a></div></div>';
+      var html = '<section class="mv-hist"><div class="mv-line" style="justify-content:space-between">' +
+        '<h2 class="sec-label" style="margin:0">合 成 过 的</h2>' +
+        '<span class="muted">存在这本档案里，点下载能存到手机</span></div><div class="mv-hist-list">';
+      list.forEach(function (x) {
+        html += '<div class="mv-hist-item"><video preload="metadata" playsinline controls src="' +
+          esc(fsrc(x.path)) + '"></video><div class="mv-line"><span class="muted">' +
+          esc(x.seconds || '') + (x.seconds ? ' 秒' : '') +
+          (x.bytes ? ' · ' + bytes(x.bytes) : '') + '</span>' +
+          '<a class="linkbtn" href="' + esc(fsrc(x.path)) + '" download>下载</a></div>' +
+          (x.caption ? '<div class="mv-cap">' + esc(String(x.caption).slice(0, 40)) + '</div>' : '') +
+          '</div>';
       });
       html += '</div></section>';
       body.innerHTML = html;
