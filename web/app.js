@@ -753,6 +753,28 @@
         html += '</div></section>';
       }
 
+      /* 聊天里「演奏出来」的歌：没有画面，按曲目排一列 */
+      var songs = d.songs || [];
+      if (songs.length) {
+        html += '<section class="mv-hist song-hist" id="archiveSongs"><div class="toc-head">' +
+          '<h2 class="sec-label">写 的 歌</h2>' +
+          '<span class="toc-hint">' + songs.length + ' 首 · 点播放听，「下载」存到手机，「删除」不要了</span></div>' +
+          '<div class="song-list">';
+        for (var sg = 0; sg < songs.length; sg++) {
+          var ss = songs[sg];
+          var ssec = Math.round((Number(ss.duration_ms) || 0) / 1000);
+          html += '<div class="song-item">' +
+            '<div class="song-t">' + esc(String(ss.caption || 'AI 写的歌').slice(0, 40)) + '</div>' +
+            '<audio preload="metadata" controls src="' + esc(fsrc(ss.path)) + '"></audio>' +
+            '<div class="mv-line"><span class="muted">' +
+            (ssec ? ssec + ' 秒' : '') + (ss.bytes ? (ssec ? ' · ' : '') + bytes(ss.bytes) : '') +
+            '</span><a class="linkbtn" href="' + esc(fsrc(ss.path)) + '" download>下载</a>' +
+            '<button class="linkbtn danger-t" data-mv-del="' + Number(ss.id) + '">删除</button></div>' +
+            '</div>';
+        }
+        html += '</div></section>';
+      }
+
       /* 待归档照片：已经配到段落或已有照片条目的，不再重复列在这里 */
       var usedPhotoIds = {};
       for (var up = 0; up < d.entries.length; up++) {
@@ -2428,7 +2450,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.10';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.12';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」

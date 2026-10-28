@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.11';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.12';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1654,6 +1654,92 @@ function assEsc(s) {
     .replace(/\{/g, '（').replace(/\}/g, '）');
 }
 
+/* ---------------- 把一首歌真的「演奏」出来 ----------------
+ *
+ * 写歌档过去只出歌词：用户得自己拿去别的工具里唱。这里补上后半截——
+ * ① 用模型合成人声（沿用 /api/tts 的缓存，同一段词不重复付费）
+ * ② 用 synthBgm 算一段同长度、同风格的伴奏
+ * ③ ffmpeg 混成一条 mp3，能听、能下载、能存进档案
+ * 没人声时（没配朗读模型 / 用户只想听曲）只出纯伴奏，照样能用。
+ */
+async function apiSongMake(body) {
+  const lyrics = String(body.lyrics || '').trim();
+  if (!lyrics) return { ok: false, message: '没有歌词' };
+  if (lyrics.length > 2000) return { ok: false, message: '歌词一次最多 2000 字' };
+
+  const style = String(body.style || 'calm');
+  if (!BGM_PROG[style]) return { ok: false, message: '没有这种曲风' };
+  const wantVoice = body.voice !== false;
+
+  const bin = ffmpegPath();
+  const key = crypto.createHash('sha1')
+    .update([lyrics, style, wantVoice ? 'v' : 'i'].join('|')).digest('hex').slice(0, 16);
+  const dirAbs = path.join(ctxFiles(), 'ai', 'song', key);
+  const outRel = path.posix.join('ai/song', key, 'song.mp3');
+  fs.mkdirSync(dirAbs, { recursive: true });
+
+  // 已经演过的版本直接给（没有 lyric 缓存表里那种跨 lip 的复用，靠路径存在与否判断）
+  if (fs.existsSync(path.join(dirAbs, 'song.mp3'))) {
+    const st = fs.statSync(path.join(dirAbs, 'song.mp3'));
+    return { ok: true, path: outRel, bytes: st.size, seconds: mediaSeconds(bin, path.join(dirAbs, 'song.mp3')), cached: true };
+  }
+
+  // ① 人声
+  let voiceAbs = '', voiceSec = 0, voiceNote = '';
+  if (wantVoice) {
+    const r = await apiTts({ text: lyrics, profileId: body.profileId, model: body.model, speed: body.speed });
+    if (r && r.ok && r.path) {
+      voiceAbs = path.join(ctxFiles(), r.path);
+      voiceSec = mediaSeconds(bin, voiceAbs);
+    } else {
+      voiceNote = (r && r.message) || '没合成出人声，这版只有伴奏';
+    }
+  }
+
+  // ② 伴奏：有人声就跟人声同长；没有就按字数估（约 6 字/秒，唱总比念慢）
+  const estSec = voiceSec || Math.max(6, lyrics.replace(/\s/g, '').length / 6);
+  const bgmAbs = path.join(dirAbs, 'bgm.wav');
+  const bgmWav = synthBgm(style, estSec, bgmAbs);
+  if (!bgmWav) return { ok: false, message: '伴奏没算出来' };
+
+  // ③ 混音：有人声时伴奏压低做人声的垫子，纯伴奏则保持原音量
+  const total = estSec + 2.0;
+  const args = ['-hide_banner', '-loglevel', 'error', '-i', 'bgm.wav'];
+  let fc, mapA;
+  if (voiceAbs) {
+    args.push('-i', voiceAbs);
+    fc = '[0:a]volume=' + (wantVoice ? 0.5 : 1.0) +
+      ',afade=t=in:st=0:d=1.2,afade=t=out:st=' + (Math.max(0, total - 3)).toFixed(2) + ':d=2.6[bg];' +
+      '[1:a]volume=1.9[va];[va][bg]amix=inputs=2:duration=first:dropout_transition=0,' +
+      'alimiter=limit=0.94[a]';
+    mapA = '[a]';
+  } else {
+    fc = '[0:a]volume=0.9,afade=t=in:st=0:d=1.2,' +
+      'afade=t=out:st=' + (Math.max(0, total - 3)).toFixed(2) + ':d=2.6[a]';
+    mapA = '[a]';
+  }
+  args.push('-filter_complex', fc, '-map', mapA,
+    '-c:a', 'libmp3lame', '-b:a', '160k', '-ar', '44100', '-ac', '2', '-t', String(total.toFixed(2)),
+    '-y', 'song.mp3');
+
+  try {
+    await runFfmpeg(bin, args, { cwd: dirAbs, what: '演奏这首歌', timeout: 180000 });
+  } catch (e) {
+    return { ok: false, message: '混音失败：' + ((e && e.message) || e) };
+  }
+  try { fs.unlinkSync(bgmAbs); } catch (e) {}
+
+  const outAbs = path.join(dirAbs, 'song.mp3');
+  if (!fs.existsSync(outAbs)) return { ok: false, message: '没出成品' };
+  const st = fs.statSync(outAbs);
+  return {
+    ok: true, path: outRel, bytes: st.size,
+    seconds: Math.round(mediaSeconds(bin, outAbs) * 10) / 10,
+    voice: !!voiceAbs, voiceNote: voiceNote, style: style,
+  };
+}
+
+
 /**
  * 字幕样式分两类：
  *   ① 有图的格子 —— 底部字幕，半透明黑底框（BorderStyle=3），字号 62
@@ -2872,6 +2958,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/file') out = apiFile(body);
           else if (pathname === '/api/asr') out = await apiAsr(body);
           else if (pathname === '/api/tts') out = await apiTts(body);
+          else if (pathname === '/api/song/make') out = await apiSongMake(body);
           else if (pathname === '/api/image') out = await apiImage(body);
           else if (pathname === '/api/render/probe') out = apiRenderProbe();
           else if (pathname === '/api/movie/plan') out = apiMoviePlan(body);

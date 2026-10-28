@@ -222,6 +222,11 @@
       return post('/api/tts', opts || {}, 120000);
     },
 
+    /** 把歌词真的演奏出来：{lyrics, style, voice, profileId?} -> {ok, path, seconds, voice} */
+    songMake: function (opts) {
+      return post('/api/song/make', opts || {}, 300000);
+    },
+
     /** 语音转文字：opts { path, profileId?, model?, language? }，长音频要等，超时放宽 */
     asr: function (opts) {
       return post('/api/asr', opts || {}, 200000);

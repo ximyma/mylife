@@ -343,7 +343,9 @@
           media: media,
           movies: media.filter(function (m) { return String(m.kind) === 'movie'; }),
           // AI 直接生成的片子（聊天里选的视频模型）：同一个展示区，来源不同
-          videos: media.filter(function (m) { return String(m.kind) === 'video'; })
+          videos: media.filter(function (m) { return String(m.kind) === 'video'; }),
+          // 聊天里「演奏出来」的歌：只有声音，没有画面
+          songs: media.filter(function (m) { return String(m.kind) === 'audio'; })
         };
       });
     },
