@@ -536,9 +536,12 @@
           // "Model does not exist"（v0.3.4 实测），所以排到最后。
           asr: ['FunAudioLLM/SenseVoiceSmall', 'TeleAI/TeleSpeechASR',
                 'whisper-large-v3-turbo', 'whisper-large-v3', 'glm-asr-2512',
-                'Qwen/Qwen3-ASR-1.7B']
+                'Qwen/Qwen3-ASR-1.7B'],
+          // 图片生成：硅基流动免费款 Kolors。加好配置、拉到模型后自动绑上，
+          // 免得「图片生成」停在「默认 / 按规则」，回退到文本默认模型去调图像接口被 403。
+          img: ['Kwai-Kolors/Kolors']
         };
-        var KIND = { title: 'text', vision: 'vision', asr: 'asr' };
+        var KIND = { title: 'text', vision: 'vision', asr: 'asr', img: 't2i' };
         var done = [];
 
         return self.getSlots().then(function (slots) {

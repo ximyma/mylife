@@ -1520,7 +1520,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.0';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.1';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」

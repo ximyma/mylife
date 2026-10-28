@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.0';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.1';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1133,6 +1133,22 @@ function imgKey(prompt, model, size) {
   return crypto.createHash('sha1').update([prompt, model, size].join('|')).digest('hex').slice(0, 20);
 }
 
+/** 是不是文生图模型：与 web/db.js 的 modelKind（t2i 一类）保持一致 */
+function isImageModel(model) {
+  const s = String(model || '').toLowerCase();
+  return /kolors|flux|cogview|qwen-image|z-image|stable-diffusion|sdxl|dall|imagen|seedream|janus|playground|ideogram|aura|sd3|dream/i.test(s);
+}
+
+/** 把供应商返回的报错整理成可读文字，避免原始 body 在某些构建里出现 [object Object] 之类乱码 */
+function describeErr(r) {
+  const j = r && r.json;
+  if (j && typeof j === 'object') {
+    if (j.message) return '(' + (j.code != null ? j.code + ' ' : '') + j.message + ')';
+    try { return JSON.stringify(j); } catch (e) {}
+  }
+  return String((r && r.text) || '').slice(0, 150);
+}
+
 /**
  * 生成一张插图。供应商走 OpenAI 兼容的 /images/generations。
  * 硅基流动返回的是临时 URL（会过期），所以必须当场下载落盘，不能只存链接。
@@ -1157,7 +1173,13 @@ async function apiImage(body) {
   const errors = [];
 
   for (const cand of chain.slice(0, 2)) {
-    const model = cand.model || 'Kwai-Kolors/Kolors';
+    // 图片模型必须真的是文生图模型。slot 走「默认 / 按规则」回退时，拿到的往往是该配置的
+    // 文本默认模型（如 Qwen3-8B）；拿文本模型去调 /images/generations，硅基流动会判成
+    // 非法操作，返回 403 code 30000 Illegal operation。所以这里强制：用户没显式指定模型时，
+    // 只用图像模型，否则一律回退到免费的 Kwai-Kolors/Kolors。
+    const model = body.model
+      ? String(body.model)
+      : (cand.model && isImageModel(cand.model) ? cand.model : 'Kwai-Kolors/Kolors');
     const key = imgKey(prompt, model, size);
 
     try {
@@ -1183,7 +1205,7 @@ async function apiImage(body) {
       }, 180000);
 
       if (!r.ok) {
-        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + String(r.text).slice(0, 150));
+        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + describeErr(r));
         continue;
       }
       const j = r.json || {};
@@ -1220,7 +1242,11 @@ async function apiImage(body) {
     }
   }
 
-  return { ok: false, message: '没画出来：' + errors.join('；') };
+  return {
+    ok: false,
+    message: '没画出来：' + errors.join('；') +
+      '。请到「设置 → 模型来源」把「图片生成」这一环选成硅基流动免费档，模型填 Kwai-Kolors/Kolors，并填好 API Key。',
+  };
 }
 
 /* ---------------- 媒体渲染：ffmpeg 探测 ---------------- */
