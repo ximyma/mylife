@@ -728,7 +728,7 @@
      * 存文件 -> 记 media -> 建一个 kind='media' 的条目排在卷宗里。
      * chapterId 为 null 时先进「待归档」，下次生成会尝试归位。
      */
-    addMediaEntry: function (archiveId, chapterId, kind, base64, mime, caption, ext) {
+    addMediaEntry: function (archiveId, chapterId, kind, base64, mime, caption, ext, afterId) {
       if (!base64) return Promise.reject(new Error('没有收到内容'));
       var raw = String(base64);
       var comma = raw.indexOf(',');
@@ -741,7 +741,12 @@
           [archiveId, kind, saved.path, mime || null, saved.bytes || null, caption || null]
         ).then(function (mr) {
           var mid = mr.lastId;
-          // 排到该章最后；没章就归待归档
+          // 点哪一段就在它的正后方插入（人的预期）；没有锚点才排到章末
+          if (afterId) {
+            return DB.insertAfter(archiveId, {
+              afterId: afterId, chapterId: chapterId, kind: 'media', mediaId: mid, text: caption || '',
+            });
+          }
           var seqQ = chapterId
             ? API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE chapter_id=?', [chapterId])
             : Promise.resolve([{ s: 10 }]);
@@ -1330,6 +1335,41 @@
           var k = Number(kk[0].k || 0) + 10;
           return API.exec('UPDATE entries SET chapter_id=?, sort_key=? WHERE id=?', [cid, k, entryId])
             .then(function () { return { ok: true }; });
+        });
+      });
+    },
+
+    /**
+     * 在指定位置插入一条（人类用法：正文里点「＋」，就在那儿出现，不再统一甩到章末）。
+     * o: { afterId | chapterId, kind: 'text'|'quote'|'photo'|'media', text, photoId, mediaId }
+     * afterId 有值 → 插在那条正后面（同章、sort_key 取中点）；
+     * afterId 为空 → 放进 chapterId 这一章的末尾（章节为空也能插）。
+     */
+    insertAfter: function (archiveId, o) {
+      o = o || {};
+      var kind = o.kind || 'text';
+      function loc() {
+        if (o.afterId) {
+          return API.query('SELECT chapter_id, sort_key, seq FROM entries WHERE id=?', [o.afterId]).then(function (r) {
+            if (!r.length) return { ch: o.chapterId || null, k: 0 };
+            return { ch: r[0].chapter_id, k: Number(r[0].sort_key || r[0].seq || 0) + 0.5 };
+          });
+        }
+        var ch = o.chapterId || null;
+        var q = ch
+          ? API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE archive_id=? AND chapter_id=?', [archiveId, ch])
+          : API.query('SELECT COALESCE(MAX(sort_key),0) k FROM entries WHERE archive_id=? AND chapter_id IS NULL', [archiveId]);
+        return q.then(function (r) { return { ch: ch, k: Number(r[0].k || 0) + 10 }; });
+      }
+      return loc().then(function (L) {
+        return API.exec(
+          'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,photo_id,media_id,origin,edited,sort_key) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          [archiveId, L.ch, Math.round(L.k), kind, o.text || '', o.photoId || null, o.mediaId || null, 'user', 1, L.k]
+        ).then(function (r) {
+          if (kind === 'photo' && o.photoId) {
+            return API.exec('UPDATE photos SET chapter_id=? WHERE id=?', [L.ch, o.photoId]).then(function () { return r; });
+          }
+          return r;
         });
       });
     },

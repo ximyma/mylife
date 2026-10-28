@@ -582,17 +582,22 @@
           (a.birth_year && c.year_from ? ' · ' + (c.year_from - a.birth_year) + ' 岁' : '') + '</div>';
         if (c.quote) html += '<blockquote class="ch-quote">“' + esc(c.quote) + '”</blockquote>';
 
-        if (!entries.length) html += '<p class="muted">这一章还是空的。</p>';
+        if (!entries.length) html += '<p class="muted">这一章还是空的。</p>' + insPoint('', c.id);
         for (var ei = 0; ei < entries.length; ei++) {
           html += renderEntry(entries[ei]);
+          html += insPoint(entries[ei].id, c.id);
         }
         html += '</section>';
       }
 
       /* 手写补充 */
       if (orphans.length) {
-        html += '<section class="chapter"><h2 class="ch-title"><span class="ch-name">待归档</span></h2>';
-        for (var oi = 0; oi < orphans.length; oi++) html += renderEntry(orphans[oi]);
+        html += '<section class="chapter"><h2 class="ch-title"><span class="ch-name">待归档</span>' +
+          '<small class="ch-hint">给这些段落点「归章」，或直接上移到某一章</small></h2>';
+        for (var oi = 0; oi < orphans.length; oi++) {
+          html += renderEntry(orphans[oi]);
+          html += insPoint(orphans[oi].id, '');
+        }
         html += '</section>';
       }
 
@@ -603,18 +608,24 @@
       }
       var pending = [];
       for (var pp = 0; pp < d.photos.length; pp++) {
-        if (!d.photos[pp].chapter_id && !usedPhotoIds[d.photos[pp].id]) pending.push(d.photos[pp]);
+        // 只要还没被任何条目引用，就列出来让人能放进去（哪怕它身上有旧的章节号）
+        if (!usedPhotoIds[d.photos[pp].id]) pending.push(d.photos[pp]);
       }
       if (pending.length) {
-        html += '<section class="pending"><h2>还有 ' + pending.length +
-          ' 张照片没找到位置 <small>不是丢了，是不硬塞</small></h2><div class="pending-grid">';
+        html += '<section class="pending"><h2>这 ' + pending.length +
+          ' 张照片还没放进正文 <small>点「放进某章」，或往上翻在正文里点「＋」插到任意位置</small></h2>' +
+          '<div class="pending-grid">';
         for (var pg = 0; pg < pending.length; pg++) {
           var ph = pending[pg];
           html += '<figure class="ph small"><img src="' + esc(fsrc(ph.path)) + '" alt="" loading="lazy">' +
-            '<figcaption><span class="ph-meta">' + esc(ph.taken_year) + ' · ' + esc(ph.place) + '</span>' +
-            '<span class="ph-event">' + esc(ph.event) + '</span>' +
-            '<span class="ph-why">' + esc(ph.match_reason || '时间地点对不上') + '</span>' +
-            '</figcaption></figure>';
+            '<figcaption><span class="ph-meta">' + esc(ph.taken_year || '') + ' · ' + esc(ph.place || '') + '</span>' +
+            '<span class="ph-event">' + esc(ph.event || '') + '</span>' +
+            '</figcaption>' +
+            '<div class="ph-acts">' +
+            '<button class="btn tiny" data-ph-place="' + ph.id + '">放进某章</button>' +
+            '<button class="btn tiny" data-ph-cover="' + ph.id + '">设为封面</button>' +
+            '<button class="btn tiny danger" data-ph-del="' + ph.id + '">删</button>' +
+            '</div></figure>';
         }
         html += '</div></section>';
       }
@@ -685,7 +696,7 @@
       }
       if ((b = t.closest('[data-entry-upload]'))) {
         var ch = b.getAttribute('data-ch');
-        uploadToEntry(id, ch ? Number(ch) : null, route);
+        uploadToEntry(id, ch ? Number(ch) : null, route, Number(b.getAttribute('data-entry-upload')));
         return;
       }
       if ((b = t.closest('[data-move-entry]'))) {
@@ -754,6 +765,30 @@
         });
         return;
       }
+      if ((b = t.closest('[data-ins-after]'))) {
+        openInsertMenu(id, b.getAttribute('data-ins-after') || '', b.getAttribute('data-ins-ch') || '');
+        return;
+      }
+      if ((b = t.closest('[data-ph-place]'))) {
+        var phId = Number(b.getAttribute('data-ph-place'));
+        openChapterPicker(id, function (chId) {
+          if (!chId) return toast('请选一章');
+          DB.insertAfter(id, { chapterId: chId, kind: 'photo', photoId: phId })
+            .then(function () { toast('放进去了'); route(); }).catch(fail);
+        });
+        return;
+      }
+      if ((b = t.closest('[data-ph-cover]'))) {
+        var cvId = Number(b.getAttribute('data-ph-cover'));
+        DB.setCoverPhoto(id, cvId).then(function () { toast('封面换好了'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ph-del]'))) {
+        var dph = Number(b.getAttribute('data-ph-del'));
+        if (!confirm('删掉这张照片？文件也会一起删。')) return;
+        DB.deletePhotoSafe(dph).then(function () { toast('删了'); route(); }).catch(fail);
+        return;
+      }
       if ((b = t.closest('[data-ch-edit]'))) {
         var chid = Number(b.getAttribute('data-ch-edit'));
         var el = document.querySelector('[data-ch-title="' + chid + '"]');
@@ -774,7 +809,7 @@
    * 「传」的公共流程：选图片/视频/录音 → 存盘 → 记 media → 插一条媒体条目。
    * 图片压到 1600px 再存，视频录音原样收（上限 80MB）。
    */
-  function uploadToEntry(aid, chapterId, done) {
+  function uploadToEntry(aid, chapterId, done, afterId) {
     var inp = document.createElement('input');
     inp.type = 'file';
     inp.accept = 'image/*,video/*,audio/*';
@@ -788,7 +823,7 @@
 
       if (kind === 'photo') {
         compress(f, function (dataUrl) {
-          DB.addMediaEntry(aid, chapterId, 'photo', dataUrl, 'image/jpeg', f.name, 'jpg')
+          DB.addMediaEntry(aid, chapterId, 'photo', dataUrl, 'image/jpeg', f.name, 'jpg', afterId)
             .then(function () { toast('传好了'); done(); }).catch(fail);
         });
         return;
@@ -797,7 +832,7 @@
       var reader = new FileReader();
       reader.onload = function () {
         var ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'bin';
-        DB.addMediaEntry(aid, chapterId, kind, String(reader.result), f.type, f.name, ext)
+        DB.addMediaEntry(aid, chapterId, kind, String(reader.result), f.type, f.name, ext, afterId)
           .then(function () { toast('传好了，正在排进档案'); done(); }).catch(fail);
       };
       reader.readAsDataURL(f);
@@ -939,6 +974,106 @@
           }
         });
       }).catch(fail);
+  }
+
+  /** 段落之间的「＋ 在这里插入」——点了就在这个位置加，不用去猜别的入口 */
+  function insPoint(afterId, chapterId) {
+    return '<div class="ins"><button class="ins-btn" data-ins-after="' + (afterId || '') +
+      '" data-ins-ch="' + (chapterId || '') + '">＋ 在这里插入</button></div>';
+  }
+
+  /** 插入菜单：插照片 / 写一段 */
+  function openInsertMenu(aid, afterId, chapterId) {
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal"><h3>在这里插入</h3>' +
+      '<div class="ins-menu">' +
+      '<button class="ins-choice" data-ins-kind="photo">🖼 插一张照片</button>' +
+      '<button class="ins-choice" data-ins-kind="text">✍ 写一段话</button>' +
+      '</div>' +
+      '<div class="ml-modal-acts"><button class="btn" data-ins-cancel="1">取消</button></div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-ins-cancel]'))) {
+        document.body.removeChild(ov); return;
+      }
+      var b = ev.target.closest && ev.target.closest('[data-ins-kind]');
+      if (!b) return;
+      var kind = b.getAttribute('data-ins-kind');
+      document.body.removeChild(ov);
+      if (kind === 'photo') {
+        openInsertPhoto(aid, afterId || null, chapterId || null);
+      } else {
+        openTextPrompt('写一段话', '想到什么写什么，写错了随时能改', function (text) {
+          DB.insertAfter(aid, { afterId: afterId || null, chapterId: chapterId || null, kind: 'text', text: text })
+            .then(function () { toast('写好了'); route(); }).catch(fail);
+        });
+      }
+    });
+  }
+
+  /** 插照片：列出还没放进正文的照片；没有就直接传一张新的 */
+  function openInsertPhoto(aid, afterId, chapterId) {
+    var sql = 'SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ' +
+      'AND id NOT IN (SELECT photo_id FROM entries WHERE archive_id=? AND photo_id IS NOT NULL) ' +
+      'ORDER BY taken_year, id';
+    API.query(sql, [aid, aid]).then(function (photos) {
+      var grid = '', i;
+      for (i = 0; i < photos.length; i++) {
+        var p = photos[i];
+        grid += '<button class="pick-ph" data-pick-ph="' + p.id + '">' +
+          '<img src="' + esc(fsrc(p.path)) + '" alt="">' +
+          '<span>' + esc(p.taken_year || '') + (p.place ? ' · ' + esc(p.place) : '') + '</span></button>';
+      }
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选一张还没放进正文的照片</h3>' +
+        '<div class="pick-grid">' + (grid || '<p class="muted">没有待放的照片了，可以点下面上传一张新的</p>') + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn" data-pick-upload="1">上传新照片</button>' +
+        '<button class="btn" data-pick-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', function (ev) {
+        if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-cancel]'))) {
+          document.body.removeChild(ov); return;
+        }
+        if (ev.target.closest && ev.target.closest('[data-pick-upload]')) {
+          document.body.removeChild(ov);
+          uploadToEntry(aid, chapterId, route, afterId);
+          return;
+        }
+        var pb = ev.target.closest && ev.target.closest('[data-pick-ph]');
+        if (pb) {
+          var pid = Number(pb.getAttribute('data-pick-ph'));
+          document.body.removeChild(ov);
+          DB.insertAfter(aid, { afterId: afterId, chapterId: chapterId, kind: 'photo', photoId: pid })
+            .then(function () { toast('插好了'); route(); }).catch(fail);
+        }
+      });
+    }).catch(fail);
+  }
+
+  /** 简单的多行输入弹窗 */
+  function openTextPrompt(title, placeholder, onOk) {
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal"><h3>' + esc(title) + '</h3>' +
+      '<textarea id="insTextArea" placeholder="' + esc(placeholder) + '" ' +
+      'style="width:100%;min-height:130px;box-sizing:border-box;font-family:inherit;font-size:15px;padding:10px"></textarea>' +
+      '<div class="ml-modal-acts"><button class="btn primary" data-txt-ok="1">保存</button>' +
+      '<button class="btn" data-txt-cancel="1">取消</button></div></div>';
+    document.body.appendChild(ov);
+    var ta = document.getElementById('insTextArea');
+    if (ta) ta.focus();
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-txt-cancel]'))) {
+        document.body.removeChild(ov); return;
+      }
+      if (ev.target.closest && ev.target.closest('[data-txt-ok]')) {
+        var v = ta ? String(ta.value || '').trim() : '';
+        document.body.removeChild(ov);
+        if (v) onOk(v);
+      }
+    });
   }
 
   /** 刷新底部批量条：选中数量 + 是否显示 */
