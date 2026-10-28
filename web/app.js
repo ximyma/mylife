@@ -529,6 +529,7 @@
       '<p class="imp-stat">' + st.paragraphs + ' 段 · ' + st.words + ' 字 · ' + st.photos + ' 张图片' +
       (r.archive && r.archive.archive_no ? ' · 文档里的编号 ' + esc(r.archive.archive_no) : '') + '</p>' +
       warn +
+      '<p class="hint dim">Word 里只有文字和图片，录音、视频这类带不进来。</p>' +
       '<div class="imp-list">' + listHtml + '</div>' +
       '<div class="ml-modal-acts"><button class="btn" data-imp="cancel">取消</button>' +
       '<button class="btn primary" data-imp="go">导入成档案</button></div>' +
@@ -569,7 +570,8 @@
       '<p class="hint dim">上次导入没问你，结果多出一本一模一样的。这次你想怎么办：</p>' +
       '<button class="ex-card" data-im="replace"><b>覆盖现在这一本</b>' +
       '<small>先清掉它现有的 ' + (hit.chapter_count || 0) + ' 章、' + (hit.entry_count || 0) +
-      ' 条内容、' + (hit.photo_count || 0) + ' 张照片，再按文件重建；编号和名字都不变</small></button>' +
+      ' 条内容、' + (hit.photo_count || 0) + ' 张照片（文件也删），再按文件重建；' +
+      '编号和名字都不变。文件里没有的东西（录音、原图、手排的顺序）不会留下。</small></button>' +
       '<button class="ex-card" data-im="copy"><b>当成另一本存进来</b>' +
       '<small>名字自动加「（副本）」，编号重新分配，原来那本一点都不动</small></button>' +
       '<div class="ml-modal-acts"><button class="btn" data-im="cancel">算了，不导了</button></div></div>';
