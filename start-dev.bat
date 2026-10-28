@@ -21,8 +21,17 @@ set "NODE_MAJOR="
 for /f "delims=" %%V in ('"%NODE_EXE%" -v') do set "NODE_VER=%%V"
 if defined NODE_VER for /f "tokens=1 delims=." %%A in ("!NODE_VER:~1!") do set "NODE_MAJOR=%%A"
 echo  Node.js : !NODE_VER!   [!NODE_EXE!]
-if not defined NODE_MAJOR goto :portscan
+if not defined NODE_MAJOR goto :datadir
 if !NODE_MAJOR! LSS 22 echo  [WARN] Node 22.5 or newer is required. If it crashes, upgrade Node first.
+
+:datadir
+rem Keep using the SAME data folder as the packaged exe: dist\data
+rem Override with: set MYLIFE_DATA=<folder> before running this file
+set "DATA_DIR="
+if defined MYLIFE_DATA set "DATA_DIR=%MYLIFE_DATA%"
+if not defined DATA_DIR if exist "%CD%\dist\data\auth.db" set "DATA_DIR=%CD%\dist\data"
+if not defined DATA_DIR set "DATA_DIR=%CD%\data"
+if not exist "%DATA_DIR%\auth.db" goto :nodata
 
 :portscan
 set "BASE=4321"
@@ -42,20 +51,18 @@ exit /b 1
 
 :gotport
 if "!OFF!"=="0" goto :backup
-echo  [WARN] Port 4321 is busy - another window may still be running.
+echo  [WARN] Port 4321 is busy - another instance (maybe the exe) is running.
+echo         If it uses the same data folder, close it first to avoid db locks.
 echo         This test will listen on !P! instead.
 echo.
 
 :backup
 if not "!OFF!"=="0" goto :info
-if not exist "data\backup" mkdir "data\backup"
-if exist "data\users\1\archive.db" (
-  powershell -NoProfile -Command "$d=Get-Date -Format 'yyyyMMdd-HHmmss'; Copy-Item -LiteralPath 'data\users\1\archive.db' -Destination ('data\backup\archive-'+$d+'.db') -Force; Get-ChildItem -LiteralPath 'data\backup' -Filter 'archive-*.db' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 | Remove-Item -Force" >nul 2>nul
-  echo  Backup  : data\backup\  (newest 20 snapshots kept)
-)
+powershell -NoProfile -Command "$d=Get-Date -Format 'yyyyMMdd-HHmmss'; $bk=Join-Path 'data\backup' $d; New-Item -ItemType Directory -Force -Path $bk | Out-Null; Copy-Item '%DATA_DIR%\auth.db' $bk -Force -ErrorAction SilentlyContinue; $us=Join-Path '%DATA_DIR%' 'users'; if (Test-Path $us) { Get-ChildItem $us -Directory | ForEach-Object { $f=Join-Path $_.FullName 'archive.db'; if (Test-Path $f) { $t=Join-Path $bk ('users\'+$_.Name); New-Item -ItemType Directory -Force -Path $t | Out-Null; Copy-Item $f $t -Force } } }; Write-Output ('  Backup  : ' + $bk); Get-ChildItem 'data\backup' -Directory | Sort-Object Name -Descending | Select-Object -Skip 10 | Remove-Item -Recurse -Force" 2>nul
 
 :info
-echo  Data    : %CD%\data
+echo  Data    : !DATA_DIR!
+echo  Accounts: same as before (auth.db is never rewritten by this script)
 echo  URL     : http://127.0.0.1:!P!
 echo  Stop    : press Ctrl+C in this window
 echo.
@@ -72,6 +79,15 @@ echo  Server stopped.
 echo.
 pause
 exit /b 0
+
+:nodata
+echo  [ERROR] auth.db not found in:
+echo          %CD%\dist\data
+echo          %CD%\data
+echo          Set MYLIFE_DATA=folder to point at an existing data folder.
+echo.
+pause
+exit /b 1
 
 :nonode
 echo  [ERROR] Node.js 22.5 or newer not found.
