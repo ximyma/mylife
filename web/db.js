@@ -858,10 +858,11 @@
     updatePhoto: function (id, f) {
       if (!f.year) return Promise.reject(new Error('这张是哪一年的？'));
       if (!f.place) return Promise.reject(new Error('这张照片是在哪儿拍的？'));
+      // photos 表没有 note 列（v0.9.11 之前这里凭空写了 note=?，保存必炸）
       return API.exec(
-        'UPDATE photos SET taken_year=?, place=?, event=?, note=? WHERE id=?',
+        'UPDATE photos SET taken_year=?, place=?, event=? WHERE id=?',
         [parseInt(f.year, 10), String(f.place).trim(),
-         String(f.event || '').trim(), String(f.note || '').trim(), id]);
+         String(f.event || '').trim(), id]);
     },
 
     deletePhoto: function (id) {
