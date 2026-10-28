@@ -1,5 +1,5 @@
 /**
- * AI 助手七档模式 + 选章节 —— 端到端审计（真点、真切档）。
+ * AI 助手八档模式 + 选章节 —— 端到端审计（真点、真切档）。
  *
  * 用户的诉求：①关联档案原文太多，想按章节选着发；②模式太少，
  * 要能提字(OCR)、声音转文字、念稿(TTS)、写歌。
@@ -132,11 +132,11 @@ async function waitCdp() {
   await page.goto(S.base + '/#/a/' + aid + '/chat' + Q);
   await sleep(1400);
 
-  /* ---------- A. 七档 ---------- */
+  /* ---------- A. 八档 ---------- */
   console.log('[A] 七个档');
   const tabs = await page.js('(function(){var bs=document.querySelectorAll("[data-cm-mode]");var a=[];for(var i=0;i<bs.length;i++)a.push(bs[i].textContent);return a.join("|")})()');
-  ck('七档：聊天/画图/视频/提字/转文字/念稿/写歌',
-    tabs === '聊天|画图|视频|提字|转文字|念稿|写歌', tabs);
+  ck('八档：聊天/画图/视频/提字/转文字/念稿/写歌/作曲',
+    tabs === '聊天|画图|视频|提字|转文字|念稿|写歌|作曲', tabs);
 
   await page.click('[data-cm-mode="tts"]');
   await sleep(300);
@@ -159,6 +159,20 @@ async function waitCdp() {
   await sleep(300);
   const phSong = await page.js('document.getElementById("chatText").getAttribute("placeholder")');
   ck('写歌档提示选章节取材', phSong.indexOf('章节') >= 0, phSong);
+
+  await page.click('[data-cm-mode="music"]');
+  await sleep(300);
+  const phMu = await page.js('document.getElementById("chatText").getAttribute("placeholder")');
+  ck('作曲档提示写清什么曲子', phMu.indexOf('曲子') >= 0, phMu);
+  const noteMu = await page.js('(function(){var e=document.querySelector(".cm-note");return e?e.textContent:""})()');
+  ck('作曲档说清了要去哪儿配（阶跃星辰 / Mureka）',
+    noteMu.indexOf('Mureka') >= 0 && noteMu.indexOf('阶跃星辰') >= 0, noteMu);
+  ck('作曲档不列对话模型（它不是聊天模型干的活）',
+    await page.js('(function(){var s=document.getElementById("cmSel");' +
+      'return !!s && s.options.length <= 2})()'));
+  ck('没可用模型时给出「去设置里加一条」的出口',
+    await page.js('(function(){var e=document.querySelector(".cm-empty");' +
+      'return !!e && e.textContent.indexOf("去设置里加一条") >= 0})()'));
 
   await page.click('[data-cm-mode="chat"]');
   await sleep(300);
@@ -241,6 +255,6 @@ async function waitCdp() {
   page.close();
   try { chrome.kill(); } catch (e) {}
   S.stop();
-  console.log('\n七档模式审计：' + pass + ' 通过 / ' + fail + ' 失败');
+  console.log('\n八档模式审计：' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('审计挂了:', e.message); process.exit(1); });

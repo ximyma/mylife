@@ -43,7 +43,8 @@
   var cur = { threadId: null, role: 'interviewer', streaming: null, archiveId: null, atts: [], chapters: [] };
 
   /* ---------------- 用哪个模型干活 ----------------
-   * 七个用途：聊天（文字/看图）、画图、生成视频、图片提字、声音转文字、念稿配音、写歌。
+   * 八个用途：聊天（文字/看图）、画图、生成视频、图片提字、声音转文字、念稿配音、
+   * 写歌（先出词）、作曲（交给音乐大模型真唱/真奏）。
    * 选中的模型跟着这条消息发出去，不再受「设置里绑了哪条」限制——
    * 想用贵一点的模型写一段悼词，不必先去设置里改全局绑定。
    */
@@ -61,7 +62,9 @@
     tts: { n: '念稿', kinds: ['tts'],
       ph: '把要念的文字粘进来（一次最多 2000 字），合成后能听能下载' },
     song: { n: '写歌', kinds: ['text'],
-      ph: '想写一首什么歌？主题、情绪、给谁听……（绑了档案还能选章节取材）' }
+      ph: '想写一首什么歌？主题、情绪、给谁听……（绑了档案还能选章节取材）' },
+    music: { n: '作曲', kinds: [],
+      ph: '想要一支什么曲子？比如：70 年代工厂广播站的晨曲，明亮的手风琴，中速，怀旧' }
   };
 
   var pick = { mode: 'chat', profileId: null, model: '' };
@@ -302,6 +305,9 @@
     } else if (pick.mode === 'tts') {
       note = (pick.model ? pick.model + ' · ' : '') +
         'CosyVoice2 免费，一次最多 2000 字。想换声音去「设置 → 朗读音色与配乐」';
+    } else if (pick.mode === 'music') {
+      note = '交给音乐大模型真写旋律、编曲、人声（或纯音乐），一首 1–3 分钟。' +
+        '要单独配一家：设置 → 模型来源 → 阶跃星辰（限免）或 Mureka，再绑「模型分工 → 作曲演唱」';
     } else {
       note = (pick.model ? pick.model + ' · ' : '') +
         '先写词（可改），再「念给我听」配乐朗读。想给整本档案写主题曲，去档案页的「主题曲」';
@@ -720,10 +726,14 @@
         ops.className = 'chat-media-ops';
         ops.innerHTML =           '<button class="linkbtn" data-song-read="1">念给我听</button>' +
           '<button class="linkbtn" data-song-play="1">演奏出来</button>' +
+          '<button class="linkbtn" data-song-aim="1">AI 作曲演唱</button>' +
           '<button class="linkbtn" data-msg-insert="1">插入档案</button>';
         ui.tEl.parentNode.insertBefore(ops, ui.tEl.nextSibling);
         ops.querySelector('[data-song-play]').onclick = function () {
           performSong(host, ui, lyr, ops.querySelector('[data-song-play]'));
+        };
+        ops.querySelector('[data-song-aim]').onclick = function () {
+          composeSong(host, ui, lyr, ops.querySelector('[data-song-aim]'));
         };
         ops.querySelector('[data-song-read]').onclick = function () {
           if (!window.TTS) { toast('这个版本不能朗读'); return; }
@@ -815,6 +825,173 @@
         });
       }
     });
+  }
+
+  /* ---------------- AI 作曲：真模型写歌，不是本地念词配和弦 ----------------
+   * 「演奏出来」是本地 TTS 念词 + 算出来的钢琴琶音，省事但只是配乐朗读；
+   * 这里交给专门的音乐大模型（阶跃星辰 StepAudio 3 / Mureka）真写旋律、编曲、人声。
+   * 一首歌要几十秒到几分钟，所以走后台任务：关掉页面也继续跑。
+   */
+
+  /** 「作曲」档：不写词，直接让音乐大模型作一支曲子（可以自带歌词，也可以是纯音乐） */
+  function doCompose(host, text, extra) {
+    var seed = String(text || '').trim();
+    if (extra) seed = seed ? (seed + '，' + extra) : extra;
+    clearInput(host);
+    pushUser(host, seed || '（作曲）');
+    var ui = pushAI(host, '（正在等你定曲风……）');
+    if (!ui) return;
+    composeSong(host, ui, '', null, seed, function () {
+      ui.tEl.textContent = '（没作曲）';
+    });
+  }
+
+  var MUSIC_STYLES = [
+    { n: '民谣 · 温暖男声', k: '中文民谣，温暖男声，木吉他与钢琴，中速，怀旧真挚' },
+    { n: '中国风 · 女声', k: '中国风流行，清澈女声，笛子与古筝，舒缓深情' },
+    { n: '老上海 · 爵士', k: '老上海爵士，慵懒女声，钢琴与小号，慢摇' },
+    { n: '合唱 · 庄重', k: '混声合唱，庄严温暖，弦乐铺底，慢板' },
+    { n: '轻音乐 · 纯器乐', k: '轻音乐，纯器乐，钢琴独奏，安静治愈' }
+  ];
+
+  function composeSong(host, ui, lyr, btn, seed, onCancel) {
+    var idx = 0;
+    var initCap = String(seed || '').trim() || MUSIC_STYLES[0].k;
+    var chips = '';
+    for (var i = 0; i < MUSIC_STYLES.length; i++) {
+      chips += '<button class="chip' + (!seed && i === 0 ? ' on' : '') + '" data-mu-st="' + i + '">' +
+        esc(MUSIC_STYLES[i].n) + '</button>';
+    }
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal pick-modal"><h3>让 AI 真唱一首</h3>' +
+      '<p class="hint dim">交给音乐大模型写旋律、编曲、人声——和「演奏出来」（本地念词配和弦）不是一回事。' +
+      '一首歌 1–3 分钟，做好了能听、能下载、能存进档案。</p>' +
+      '<div class="pick-chs">' + chips + '</div>' +
+      '<div class="fld"><label>曲风描述（可以改，越具体越准）</label>' +
+      '<textarea class="fi" id="muCap" rows="2">' + esc(initCap) + '</textarea></div>' +
+      '<label class="ckb chk"><input type="checkbox" id="muInst"><i></i>' +
+      '<span>只要伴奏，不要人声（纯音乐）</span></label>' +
+      (lyr
+        ? '<p class="hint dim">歌词就用上面这一版（' + lyr.length + ' 字）。</p>'
+        : '<div class="fld"><label>歌词（可不填，留空由模型自己写）</label>' +
+          '<textarea class="fi" id="muLyr" rows="3"></textarea></div>') +
+      '<p class="hint dim">走「设置 → 模型分工 → 作曲演唱」绑的那家：阶跃星辰目前限免，Mureka 按首计费。</p>' +
+      '<div class="ml-modal-acts">' +
+      '<button class="btn" data-mu-no="1">算了</button>' +
+      '<button class="btn primary" data-mu-ok="1">开始作曲</button></div></div>';
+    document.body.appendChild(ov);
+
+    function done() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov) { done(); return; }
+      var chip = ev.target.closest('[data-mu-st]');
+      if (chip) {
+        var allc = ov.querySelectorAll('[data-mu-st]');
+        for (var q = 0; q < allc.length; q++) allc[q].className = 'chip';
+        chip.className = 'chip on';
+        idx = Number(chip.getAttribute('data-mu-st')) || 0;
+        var ta = ov.querySelector('#muCap');
+        if (ta) ta.value = MUSIC_STYLES[idx].k;
+        return;
+      }
+      if (ev.target.closest('[data-mu-no]')) { done(); if (onCancel) onCancel(); return; }
+      if (ev.target.closest('[data-mu-ok]')) {
+        var capEl = ov.querySelector('#muCap');
+        var instEl = ov.querySelector('#muInst');
+        var lyrEl = ov.querySelector('#muLyr');
+        var payload = {
+          caption: String((capEl && capEl.value) || initCap).trim(),
+          lyrics: lyr || String((lyrEl && lyrEl.value) || '').trim(),
+          instrumental: !!(instEl && instEl.checked),
+        };
+        if (!payload.caption && !payload.lyrics) { toast('说说想要什么曲子'); return; }
+        if (cur.archiveId) payload.archiveId = cur.archiveId;
+        done();
+        if (btn) { btn.disabled = true; btn.textContent = '作曲中……'; }
+        startCompose(host, ui, lyr, payload, btn);
+      }
+    });
+  }
+
+  function startCompose(host, ui, lyr, payload, btn) {
+    var box = document.createElement('div');
+    box.className = 'chat-song';
+    if (ui.tEl.parentNode) ui.tEl.parentNode.insertBefore(box, ui.tEl.nextSibling);
+    box.innerHTML = '<span class="dots">正在排任务……</span>';
+
+    var again = false;
+    var run = function () {
+      var pl = {};
+      for (var k in payload) if (Object.prototype.hasOwnProperty.call(payload, k)) pl[k] = payload[k];
+      if (again) pl.again = 1;
+      box.innerHTML = '<span class="dots">正在排任务……</span>';
+      API.job.create('aimusic', pl).then(function (r) {
+        if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
+        pollMusic(r.id, ui, box, pl.caption || '', lyr, function () { again = true; run(); });
+      }).catch(function (e) {
+        box.textContent = '（没排上：' + ((e && e.message) || e) + '）';
+        if (btn) { btn.disabled = false; btn.textContent = 'AI 作曲演唱'; }
+      });
+    };
+    run();
+  }
+
+  function pollMusic(id, ui, box, caption, lyr, redo) {
+    var t0 = Date.now();
+    var timer = setInterval(function () {
+      API.job.get(id).then(function (r) {
+        var j = r && r.job;
+        if (!j) return;
+        var secs = Math.round((Date.now() - t0) / 1000);
+        var pct = Math.round((Number(j.progress) || 0) * 100);
+        if (secs > 900) {
+          clearInterval(timer);
+          box.textContent = '（等了 15 分钟还没出歌，去「设置 → 用量与任务」看看这条任务）';
+          return;
+        }
+        if (j.status === 'done' && j.result && j.result.path) {
+          clearInterval(timer);
+          var res = j.result;
+          var url = ML.fsrc ? ML.fsrc(res.path) : ('/files/' + res.path);
+          url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+          var size = ML.bytes ? ML.bytes(res.bytes) : (Math.round((res.bytes || 0) / 1024) + ' KB');
+          box.innerHTML =
+            '<div class="song-t">' + esc((caption || lyr).slice(0, 60)) + '</div>' +
+            '<audio controls playsinline preload="metadata" src="' + esc(url) + '" style="width:100%"></audio>' +
+            '<div class="chat-media-ops">' +
+            '<a class="linkbtn" href="' + esc(url) + '" download>下载这首</a>' +
+            (res.archiveId
+              ? '<span class="chat-ok">已存进档案 · 档案首页「写的歌」</span>'
+              : '<button class="linkbtn" data-save-aim="1">存进档案</button>') +
+            '<button class="linkbtn" data-aim-again="1">再来一版（重新计费）</button></div>' +
+            '<div class="chat-note">' + esc(String(res.model || '')) +
+            (res.vendorName ? '（' + esc(res.vendorName) + '）' : '') +
+            (res.seconds ? ' · ' + Math.round(res.seconds) + ' 秒' : '') + ' · ' + size +
+            (res.cached ? ' · 这一版之前作过，直接给你（没重复计费）' : '') + '</div>' +
+            (res.note ? '<div class="chat-note dim">' + esc(res.note) + '</div>' : '') +
+            (res.lyrics && res.lyrics !== lyr
+              ? '<details class="cm-det"><summary>这版用的词</summary><pre class="lyr">' +
+                esc(res.lyrics) + '</pre></details>' : '');
+          var sb = box.querySelector('[data-save-aim]');
+          if (sb) sb.onclick = function () {
+            saveSongToArchive(res, caption || lyr, sb);
+          };
+          var ag = box.querySelector('[data-aim-again]');
+          if (ag && redo) ag.onclick = function () { redo(); };
+          logMedia('（AI 作曲：' + (caption || '') + '）', '（生成了一首歌：' + res.path + '）');
+          return;
+        }
+        if (j.status === 'failed' || j.status === 'canceled') {
+          clearInterval(timer);
+          box.textContent = '（没作成：' + (j.error || (j.status === 'canceled' ? '已取消' : '失败')) + '）';
+          return;
+        }
+        box.innerHTML = '<span class="dots">' + esc(j.stage || '排队中') + ' · ' + pct + '% · ' +
+          secs + ' 秒' + (secs > 60 ? '（一首歌通常 1–3 分钟，可以先干别的）' : '') + '</span>';
+      }).catch(function () {});
+    }, 3000);
   }
 
   /** 存到档案：audio 记在 media 表，档案首页「合成的片子」那块能看到 */
@@ -1183,6 +1360,7 @@
       if (pick.mode === 'asr') { doAsr(host, atts); return; }
       if (pick.mode === 'tts') { doTts(host, text); return; }
       if (pick.mode === 'song') { doSong(host, text, atts, extra); return; }
+      if (pick.mode === 'music') { doCompose(host, text, extra); return; }
       if (hasImg && pick.model && DB.modelKind(pick.model) === 'text') {
         toast('选中的这个模型不看图，换成「看图」类的更稳');
       }

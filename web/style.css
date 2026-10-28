@@ -494,9 +494,14 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .chat-model{background:var(--card);border:1px solid var(--line);border-radius:9px;
   padding:8px 10px;margin-bottom:10px}
 .cm-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.cm-tabs{display:flex;gap:0;border:1px solid var(--line);border-radius:20px;overflow:hidden}
-.cm-tab{border:none;background:transparent;padding:5px 12px;font-size:12.5px;
-  color:var(--ink2);cursor:pointer}
+/* 八档一字排开时手机屏放不下：这一整行自己占一行、横向可滑，
+   而不是把每个按钮挤成上下两截的「聊 / 天」 */
+.cm-tabs{display:flex;gap:0;border:1px solid var(--line);border-radius:20px;
+  flex:1 1 100%;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;
+  -webkit-overflow-scrolling:touch}
+.cm-tabs::-webkit-scrollbar{display:none}
+.cm-tab{border:none;background:transparent;padding:6px 11px;font-size:12.5px;
+  color:var(--ink2);cursor:pointer;white-space:nowrap;flex:0 0 auto}
 .cm-tab.on{background:var(--accent-soft);color:var(--accent)}
 .cm-sel{flex:1;min-width:130px;font-size:12.5px;padding:5px 8px}
 .cm-note{font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:6px}

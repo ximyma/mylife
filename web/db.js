@@ -752,6 +752,9 @@
     modelKind: function (id) {
       var s = String(id || '').toLowerCase();
       if (/embedding|reranker/.test(s)) return 'embed';
+      // 音乐大模型：名字里带 music / audio-3 / mureka。-music 要在 tts 之前判，
+      // 否则 stepaudio-3-music-preview 会被 speech 规则吃掉
+      if (/music|mureka|stepaudio-3/.test(s)) return 'music';
       if (/asr|whisper|sensevoice/.test(s)) return 'asr';
       if (/tts|cosyvoice|speech/.test(s)) return 'tts';
       if (/ocr|vl|vision/.test(s)) return 'vision';
@@ -796,9 +799,12 @@
           img: ['Kwai-Kolors/Kolors'],
           // 语音朗读：短片配音靠它。不自动绑的话，用户勾了「配音」合成出来是哑片，
           // 而界面上一个字都不会说为什么（v0.9.9 之前的真实事故）。
-          tts: ['FunAudioLLM/CosyVoice2-0.5B', 'fnlp/MOSS-TTSD-v0.5', 'tts-1']
+          tts: ['FunAudioLLM/CosyVoice2-0.5B', 'fnlp/MOSS-TTSD-v0.5', 'tts-1'],
+          // 作曲：只有专门的音乐服务才有（阶跃星辰 StepAudio 3 / Mureka）。
+          // 硅基流动的模型清单里一条都没有，这里留空也不会乱绑到文本模型上。
+          music: ['stepaudio-3-music-preview', 'stepaudio-3-music', 'mureka-9.5', 'mureka-8', 'auto']
         };
-        var KIND = { title: 'text', vision: 'vision', asr: 'asr', img: 't2i', tts: 'tts' };
+        var KIND = { title: 'text', vision: 'vision', asr: 'asr', img: 't2i', tts: 'tts', music: 'music' };
         var done = [];
 
         return self.getSlots().then(function (slots) {

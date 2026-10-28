@@ -2429,6 +2429,8 @@
     { k: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com/v1', key: true },
     { k: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1', key: true },
     { k: 'zhipu', label: '智谱 bigmodel', base: 'https://open.bigmodel.cn/api/paas/v4', key: true },
+    { k: 'stepfun', label: '阶跃星辰（能作曲）', base: 'https://api.stepfun.com/v1', key: true },
+    { k: 'mureka', label: 'Mureka（专门作曲）', base: 'https://api.mureka.ai/v1', key: true },
     { k: 'groq', label: 'Groq（需外网）', base: 'https://api.groq.com/openai/v1', key: true },
     { k: 'ollama', label: '本机 Ollama', base: 'http://127.0.0.1:11434/v1', key: false },
     { k: 'custom', label: '自定义 / 内网', base: '', key: true }
@@ -2442,7 +2444,12 @@
     { name: '腾讯云混元', url: 'https://curl.qcloud.com/ofeR1Flf',
       note: '首次开通送 100 万 tokens（含 hunyuan-turbos-vision 等多模态），有效期 1 年；hunyuan-lite 永久免费' },
     { name: '智谱 bigmodel', url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
-      note: 'Flash 系列永久免费，GLM-4.6V-Flash 是免费的多模态（能看懂照片场景，比 OCR 更进一步）' }
+      note: 'Flash 系列永久免费，GLM-4.6V-Flash 是免费的多模态（能看懂照片场景，比 OCR 更进一步）' },
+    { name: '阶跃星辰', url: 'https://platform.stepfun.com',
+      note: '想让 AI 真唱一首歌就用它：StepAudio 3 Music 目前限时免费，注册后在「API Key」里取密钥，' +
+        '接口地址填 https://api.stepfun.com/v1', star: true },
+    { name: 'Mureka', url: 'https://platform.mureka.ai',
+      note: '专门做音乐的一家人声更专业，按首计费（约几毛到一块多一首）；接口地址填 https://api.mureka.ai/v1' }
   ];
 
   function kindLabel(k) {
@@ -2450,7 +2457,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.12';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.13';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2552,7 +2559,11 @@
           hint: '文生图，「AI 助手 → 画图」用它。Kolors 免费；FLUX、Qwen-Image 要钱但更好看' },
         { k: 'vid', label: '视频生成', kind: 't2v',
           rec: ['Wan-AI/Wan2.2-T2V-A14B', 'Wan-AI/Wan2.2-I2V-A14B'],
-          hint: '文生视频 / 图生视频，「AI 助手 → 视频」用它。按条计费，一条几毛到一块多，出片 1–4 分钟' }
+          hint: '文生视频 / 图生视频，「AI 助手 → 视频」用它。按条计费，一条几毛到一块多，出片 1–4 分钟' },
+        { k: 'music', label: '作曲演唱', kind: 'music',
+          rec: ['stepaudio-3-music-preview', 'auto', 'mureka-9.5', 'mureka-8'],
+          hint: '让音乐大模型真写一首歌（旋律、编曲、人声都是现生成的），「AI 助手 → 写歌 → AI 作曲演唱」用它。' +
+            '硅基流动没有这类模型，要去阶跃星辰（限免）或 Mureka（付费）单独加一条配置' }
       ];
 
       for (var p = 0; p < profiles.length; p++) {

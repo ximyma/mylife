@@ -140,7 +140,7 @@ async function waitCdp() {
   await sleep(1200);
   ck('有模型栏', await page.js('!!document.getElementById("chatModel")'));
   const tabs = await page.js('(function(){var bs=document.querySelectorAll("[data-cm-mode]");var a=[];for(var i=0;i<bs.length;i++)a.push(bs[i].textContent);return a.join("|")})()');
-  ck('七档：聊天 / 画图 / 视频 / 提字 / 转文字 / 念稿 / 写歌', tabs === '聊天|画图|视频|提字|转文字|念稿|写歌', tabs);
+  ck('八档：聊天 / 画图 / 视频 / 提字 / 转文字 / 念稿 / 写歌 / 作曲', tabs === '聊天|画图|视频|提字|转文字|念稿|写歌|作曲', tabs);
   ck('默认停在聊天档', await page.js('!!document.querySelector("[data-cm-mode=\'chat\'].on")'));
 
   const chatOpts = await page.js('(function(){var s=document.getElementById("cmSel");var a=[];for(var i=0;i<s.options.length;i++)a.push(s.options[i].textContent);return a.join(" ;; ")})()');

@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.12';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.13';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -771,6 +771,15 @@ async function apiAiTest(body) {
   // "Model does not exist"，看起来像配置错了，其实是用错了接口。
   // 这里真发一段 1 秒静音 WAV 到 /audio/transcriptions：HTTP 200 就算通。
   if (body.slot === 'asr') return await testAsr(profile, useModel, t0);
+
+  // 作曲模型也不认对话接口，而且真跑一次要一首歌的钱。与其报错让人以为配错了，
+  // 不如直说：配好了，去「AI 助手 → 作曲」作一支就知道通不通。
+  if (body.slot === 'music') {
+    return { ok: false, ms: 0,
+      message: '作曲模型不能用对话接口试跑（它只认音乐专用的接口，而且跑一次就是一首歌的钱）。' +
+        '想验证 Key 对不对，去「AI 助手 → 作曲」作一支：' +
+        '阶跃星辰目前限免，Mureka 会按首计费。' };
+  }
   try {
     const r = await fetchJson(endpointOf(profile) + '/chat/completions', {
       method: 'POST',
@@ -2309,6 +2318,245 @@ registerJob('aivideo', async function (p, ctx) {
   }
 
   throw new Error('没做出片子：' + (errors.join('；') || '未知原因'));
+});
+
+/* ---------------- AI 作曲：交给音乐大模型真写一首歌 ----------------
+ *
+ * 与上面「演奏出来」是两条路：演奏是本地 TTS 念词 + 按和弦算的钢琴琶音，
+ * 省事但只是「配乐朗读」；这里是专门的音乐大模型（阶跃星辰 StepAudio 3、
+ * Mureka）真写旋律、编曲、演唱，出来的是一首有起承转合的完整歌曲。
+ *
+ * 两家都是「提交拿号 → 轮询 → 收音频」的两段式，一首歌要几十秒到几分钟，
+ * 所以照样走后台任务：关掉页面也继续跑。音频当场落盘——外链几小时就失效，
+ * 只存链接等于没存。
+ *
+ *   阶跃星辰  POST /v1/audio/music/submit {task, model_id, caption, lyrics, instrumental, response_format}
+ *             POST /v1/audio/music/query  {task_id} → {status, audio(base64)}
+ *   Mureka    POST /v1/song/generate      {lyrics, model, prompt, n}
+ *             GET  /v1/song/query/{id}    → {status, choices:[{url}]}
+ */
+function musicVendorOf(p) {
+  const s = (String((p && p.base_url) || '') + ' ' + String((p && p.kind) || '')).toLowerCase();
+  if (/mureka/.test(s)) return 'mureka';
+  if (/stepfun/.test(s)) return 'stepfun';
+  return '';
+}
+
+/** 把一支曲子记进这本档案（media.kind='audio'），档案首页「写的歌」才列得出来 */
+function registerMusic(ctx, aid, rel, bytes, seconds, caption) {
+  try {
+    const dup = ctx.db.prepare("SELECT id FROM media WHERE archive_id=? AND kind='audio' AND path=?").get(aid, rel);
+    if (dup) {
+      ctx.db.prepare('UPDATE media SET bytes=?, duration_ms=?, caption=? WHERE id=?')
+        .run(bytes, Math.round(seconds * 1000), String(caption || 'AI 作的曲').slice(0, 120), dup.id);
+    } else {
+      ctx.db.prepare(
+        'INSERT INTO media (archive_id, kind, path, mime, bytes, caption, duration_ms) VALUES (?,?,?,?,?,?,?)')
+        .run(aid, 'audio', rel, 'audio/mpeg', bytes,
+          String(caption || 'AI 作的曲').slice(0, 120), Math.round(seconds * 1000));
+    }
+  } catch (e) { /* 登记失败不影响成品：任务结果里仍旧带 path */ }
+}
+
+function musicKey(vendor, model, caption, lyrics, instrumental) {
+  return crypto.createHash('sha1')
+    .update([vendor, model, caption, lyrics, instrumental ? 'i' : 'v'].join('|'))
+    .digest('hex').slice(0, 16);
+}
+
+registerJob('aimusic', async function (p, ctx) {
+  const caption = String(p.caption || p.prompt || '').trim();
+  const lyrics = String(p.lyrics || '').trim();
+  const instrumental = !!p.instrumental;
+
+  if (!caption && !lyrics) throw new Error('说说想要什么曲子，或者把歌词给我');
+  if (caption.length > 1000) throw new Error('曲风描述最多 1000 字');
+  if (lyrics.length > 3500) throw new Error('歌词最多 3500 字（再长一首都唱不完）');
+
+  const chain = profileChain({ slot: 'music', profileId: p.profileId, model: p.model });
+  if (!chain.length) {
+    throw new Error('还没配「作曲演唱」的模型。设置 → 模型来源 → 加一条：' +
+      '阶跃星辰 https://api.stepfun.com/v1（音乐目前限免）或 Mureka https://api.mureka.ai/v1，' +
+      '再加好「模型分工 → 作曲演唱」就能用。');
+  }
+
+  const step = Math.max(3000, Number(p.pollMs) || 5000);
+  const maxPoll = Math.max(6, Number(p.maxPoll) || 150);   // 5 秒 × 150 ≈ 12 分钟
+  const errors = [];
+  let musicNote = '';
+
+  for (const cand of chain.slice(0, 2)) {
+    const vendor = musicVendorOf(cand.profile);
+    if (!vendor) {
+      errors.push(cand.profile.name + '（' + String(cand.profile.base_url || '') + '）不做音乐生成');
+      continue;
+    }
+    const defModel = vendor === 'stepfun' ? 'stepaudio-3-music-preview' : 'auto';
+    const model = String(p.model || cand.model || defModel);
+    const key = musicKey(vendor, model, caption, lyrics, instrumental);
+
+    // 同一个描述 + 同一版歌词只花一次钱；想要新的一版就带 again=1。
+    // 命中缓存也要登记进档案：上次可能是没绑档案时作的，这次换了本档案同样要看得到。
+    if (!p.again) {
+      try {
+        const hit = ctxDb().prepare("SELECT path FROM ai_assets WHERE cache_key=? AND capability='music'").get(key);
+        if (hit && hit.path && fs.existsSync(path.join(ctx.files, hit.path))) {
+          const abs0 = path.join(ctx.files, hit.path);
+          const sec0 = Math.round(mediaSeconds(ffmpegPath(), abs0) * 10) / 10;
+          const bytes0 = fs.statSync(abs0).size;
+          const aid0 = Number(p.archiveId) || 0;
+          if (aid0) registerMusic(ctx, aid0, hit.path, bytes0, sec0, p.title || caption || lyrics);
+          return { ok: true, path: hit.path, bytes: bytes0, seconds: sec0,
+            model: model, vendor: vendor, cached: true,
+            archiveId: aid0 || null };
+        }
+      } catch (e) {}
+    }
+
+    try {
+      ctx.progress(0.06, '提交给 ' + cand.profile.name);
+
+      // ① 提交
+      let taskId = '';
+      if (vendor === 'stepfun') {
+        const body = {
+          task: 'text_to_music',
+          model_id: model,
+          caption: caption || (lyrics || '一首温柔的中文老歌').slice(0, 200),
+          response_format: 'mp3',
+        };
+        if (instrumental) body.instrumental = true;
+        else if (lyrics) body.lyrics = lyrics;
+
+        const sub = await fetchJson(endpointOf(cand.profile) + '/v1/audio/music/submit', {
+          method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(body),
+        }, 90000);
+        if (!sub.ok) {
+          errors.push(cand.profile.name + ' 提交失败 HTTP ' + sub.status + '：' + describeErr(sub));
+          continue;
+        }
+        taskId = String(((sub.json || {}).task_id || (sub.json || {}).id) || '');
+      } else {
+        // Mureka 的 lyrics 是必填：没给词就只能当纯音乐，不能闷声出个没人的版本
+        const noLyric = instrumental || !lyrics;
+        const body = {
+          lyrics: noLyric ? '[Instrumental]' : lyrics,
+          model: model,
+          prompt: (caption || (noLyric ? 'instrumental' : 'chinese vocal')).slice(0, 1024),
+          n: 1,
+        };
+        if (noLyric && !instrumental) {
+          musicNote = '没给歌词，这家（Mureka）只能作成纯音乐；想要人声就把歌词填上，或改用阶跃星辰（能自己写词）';
+        }
+        const sub = await fetchJson(endpointOf(cand.profile) + '/v1/song/generate', {
+          method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(body),
+        }, 90000);
+        if (!sub.ok) {
+          errors.push(cand.profile.name + ' 提交失败 HTTP ' + sub.status + '：' + describeErr(sub));
+          continue;
+        }
+        taskId = String(((sub.json || {}).id || (sub.json || {}).task_id) || '');
+      }
+      if (!taskId) { errors.push(cand.profile.name + ' 没给任务号'); continue; }
+
+      // ② 轮询
+      let buf = null, bad = '', gotCaption = '', gotLyrics = '';
+      const t0 = Date.now();
+      for (let i = 1; i <= maxPoll; i++) {
+        await new Promise(r => setTimeout(r, step));
+        const secs = Math.round((Date.now() - t0) / 1000);
+        ctx.progress(Math.min(0.92, 0.06 + 0.85 * (i / maxPoll)),
+          '作曲中 · 已等 ' + secs + ' 秒（一首歌通常 1–3 分钟）');
+
+        let st;
+        if (vendor === 'stepfun') {
+          st = await fetchJson(endpointOf(cand.profile) + '/v1/audio/music/query', {
+            method: 'POST', headers: authHeaders(cand.profile),
+            body: JSON.stringify({ task_id: taskId }),
+          }, 30000);
+        } else {
+          st = await fetchJson(endpointOf(cand.profile) + '/v1/song/query/' + encodeURIComponent(taskId), {
+            method: 'GET', headers: authHeaders(cand.profile),
+          }, 30000);
+        }
+        if (!st.ok) {
+          if (st.status >= 500) continue;
+          bad = cand.profile.name + ' 查状态失败 HTTP ' + st.status + '：' + describeErr(st);
+          break;
+        }
+        const js = st.json || {};
+
+        if (vendor === 'stepfun') {
+          const s = String(js.status || '').toUpperCase();
+          if (s === 'SUCCESS') {
+            const b64 = String(js.audio || '');
+            if (!b64) { bad = cand.profile.name + ' 说成功了但没给音频'; break; }
+            buf = Buffer.from(b64, 'base64');
+            gotCaption = String(js.rewritten_caption || '');
+            gotLyrics = String(js.rewritten_lyrics || '');
+            break;
+          }
+          if (s === 'FAILED') {
+            const e2 = js.error || {};
+            bad = cand.profile.name + ' 作曲失败：' +
+              String(e2.message || e2.stage || '服务商没给原因');
+            break;
+          }
+          continue;                                   // PENDING / RUNNING
+        }
+
+        const s2 = String(js.status || '').toLowerCase();
+        if (s2 === 'succeeded') {
+          const ch = (js.choices && js.choices[0]) || {};
+          const url = String(ch.url || ch.mp3_url || ch.audio_url || ch.flac_url || '');
+          if (!url) { bad = cand.profile.name + ' 说成功了但没给音频地址'; break; }
+          ctx.progress(0.94, '下载成品');
+          const got = await fetch(url);
+          if (!got.ok) { bad = '取成品失败 HTTP ' + got.status; break; }
+          buf = Buffer.from(await got.arrayBuffer());
+          break;
+        }
+        if (s2 === 'failed' || s2 === 'timeouted' || s2 === 'cancelled') {
+          bad = cand.profile.name + ' 作曲失败：' + String(js.failed_reason || s2);
+          break;
+        }
+      }
+
+      if (!buf || !buf.length) {
+        errors.push(bad || (cand.profile.name + ' 等了 ' + Math.round(step * maxPoll / 1000) + ' 秒还没出歌'));
+        continue;
+      }
+
+      // ③ 落盘：外链会失效，必须当场存下来
+      const rel = 'ai/music/' + key + '.mp3';
+      const abs = path.join(ctx.files, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buf);
+      const seconds = Math.round(mediaSeconds(ffmpegPath(), abs) * 10) / 10;
+      try {
+        ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
+          .run('music', key, rel, (caption || lyrics).slice(0, 300), model);
+      } catch (e) {}
+      try { usageAdd('music', model, 1, 'song', 0, 'chat'); } catch (e) {}
+
+      // ④ 登记进档案
+      const aid = Number(p.archiveId) || 0;
+      if (aid) registerMusic(ctx, aid, rel, buf.length, seconds, p.title || caption || 'AI 作的曲');
+
+      return {
+        ok: true, path: rel, bytes: buf.length, seconds: seconds,
+        model: model, vendor: vendor, vendorName: cand.profile.name,
+        caption: gotCaption || caption, lyrics: gotLyrics || lyrics,
+        note: musicNote, archiveId: aid || null, cached: false,
+      };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (msg === '__canceled__') throw e;
+      errors.push(cand.profile.name + ' 连不上：' + msg);
+    }
+  }
+
+  throw new Error('没作出曲子：' + (errors.join('；') || '未知原因'));
 });
 
 /* ---------------- 能力网关 ----------------
