@@ -8,8 +8,8 @@ android {
         applicationId "com.mylife.archive"
         minSdk 21
         targetSdk 34
-        versionCode 22
-        versionName "0.9.7"
+        versionCode 23
+        versionName "0.9.8"
     }
 
     buildTypes {

@@ -639,12 +639,35 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .mv-done{margin-top:12px}
 .mv-video{width:100%;max-width:320px;border-radius:10px;display:block;background:#000;
   box-shadow:0 4px 18px rgba(0,0,0,.18)}
-.mv-hist{margin-bottom:18px}
-.mv-hist-list{display:flex;gap:10px;overflow-x:auto;padding:2px 0 6px}
-.mv-hist-item{flex:0 0 108px}
-.mv-hist-item video{width:108px;height:192px;border-radius:7px;background:#000;object-fit:cover}
-.mv-hist-item .mv-line{margin-top:4px;justify-content:space-between}
-.mv-cap{font-size:11px;color:var(--muted);line-height:1.4;margin-top:2px;
+/* 合成的片子：与正文同宽并居中；一条时居一排，多条横向滚动。
+   早先漏了 max-width，section 撑满整屏，标题文字被顶到屏幕最右、片子留在最左。 */
+.mv-hist{max-width:760px;margin:0 auto;padding:26px 16px 6px}
+/* 短片页本身已在 .wrap 里，别再叠一层宽度与内边距 */
+.wrap .mv-hist{max-width:none;margin:0;padding:0}
+.mv-hist .toc-head{flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;text-align:center}
+.mv-hist .sec-label{margin-bottom:4px}
+.mv-hist .toc-hint{padding-bottom:6px}
+.mv-hist-list{display:flex;gap:12px;overflow-x:auto;padding:6px 0 8px}
+/* 内容不足一行时靠中，超出时 auto 边距归零，不会把左边裁掉 */
+.mv-hist-list::before,.mv-hist-list::after{content:'';margin:auto}
+.mv-hist-item{flex:0 0 148px}
+.mv-thumbwrap{position:relative;line-height:0}
+.mv-badge{position:absolute;left:6px;top:6px;font-size:10px;line-height:1;padding:3px 6px;
+  border-radius:9px;background:rgba(0,0,0,.55);color:#fff;letter-spacing:.3px}
+.mv-hist-item video{width:148px;height:263px;border-radius:8px;background:#000;
+  object-fit:contain;box-shadow:0 3px 12px rgba(0,0,0,.16)}
+/* 一行放下「来源 · 时长 · 大小」和「下载」；实在挤就省略元信息，不把下载挤到下一行 */
+.mv-hist-item .mv-line{display:flex;align-items:baseline;justify-content:space-between;
+  gap:6px;flex-wrap:nowrap;margin-top:5px;font-size:11px;line-height:1.5}
+.mv-hist-item .mv-line .muted{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mv-hist-item .mv-line .linkbtn{flex:0 0 auto}
+/* 宽屏时片子放大一点，一屏能看四五条 */
+@media(min-width:720px){
+  .mv-hist-item{flex:0 0 168px}
+  .mv-hist-item video{width:168px;height:298px}
+}
+.mv-cap{font-size:11.5px;color:var(--muted);line-height:1.4;margin-top:3px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* 短片表单：别让 .fi 的 width:100% 把整行撑坏 */

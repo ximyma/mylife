@@ -737,11 +737,14 @@
         for (var mv = 0; mv < clips.length; mv++) {
           var mm = clips[mv];
           var msec = Math.round((Number(mm.duration_ms) || 0) / 1000);
+          var meta = (msec ? msec + ' 秒' : '') +
+            (mm.bytes ? (msec ? ' · ' : '') + bytes(mm.bytes) : '');
           html += '<div class="mv-hist-item">' +
+            '<div class="mv-thumbwrap">' +
             '<video preload="metadata" playsinline controls src="' + esc(fsrc(mm.path)) + '"></video>' +
-            '<div class="mv-line"><span class="muted">' +
-            (String(mm.kind) === 'video' ? 'AI 生成' : '程序合成') +
-            (msec ? ' · ' + msec + ' 秒' : '') + (mm.bytes ? ' · ' + bytes(mm.bytes) : '') + '</span>' +
+            '<span class="mv-badge">' + (String(mm.kind) === 'video' ? 'AI 生成' : '程序合成') + '</span>' +
+            '</div>' +
+            '<div class="mv-line"><span class="muted">' + esc(meta) + '</span>' +
             '<a class="linkbtn" href="' + esc(fsrc(mm.path)) + '" download>下载</a></div>' +
             (mm.caption ? '<div class="mv-cap">' + esc(String(mm.caption).slice(0, 40)) + '</div>' : '') +
             '</div>';
@@ -2418,7 +2421,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.7';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.8';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
