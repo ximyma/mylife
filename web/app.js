@@ -529,7 +529,7 @@
         '<button class="btn tiny" data-aid="' + id + '" data-goto="art">插图</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="comic">漫画</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="movie">短片</button>' +
-        (d.chapters.length ? '<button class="btn tiny" data-read-all="1">从头朗读</button>' : '') +
+        (d.chapters.length ? '<button class="btn tiny" data-read-all="1" data-aid="' + id + '">从头朗读</button>' : '') +
         '</div></section>';
 
       /* 档案信息 */
@@ -595,6 +595,7 @@
           (d.entries.length ? '<button class="btn tiny ghost" data-outline="force">' +
             '按年份重排目录</button>' : '') +
           '<button class="btn tiny ghost" data-toggle-full="1">整本阅读</button>' +
+          '<button class="btn tiny" data-whole-book="1">看整本</button>' +
           '</div>';
         html += '</section>';
       }
@@ -621,6 +622,7 @@
             '</figcaption>' +
             '<div class="ph-acts">' +
             '<button class="btn tiny" data-ph-place="' + ph.id + '">放进某章</button>' +
+            '<button class="btn tiny" data-ph-to-para="' + ph.id + '">插到某段</button>' +
             '<button class="btn tiny" data-ph-meta="' + ph.id + '">改说明</button>' +
             '<button class="btn tiny" data-ph-cover="' + ph.id + '">设为封面</button>' +
             '<button class="btn tiny danger" data-ph-del="' + ph.id + '">删</button>' +
@@ -803,6 +805,8 @@
             (cp.place ? ' · ' + esc(cp.place) : '') + '</span>' +
             '<span class="ph-event">' + esc(cp.event || '') + '</span></figcaption>' +
             '<div class="ph-acts">' +
+            '<button class="btn tiny" data-ph-to-body="' + cp.id + '" data-ch="' + (chId === '0' ? '' : ch.id) + '">放进正文</button>' +
+            '<button class="btn tiny" data-ph-move="' + cp.id + '">移到别的章</button>' +
             '<button class="btn tiny" data-ph-meta="' + cp.id + '">改说明</button>' +
             '<button class="btn tiny" data-ph-cover="' + cp.id + '">设为封面</button>' +
             '<button class="btn tiny danger" data-ph-del="' + cp.id + '">删</button>' +
@@ -948,8 +952,22 @@
       }
       if ((b = t.closest('[data-pair-entry]'))) {
         var pe = Number(b.getAttribute('data-pair-entry'));
-        openPhotoPicker(id, function (pid) {
-          DB.setEntryPhoto(pe, pid).then(function () { toast('配好了'); route(); }).catch(fail);
+        openMultiPhotoPicker(id, '给这一段配图（可多选）', function (pids) {
+          // 第一张贴在段落里（写 entries.photo_id）——漫画、短片、导出都靠这个字段找段落配图；
+          // 其余一张一张插在这段后面，成为独立照片条目，张数不设上限。
+          DB.setEntryPhoto(pe, Number(pids[0])).then(function () {
+            var chain = Promise.resolve(), last = pe;
+            pids.slice(1).forEach(function (pid) {
+              chain = chain.then(function () {
+                return DB.insertAfter(id, { afterId: last, kind: 'photo', photoId: pid })
+                  .then(function (r) { if (r && r.lastId) last = r.lastId; });
+              });
+            });
+            return chain;
+          }).then(function () {
+            toast(pids.length > 1 ? ('配好了 ' + pids.length + ' 张') : '配好了');
+            route();
+          }).catch(fail);
         });
         return;
       }
@@ -1005,6 +1023,34 @@
           DB.insertAfter(id, { chapterId: chId, kind: 'photo', photoId: phId })
             .then(function () { toast('放进去了'); route(); }).catch(fail);
         });
+        return;
+      }
+      if ((b = t.closest('[data-ph-to-para]'))) {
+        var phPara = Number(b.getAttribute('data-ph-to-para'));
+        openParagraphPickerLocal(id, function (eid) {
+          DB.insertAfter(id, { afterId: eid, kind: 'photo', photoId: phPara })
+            .then(function () { toast('插到那一段后面了'); route(); }).catch(fail);
+        });
+        return;
+      }
+      if ((b = t.closest('[data-ph-to-body]'))) {
+        // 把「本章照片」变成正文里的一张图，之后就能上下移动、换章
+        var phBody = Number(b.getAttribute('data-ph-to-body'));
+        var chBody = b.getAttribute('data-ch') || '';
+        DB.insertAfter(id, { chapterId: chBody ? Number(chBody) : null, kind: 'photo', photoId: phBody })
+          .then(function () { toast('已经放进正文，可以上下移动了'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ph-move]'))) {
+        var phMv = Number(b.getAttribute('data-ph-move'));
+        openChapterPicker(id, function (chId) {
+          DB.movePhotoChapter(phMv, chId || null)
+            .then(function () { toast(chId ? '换到那一章了' : '退回待归档了'); route(); }).catch(fail);
+        });
+        return;
+      }
+      if ((b = t.closest('[data-whole-book]'))) {
+        openWholeBook(id);
         return;
       }
       if ((b = t.closest('[data-ph-cover]'))) {
@@ -1075,17 +1121,17 @@
       '<button class="linkbtn" data-move-entry="' + e.id + '" data-dir="1" title="下移（可跨章）">↓</button>';
   }
 
-  /** 勾选框：选中后可批量上下移 / 归章 */
+  /** 勾选框：选中后可批量上下移 / 归章。（样式在 style.css 的 .ckb，原生勾选在这套 CSS 里会被吃掉，所以要自绘） */
   function selCheck(e) {
-    return '<label class="en-check" title="勾选后可批量移动">' +
+    return '<label class="ckb en-check" title="勾选后可批量移动、批量归章">' +
       '<input type="checkbox" data-check-entry="' + e.id + '"' +
-      (entrySel[e.id] ? ' checked' : '') + '></label>';
+      (entrySel[e.id] ? ' checked' : '') + '><i></i></label>';
   }
 
-  /** 没归章的碎片，给一个「归章」入口 */
+  /** 归章入口：没归章的写「归章」，已归章的写「换章」——任何时候都能改到别的章去 */
   function assignAct(e) {
-    return e.chapter_id ? '' :
-      '<button class="linkbtn" data-assign-chapter="' + e.id + '" title="归到某一章">归章</button>';
+    return '<button class="linkbtn" data-assign-chapter="' + e.id + '" title="' +
+      (e.chapter_id ? '换到别的章' : '归到某一章') + '">' + (e.chapter_id ? '换章' : '归章') + '</button>';
   }
 
   function renderEntry(e) {
@@ -1134,9 +1180,8 @@
       '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) +
       '<button class="linkbtn" data-polish="' + e.id + '" title="AI 润色，原文不动">润</button>' +
       '<button class="linkbtn" data-entry-edit="' + e.id + '">改</button>' +
-      '<button class="linkbtn" data-pair-entry="' + e.id + '" title="给这一段配一张照片">' +
-        (e.photo_path ? '换图' : '配图') + '</button>' +
-      (e.photo_path ? '<button class="linkbtn" data-unpair-entry="' + e.id + '" title="拿掉配图">去图</button>' : '') +
+      '<button class="linkbtn" data-pair-entry="' + e.id + '" title="给这一段配图，可以一次配多张">＋图</button>' +
+      (e.photo_path ? '<button class="linkbtn" data-unpair-entry="' + e.id + '" title="拿掉这一段的配图">去图</button>' : '') +
       '<button class="linkbtn" data-entry-upload="' + e.id + '" data-ch="' +
         (e.chapter_id || '') + '">传</button>' +
       '<button class="linkbtn danger-t" data-entry-del="' + e.id + '">删</button>' +
@@ -1207,6 +1252,90 @@
             var pid = Number(pb.getAttribute('data-pick-ph'));
             document.body.removeChild(ov);
             onPick(pid);
+          }
+        });
+      }).catch(fail);
+  }
+
+  /**
+   * 多选照片：一段配几张都行。点一下切换选中，最后点「配到这一段」。
+   * 选中的会依次插在这段后面，作为独立的图片条目——数量不设上限。
+   */
+  function openMultiPhotoPicker(aid, title, onPick) {
+    API.query('SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ORDER BY taken_year, id', [aid])
+      .then(function (photos) {
+        var picked = {}, count = 0;
+        var grid = '', i;
+        for (i = 0; i < photos.length; i++) {
+          var p = photos[i];
+          grid += '<button class="pick-ph mpick" data-mpick="' + p.id + '">' +
+            '<img src="' + esc(fsrc(p.path)) + '" alt="">' +
+            '<span>' + esc(p.taken_year || '') + (p.place ? ' · ' + esc(p.place) : '') + '</span>' +
+            '<em class="mpick-tick">✓</em></button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>' + esc(title || '配图') + '</h3>' +
+          '<p class="hint dim">点图片选中，可以多选，张数不设上限；第一张贴在段落里，其余按顺序跟在段落后面。</p>' +
+          '<div class="pick-grid">' + (grid || '<p class="muted">这本档案还没有照片，先用「传」上传几张</p>') + '</div>' +
+          '<div class="ml-modal-acts">' +
+          '<button class="btn primary" data-mpick-ok="1" disabled>配到这一段</button>' +
+          '<button class="btn" data-mpick-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+
+        var okb = ov.querySelector('[data-mpick-ok]');
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-mpick-cancel]'))) {
+            ov.parentNode.removeChild(ov); return;
+          }
+          var b = ev.target.closest && ev.target.closest('[data-mpick]');
+          if (b) {
+            var pid = b.getAttribute('data-mpick');
+            if (picked[pid]) { delete picked[pid]; b.classList.remove('on'); count--; }
+            else { picked[pid] = 1; b.classList.add('on'); count++; }
+            okb.disabled = count === 0;
+            okb.textContent = count ? ('配到这一段（' + count + ' 张）') : '配到这一段';
+            return;
+          }
+          if (ev.target.closest && ev.target.closest('[data-mpick-ok]')) {
+            var ids = [];
+            for (var k in picked) if (picked.hasOwnProperty(k)) ids.push(Number(k));
+            if (!ids.length) return;
+            ids.sort(function (x, y) { return x - y; });
+            ov.parentNode.removeChild(ov);
+            onPick(ids);
+          }
+        });
+      }).catch(fail);
+  }
+
+  /** 从段落清单里挑一段（用在「把这张图插到某段后面」） */
+  function openParagraphPickerLocal(aid, onPick) {
+    API.query('SELECT id, text, at_year, chapter_id FROM entries WHERE archive_id=? AND kind IN (?,?) ' +
+      'ORDER BY COALESCE(sort_key,seq,0), id LIMIT 400', [aid, 'text', 'quote'])
+      .then(function (list) {
+        var rows = '', i;
+        for (i = 0; i < list.length; i++) {
+          var e = list[i];
+          rows += '<button class="pick-ch" data-pick-para="' + e.id + '">' +
+            '<b>' + (e.at_year ? esc(e.at_year + ' 年') : '未标年份') + '</b> ' +
+            esc(String(e.text || '').slice(0, 56)) + '</button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>插到哪一段后面</h3>' +
+          '<div class="pick-chs">' + (rows || '<p class="muted">还没有段落</p>') + '</div>' +
+          '<div class="ml-modal-acts"><button class="btn" data-pick-para-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-para-cancel]'))) {
+            ov.parentNode.removeChild(ov); return;
+          }
+          var b = ev.target.closest && ev.target.closest('[data-pick-para]');
+          if (b) {
+            var eid = Number(b.getAttribute('data-pick-para'));
+            ov.parentNode.removeChild(ov);
+            onPick(eid);
           }
         });
       }).catch(fail);
@@ -2140,7 +2269,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.4';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.5';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -3140,6 +3269,90 @@
     });
   }
 
+  /**
+   * 看整本：不再直接跳回目录。给三个真正常用的去处——
+   *   ① 回目录页逐章看  ② 直接进导出（Word/PDF/PPT）  ③ 生成一份带目录的整本网页
+   */
+  function openWholeBook(archiveId) {
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal book-modal"><h3>看整本</h3>' +
+      '<p class="hint dim">整本有三种看法，选一个：</p>' +
+      '<button class="ex-card" data-wb="toc"><b>回目录页</b>' +
+      '<small>一章一行，点进去读那一章；改、听、配图都在章节页</small></button>' +
+      '<button class="ex-card" data-wb="export"><b>去导出</b>' +
+      '<small>先预览成书排版，再出 Word / PDF / PPT 或打印</small></button>' +
+      '<button class="ex-card" data-wb="html"><b>生成整本网页</b>' +
+      '<small>带封面、目录和全部正文，新窗口打开，可滚动通读、可打印、可另存</small></button>' +
+      '<div class="ml-modal-acts"><button class="btn" data-wb="cancel">取消</button></div>' +
+      '<div class="ml-modal-msg" id="wbMsg"></div></div>';
+    document.body.appendChild(ov);
+
+    var msg = ov.querySelector('#wbMsg');
+    var busy = false;
+
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov) { ov.parentNode.removeChild(ov); return; }
+      var b = ev.target.closest && ev.target.closest('[data-wb]');
+      if (!b || busy) return;
+      var kind = b.getAttribute('data-wb');
+      if (kind === 'cancel') { ov.parentNode.removeChild(ov); return; }
+
+      if (kind === 'toc') {
+        ov.parentNode.removeChild(ov);
+        go('#/a/' + archiveId);
+        return;
+      }
+      if (kind === 'export') {
+        ov.parentNode.removeChild(ov);
+        openExportSheet(archiveId);
+        return;
+      }
+
+      // 生成整本网页
+      busy = true;
+      msg.textContent = '正在把全文和图片装进一页……';
+      window.Exporter.model(archiveId).then(function (m) {
+        return window.Exporter.inlineImages(m, 160).then(function (inl) {
+          var full = window.Exporter.html(m, { size: 'a5', theme: 'paper', images: inl.map });
+          var w = null;
+          try { w = window.open('', '_blank'); } catch (e) { w = null; }
+          if (w && w.document) {
+            w.document.open();
+            w.document.write(full);
+            w.document.close();
+            msg.textContent = '已在新窗口打开：' + m.meta.chapters + ' 章 · ' +
+              m.meta.words + ' 字 · ' + m.meta.photos + ' 张照片。可用 Ctrl+P 打印或另存。';
+          } else {
+            // 手机上弹窗常被拦：落一份文件 + 触发下载
+            var blob = new Blob([full], { type: 'text/html;charset=utf-8' });
+            var url = URL.createObjectURL(blob);
+            var link = document.createElement('a');
+            link.href = url;
+            link.download = (m.meta.title || '整本档案') + '.html';
+            link.click();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 20000);
+            var fr = new FileReader();
+            fr.onload = function () {
+              var s = String(fr.result || '');
+              API.file({ op: 'save', dir: 'exports', name: (m.meta.title || '整本档案') + '.html',
+                base64: s.slice(s.indexOf(',') + 1) }).then(function () {
+                msg.textContent = '弹窗被拦，已导出整本网页：文件在 exports/ 里，点浏览器下载也能拿到。';
+              }, function () {
+                msg.textContent = '弹窗被拦，已触发下载（看浏览器下载列表）。';
+              });
+            };
+            fr.readAsDataURL(blob);
+          }
+          busy = false;
+        });
+      }).catch(function (e) {
+        busy = false;
+        msg.textContent = '没生成成功：' + (e.message || e);
+      });
+    });
+  }
+
   /** 导出抽屉：打印版 / PDF / Word / PPT，一次说清各要多久、靠什么 */
   /**
    * 成书预览：先把排版结果放进 iframe，让人看清章节、图片、顺序对不对，
@@ -3280,17 +3493,110 @@
     });
   }
 
+  /**
+   * 朗读前先给人看一眼：要读哪些章、多少段、多少字。
+   * 「从头朗读」必须从目录第一章的第一段开始，而不是封面、档案信息或页尾。
+   */
+  function openReadSheet(aid, chId) {
+    var sql = 'SELECT c.id, c.seq, c.title, COUNT(e.id) n, COALESCE(SUM(LENGTH(COALESCE(e.text,\'\'))),0) chars ' +
+      'FROM chapters c LEFT JOIN entries e ON e.chapter_id=c.id AND e.kind IN (\'text\',\'quote\') ' +
+      'WHERE c.archive_id=? GROUP BY c.id ORDER BY c.seq, c.id';
+    API.query(sql, [aid]).then(function (list) {
+      if (!list || !list.length) { toast('这本档案还没有目录'); return; }
+      var totalSeg = 0, totalChars = 0, i;
+      for (i = 0; i < list.length; i++) { totalSeg += Number(list[i].n) || 0; totalChars += Number(list[i].chars) || 0; }
+
+      var startIdx = 0;
+      if (chId) {
+        for (i = 0; i < list.length; i++) if (String(list[i].id) === String(chId)) startIdx = i;
+      }
+
+      var rows = '';
+      for (i = 0; i < list.length; i++) {
+        var t = String(list[i].title || '').replace(/^[^·]*·\s*/, '') || ('第 ' + (i + 1) + ' 章');
+        rows += '<label class="rd-row' + (i === startIdx ? ' on' : '') + '">' +
+          '<input type="radio" name="rdStart" value="' + list[i].id + '"' + (i === startIdx ? ' checked' : '') + '>' +
+          '<span class="rd-idx">' + (i + 1) + '</span>' +
+          '<span class="rd-t">' + esc(t) + '</span>' +
+          '<span class="rd-n">' + (list[i].n || 0) + ' 段' +
+          (Number(list[i].chars) ? ' · ' + list[i].chars + ' 字' : '') + '</span></label>';
+      }
+
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal rd-modal"><h3>' + (chId ? '朗读这一章' : '从头朗读') + '</h3>' +
+        '<p class="hint dim">' + (chId
+          ? '只读选中的这一章，读完自动停。'
+          : '从选中的这一章开始，按目录顺序往下读。要听全本，就选第 1 章。') +
+        '一共 ' + totalSeg + ' 段 · 约 ' + totalChars + ' 字，按 0.95 倍速大约 ' +
+        Math.max(1, Math.round(totalChars / 240)) + ' 分钟。</p>' +
+        '<div class="rd-list">' + rows + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn primary" data-rd-go="1">开始朗读</button>' +
+        '<button class="btn" data-rd-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+
+      ov.addEventListener('click', function (ev) {
+        if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-rd-cancel]'))) {
+          ov.parentNode.removeChild(ov); return;
+        }
+        var row = ev.target.closest && ev.target.closest('.rd-row');
+        if (row) {
+          var all = ov.querySelectorAll('.rd-row');
+          for (var k = 0; k < all.length; k++) all[k].className = 'rd-row' + (all[k] === row ? ' on' : '');
+          return;
+        }
+        if (ev.target.closest && ev.target.closest('[data-rd-go]')) {
+          var sel = ov.querySelector('input[name=rdStart]:checked');
+          var fromId = sel ? sel.value : list[0].id;
+          var start = 0;
+          for (var j = 0; j < list.length; j++) if (String(list[j].id) === String(fromId)) start = j;
+          ov.parentNode.removeChild(ov);
+          if (!window.TTS) { toast('这个版本不能朗读'); return; }
+          if (chId) {
+            var secOne = document.getElementById('ch-' + fromId);
+            if (secOne) window.TTS.speakFrom(secOne);
+            return;
+          }
+          // 从头读：页面上「整本阅读」那块默认是收起的，先展开，读的时候能看见高亮
+          var fb = document.getElementById('fullBody');
+          if (fb && fb.hidden) fb.hidden = false;
+          var queue = [];
+          for (var s = start; s < list.length; s++) queue.push(list[s].id);
+          readChain(queue, 0);
+        }
+      });
+    }).catch(fail);
+  }
+
+  /** 一章读完自动接下一章 */
+  function readChain(ids, i) {
+    if (i >= ids.length) return;
+    var sec = document.getElementById('ch-' + ids[i]);
+    if (!sec) { readChain(ids, i + 1); return; }
+    try { sec.scrollIntoView({ block: 'start' }); } catch (e) {}
+    window.TTS.speakFrom(sec, { onDone: function () { readChain(ids, i + 1); } });
+  }
+
   function bindTtsOnce() {
     document.addEventListener('click', function (ev) {
       var t;
       if ((t = ev.target.closest('[data-read-all]'))) {
-        var paper = document.querySelector('.paper');
-        if (paper) window.TTS.speakFrom(paper);
+        var aidAll = t.getAttribute('data-aid');
+        if (!aidAll) {
+          var mH = (location.hash || '').match(/#\/a\/(\d+)/);
+          aidAll = mH ? mH[1] : '';
+        }
+        if (!aidAll) { toast('先打开一本档案'); return; }
+        openReadSheet(Number(aidAll), null);
         return;
       }
       if ((t = ev.target.closest('[data-read-ch]'))) {
-        var sec = document.getElementById('ch-' + t.getAttribute('data-read-ch'));
-        if (sec) window.TTS.speakFrom(sec);
+        var chId2 = Number(t.getAttribute('data-read-ch'));
+        var mH2 = (location.hash || '').match(/#\/a\/(\d+)/);
+        var aid2 = mH2 ? Number(mH2[1]) : 0;
+        if (aid2) { openReadSheet(aid2, chId2); return; }
+        var sec = document.getElementById('ch-' + chId2);
+        if (sec && window.TTS) window.TTS.speakFrom(sec);
       }
     });
   }
@@ -3330,5 +3636,5 @@
     boot();
   }
 
-  window.APP = { route: route, toast: toast };
+  window.APP = { route: route, toast: toast, openWholeBook: openWholeBook, openExport: openExportSheet, openRead: openReadSheet };
 })();

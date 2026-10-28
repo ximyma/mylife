@@ -21,6 +21,7 @@
   var audioEl = null;  // 云端的当前句（<audio> 播 mp3）
   var cloudMode = 'system';   // system | cloud
   var cloudTried = false;     // 云端失败只提示一次，别每句都弹
+  var onDoneCb = null;        // 一段读完后要接着做什么（如自动读下一章）
 
   function esc(s) {
     return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -203,6 +204,14 @@
     }
   }
 
+  /** 一段内容读完了（不是手动停）：先收尾，再通知调用方接下一段 */
+  function finish() {
+    var cb = onDoneCb;
+    onDoneCb = null;
+    stop(true);
+    if (cb) { try { cb(); } catch (e) {} }
+  }
+
   /** 语速变了，从当前句重读 */
   function restartCurrent() {
     if (!playing) return;
@@ -214,6 +223,7 @@
   function stop(hide) {
     playing = false;
     idx = -1;
+    onDoneCb = null;
     clearMark();
     if (audioEl) {
       try { audioEl.pause(); } catch (e) {}
@@ -246,7 +256,7 @@
 
   function speakBrowser(i) {
     if (!playing || i >= queue.length) {
-      stop(true);
+      finish();
       return;
     }
     idx = i;
@@ -281,7 +291,7 @@
   /* ---------------- 云端音色（mp3 逐句） ---------------- */
 
   function startCloud(i) {
-    if (!playing || i >= queue.length) { stop(true); return; }
+    if (!playing || i >= queue.length) { finish(); return; }
     idx = i;
     mark(i);
 
@@ -342,8 +352,12 @@
     speakFrom: function (root, opts) {
       opts = opts || {};
       stop(true);
+      onDoneCb = typeof opts.onDone === 'function' ? opts.onDone : null;
       queue = collect(root);
       if (!queue.length) {
+        var cb0 = onDoneCb;
+        onDoneCb = null;
+        if (cb0) { try { cb0(); } catch (e) {} return; }
         alert('这里还没有可读的内容');
         return;
       }
@@ -370,6 +384,7 @@
 
     /** 原生回调：读完了 */
     onEnd: function () {
+      if (onDoneCb) { finish(); return; }
       playing = false;
       idx = -1;
       clearMark();

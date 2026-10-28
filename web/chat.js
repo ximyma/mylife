@@ -40,7 +40,111 @@
     }
   };
 
-  var cur = { threadId: null, role: 'interviewer', streaming: null, archiveId: null };
+  var cur = { threadId: null, role: 'interviewer', streaming: null, archiveId: null, atts: [] };
+
+  /* ---------------- 附件：图片走视觉模型，文本类文档直接读正文 ---------------- */
+
+  var ATT_MAX = 4;
+
+  function isTextFile(f) {
+    return /^text\//i.test(f.type || '') ||
+      /\.(txt|md|markdown|csv|json|log|ini|yml|yaml|html?|xml|js|css)$/i.test(f.name || '');
+  }
+
+  /** 大图先缩到 1024，服务商收不了几 MB 的 base64 */
+  function shrinkImage(file, cb) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      var src = String(fr.result || '');
+      var img = new Image();
+      img.onload = function () {
+        var w = img.width || 1, h = img.height || 1, m = Math.max(w, h), lim = 1024;
+        if (m <= lim) return cb(src);
+        var s = lim / m;
+        var cv = document.createElement('canvas');
+        cv.width = Math.round(w * s); cv.height = Math.round(h * s);
+        cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+        try { cb(cv.toDataURL('image/jpeg', 0.9)); } catch (e) { cb(src); }
+      };
+      img.onerror = function () { cb(src); };
+      img.src = src;
+    };
+    fr.readAsDataURL(file);
+  }
+
+  function renderAtts(host) {
+    var wrap = host.querySelector('#chatAtt');
+    if (!wrap) return;
+    if (!cur.atts.length) { wrap.innerHTML = ''; wrap.className = 'chat-att'; return; }
+    var html = '';
+    for (var i = 0; i < cur.atts.length; i++) {
+      var a = cur.atts[i];
+      html += '<span class="att-chip">' +
+        (a.kind === 'image' ? '<img src="' + a.dataUrl + '" alt="">' : '<em>文</em>') +
+        '<b>' + esc(a.name) + '</b>' +
+        '<button class="att-x" data-att-del="' + i + '" title="去掉">✕</button></span>';
+    }
+    wrap.className = 'chat-att on';
+    wrap.innerHTML = html;
+  }
+
+  function pickAtts(host) {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.multiple = true;
+    inp.accept = 'image/*,.txt,.md,.markdown,.csv,.json,.log,.html,.htm,.xml';
+    inp.onchange = function () {
+      var files = inp.files ? Array.prototype.slice.call(inp.files) : [];
+      if (!files.length) return;
+      var room = ATT_MAX - cur.atts.length;
+      if (room <= 0) { toast('最多带 ' + ATT_MAX + ' 个附件'); return; }
+      files = files.slice(0, room);
+      var i = 0;
+      (function next() {
+        if (i >= files.length) { renderAtts(host); return; }
+        var f = files[i++];
+        if (/^image\//i.test(f.type || '')) {
+          if (f.size > 12 * 1024 * 1024) { toast(f.name + ' 超过 12MB，跳过了'); return next(); }
+          shrinkImage(f, function (dataUrl) {
+            cur.atts.push({ kind: 'image', name: f.name, dataUrl: dataUrl });
+            next();
+          });
+          return;
+        }
+        if (!isTextFile(f)) { toast(f.name + ' 不是文本或图片，先转成 txt 再传'); return next(); }
+        if (f.size > 2 * 1024 * 1024) { toast(f.name + ' 太大（>2MB），截一段再传'); return next(); }
+        var fr = new FileReader();
+        fr.onload = function () {
+          var t = String(fr.result || '');
+          cur.atts.push({ kind: 'text', name: f.name, text: t.slice(0, 8000) });
+          next();
+        };
+        fr.onerror = function () { next(); };
+        fr.readAsText(f, 'utf-8');
+      })();
+    };
+    inp.click();
+  }
+
+  /** 把附件折成模型的 messages 内容：有图就给视觉模型送 image_url */
+  function userContent(text, atts) {
+    var imgs = [], docs = [], i;
+    for (i = 0; i < atts.length; i++) {
+      if (atts[i].kind === 'image') imgs.push(atts[i]); else docs.push(atts[i]);
+    }
+    var parts = [];
+    if (text) parts.push(text);
+    for (i = 0; i < docs.length; i++) {
+      parts.push('【附件：' + docs[i].name + '】\n' + docs[i].text);
+    }
+    var flat = parts.join('\n\n');
+    if (!imgs.length) return flat;
+    var arr = [{ type: 'text', text: flat || '请看看这几张图。' }];
+    for (i = 0; i < imgs.length; i++) {
+      arr.push({ type: 'image_url', image_url: { url: imgs[i].dataUrl } });
+    }
+    return arr;
+  }
 
   /* ---------------- 上下文 ---------------- */
 
@@ -122,12 +226,15 @@
         '<section class="chat-in">' +
         '<div class="chat-priv" id="chatPriv"></div>' +
         '<div class="chat-opt">' +
-        (a ? '<label class="chk"><input type="checkbox" id="chatRefs" checked> 带上档案原文做参考</label>' : '') +
+        (a ? '<label class="ckb chk"><input type="checkbox" id="chatRefs" checked><i></i>' +
+          '<span>带上档案原文做参考</span></label>' : '') +
         '<input class="fi" id="chatExtra" placeholder="附加要求（可选），如：只写 300 字 / 保留方言 / 别用套话">' +
         '</div>' +
+        '<div class="chat-att" id="chatAtt"></div>' +
         '<textarea class="say mini" id="chatText" rows="2" placeholder="说点什么……（Ctrl+Enter 发送）"></textarea>' +
         '<div class="chat-acts">' +
         '<button class="btn tiny" id="chatVoice">🎙 说</button>' +
+        '<button class="btn tiny" id="chatFile">📎 附件</button>' +
         '<button class="btn tiny" id="chatNew">新对话</button>' +
         '<button class="btn tiny primary" id="chatSend">发送</button>' +
         '</div></section></main>';
@@ -184,6 +291,17 @@
     var log = host.querySelector('#chatLog');
     var textEl = host.querySelector('#chatText');
     var privEl = host.querySelector('#chatPriv');
+    var attWrap = host.querySelector('#chatAtt');
+
+    host.querySelector('#chatFile').addEventListener('click', function () { pickAtts(host); });
+    if (attWrap) {
+      attWrap.addEventListener('click', function (ev) {
+        var b = ev.target.closest ? ev.target.closest('[data-att-del]') : null;
+        if (!b) return;
+        cur.atts.splice(Number(b.getAttribute('data-att-del')), 1);
+        renderAtts(host);
+      });
+    }
 
     host.querySelector('#chatRoles').addEventListener('click', function (ev) {
       var t = ev.target.closest ? ev.target.closest('[data-role]') : null;
@@ -232,24 +350,33 @@
 
     function send() {
       var text = String(textEl.value || '').trim();
-      if (!text) return;
+      var atts = cur.atts.slice();
+      if (!text && !atts.length) return;
       if (cur.streaming) { toast('上一条还在写'); return; }
 
       var refsChk = host.querySelector('#chatRefs');
       var extraEl = host.querySelector('#chatExtra');
       var includeRefs = refsChk ? !!refsChk.checked : true;
       var extra = extraEl ? String(extraEl.value || '').trim() : '';
+      var hasImg = false, i0;
+      for (i0 = 0; i0 < atts.length; i0++) if (atts[i0].kind === 'image') hasImg = true;
 
       textEl.value = '';
+      cur.atts = [];
+      renderAtts(host);
       updatePriv();
 
+      var shown = text || '（附件）';
+      var stored = text + (atts.length ? '\n（附 ' + atts.length + ' 个文件：' +
+        atts.map(function (x) { return x.name; }).join('、') + '）' : '');
+
       var ensure = cur.threadId ? Promise.resolve(cur.threadId)
-        : DB.createThread(archiveId, cur.role, text.slice(0, 18)).then(function (id) {
+        : DB.createThread(archiveId, cur.role, shown.slice(0, 18)).then(function (id) {
             cur.threadId = id; return id;
           });
 
       ensure.then(function (tid) {
-        log.innerHTML += bubble('user', text);
+        log.innerHTML += bubble('user', shown + (atts.length ? '　＋' + atts.length + ' 附件' : ''));
         var node = document.createElement('div');
         node.innerHTML = bubble('assistant', '');
         var aiEl = node.firstChild;
@@ -258,10 +385,11 @@
         tEl.innerHTML = '<span class="dots">…</span>';
         log.scrollTop = log.scrollHeight;
 
-        return DB.addMessage(tid, 'user', text).then(function () {
+        return DB.addMessage(tid, 'user', stored).then(function () {
           return buildContext(archiveId, text, includeRefs);
         }).then(function (ctx) {
-          var sys = ROLES[cur.role].sys + '\n\n' + ctx.system + (extra ? '\n\n用户补充要求：' + extra : '');
+          var sys = ROLES[cur.role].sys + '\n\n' + ctx.system + (extra ? '\n\n用户补充要求：' + extra : '') +
+            (atts.length ? '\n\n用户这次还带了 ' + atts.length + ' 个附件（图片或文档），请直接依据附件内容回答，不要假装看不到。' : '');
           var msgs = [{ role: 'system', content: sys }];
           return DB.messages(tid).then(function (hist) {
             for (var i = 0; i < hist.length; i++) {
@@ -269,11 +397,14 @@
                 msgs.push({ role: hist[i].role, content: hist[i].content });
               }
             }
-            msgs.push({ role: 'user', content: text });
+            msgs.push({ role: 'user', content: userContent(text, atts) });
 
             var acc = '';
             var streamErr = null;
-            cur.streaming = API.chatStream({ messages: msgs }, function (evt) {
+            var req = { messages: msgs };
+            // 带图时必须走视觉模型：设置 → 模型来源里「识图」绑哪条就用哪条
+            if (hasImg) req.slot = 'vision';
+            cur.streaming = API.chatStream(req, function (evt) {
               if (evt.t === 'd') {
                 acc += evt.v;
                 tEl.textContent = acc;
@@ -302,7 +433,7 @@
               if (acc) {
                 return DB.addMessage(tid, 'assistant', acc, ctx.refs).catch(function () {});
               }
-              return API.ai({ messages: msgs }).then(function (r) {
+              return API.ai(hasImg ? { messages: msgs, slot: 'vision' } : { messages: msgs }).then(function (r) {
                 if (!r.ok) throw new Error(r.message || '调用失败');
                 tEl.textContent = r.text;
                 return DB.addMessage(tid, 'assistant', r.text, ctx.refs);

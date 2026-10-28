@@ -50,7 +50,7 @@
       }
 
       var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
-      var opts = chapters.map(function (c, i) {
+      var opts = '<option value="">整本（全部章节）</option>' + chapters.map(function (c, i) {
         return '<option value="' + c.id + '"' +
           (String(c.id) === String(preCh) ? ' selected' : '') + '>' +
           esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</option>';
@@ -58,8 +58,8 @@
 
       host.innerHTML = ML.topbar({ back: '#/a/' + archiveId, title: '短片' }) +
         '<main class="wrap">' +
-        '<section class="tl-hd"><h1 class="h1">做一条一分钟的片子</h1>' +
-        '<p class="muted">一句讲述一格，图来自档案里的插图与照片。字幕会烧进画面，导出就是竖屏 mp4。</p></section>' +
+        '<section class="tl-hd"><h1 class="h1">把档案做成竖屏小片</h1>' +
+        '<p class="muted">片长由内容决定，不再卡在一分钟：一段口述可能拆成几格，字幕烧进画面，导出就是竖屏 mp4。</p></section>' +
 
         (state.ffmpeg ? '' :
           '<p class="tip-warn">这个安装包里没有渲染引擎（ffmpeg），只能排分镜、不能合成。' +
@@ -69,14 +69,17 @@
         '<div class="art-row">' +
         '<select class="fi" id="mvCh" style="max-width:230px">' + opts + '</select>' +
         '<button class="btn" id="mvPlan">排分镜</button>' +
-        '</div></section>' +
+        '</div>' +
+        '<p class="hint dim">选「整本」是全部章节按顺序排下来，格子多、合成久，建议先在电脑上做。</p>' +
+        '</section>' +
 
         '<section id="mvHist"></section>' +
         '<section id="mvBody"></section>' +
         '</main>';
 
       host.querySelector('#mvPlan').onclick = function () {
-        var chId = Number(host.querySelector('#mvCh').value);
+        var sel = host.querySelector('#mvCh').value;
+        var chId = sel ? Number(sel) : 0;
         var body = host.querySelector('#mvBody');
         body.innerHTML = '<div class="boot">正在排分镜……</div>';
         API.moviePlan({ archiveId: archiveId, chapterId: chId }).then(function (p) {
@@ -115,9 +118,14 @@
     body.innerHTML =
       '<section class="mv-bar">' +
       '<b>' + esc(plan.title) + '</b>' +
-      '<span class="muted">' + frames.length + ' 格 · 约 ' + Math.round(total) + ' 秒' +
+      '<span class="muted">' + frames.length + ' 格 · 约 ' + Math.round(total) + ' 秒（' +
+      Math.max(1, Math.round(total / 60)) + ' 分钟）' +
       (plan.missing ? ' · ' + plan.missing + ' 格缺图' : '') + '</span>' +
       '</section>' +
+
+      (plan.truncated ? '<p class="tip-warn">内容太多，只排了前 ' + frames.length +
+        ' 格（约 ' + Math.round(total / 60) + ' 分钟）。想全做，分几次按章做，或多生成几条。' +
+        (plan.truncated > 0 ? '' : '') + '</p>' : '') +
 
       '<section class="art-set">' +
       '<div class="art-row">' +

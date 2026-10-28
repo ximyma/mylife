@@ -18,7 +18,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.4';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.5';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -1202,6 +1202,9 @@ async function apiImage(body) {
   const dir = path.join(ctxFiles(), 'ai', 'img');
   fs.mkdirSync(dir, { recursive: true });
   const errors = [];
+  // 参考图（可选）：带上它时缓存键也要变，否则换了参考图还命中旧图。
+  // 循环外先声明——失败兜底那段（拼 refHint）也要用到它。
+  const refB64 = body.refImage ? String(body.refImage).replace(/^data:[^,]*,/, '') : '';
 
   for (const cand of chain.slice(0, 2)) {
     // 图片模型必须真的是文生图模型。slot 走「默认 / 按规则」回退时，拿到的往往是该配置的
@@ -1211,8 +1214,6 @@ async function apiImage(body) {
     const model = body.model
       ? String(body.model)
       : (cand.model && isImageModel(cand.model) ? cand.model : 'Kwai-Kolors/Kolors');
-    // 参考图（可选）：带上它时缓存键也要变，否则换了参考图还命中旧图
-    const refB64 = body.refImage ? String(body.refImage).replace(/^data:[^,]*,/, '') : '';
     const key = imgKey(prompt + (refB64 ? '|ref:' + refB64.length + ':' + refB64.slice(0, 24) : ''), model, size);
 
     try {
@@ -1222,68 +1223,80 @@ async function apiImage(body) {
       }
     } catch (e) {}
 
-    try {
-      const t0 = Date.now();
-      const r = await fetchJson(endpointOf(cand.profile) + '/images/generations', {
-        method: 'POST',
-        headers: authHeaders(cand.profile),
-        body: JSON.stringify((function () {
-          const pl = {
-            model: model,
-            prompt: prompt,
-            image_size: size,
-            batch_size: 1,
-            num_inference_steps: Number(body.steps) || 20,
-            guidance_scale: Number(body.cfg) || 7.5,
-          };
-          // 参考图：只有部分图生图模型认 `image` 字段。不认的服务商会直接报错，
-          // 前端会把错误原样显示，用户可以去掉参考图或换个支持图生图的模型。
-          if (refB64) pl.image = refB64;
-          return pl;
-        })()),
-      }, 180000);
-
-      if (!r.ok) {
-        errors.push(cand.profile.name + ' HTTP ' + r.status + '：' + describeErr(r));
-        continue;
-      }
-      const j = r.json || {};
-      const item = (j.images && j.images[0]) || (j.data && j.data[0]) || null;
-      if (!item) { errors.push(cand.profile.name + ' 没返回图片'); continue; }
-
-      let buf = null;
-      const url = String(item.url || '');
-      if (url.indexOf('data:') === 0) {
-        buf = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
-      } else if (item.b64_json) {
-        buf = Buffer.from(String(item.b64_json), 'base64');
-      } else if (/^https?:/.test(url)) {
-        const img = await fetch(url);
-        if (!img.ok) { errors.push('图床取图失败 ' + img.status); continue; }
-        buf = Buffer.from(await img.arrayBuffer());
-      }
-      if (!buf || !buf.length) { errors.push(cand.profile.name + ' 图片是空的'); continue; }
-
-      const rel = 'ai/img/' + key + '.jpg';
-      fs.writeFileSync(path.join(ctxFiles(), rel), buf);
+    // 参考图：只有部分模型（图生图）认 `image` 字段。不认的服务商直接 500/400，
+    // 所以带参考图失败时自动退回纯文字再画一次——宁可少一张参考，也不能让用户点了没结果。
+    const attempts = refB64 ? [true, false] : [false];
+    for (let ai = 0; ai < attempts.length; ai++) {
+      const withRef = attempts[ai];
       try {
-        ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
-          .run('image', key, rel, prompt.slice(0, 300), model);
-      } catch (e) {}
-      usageAdd('image', model, 1, 'image', 0, 'image');
+        const t0 = Date.now();
+        const r = await fetchJson(endpointOf(cand.profile) + '/images/generations', {
+          method: 'POST',
+          headers: authHeaders(cand.profile),
+          body: JSON.stringify((function () {
+            const pl = {
+              model: model,
+              prompt: prompt,
+              image_size: size,
+              batch_size: 1,
+              num_inference_steps: Number(body.steps) || 20,
+              guidance_scale: Number(body.cfg) || 7.5,
+            };
+            if (withRef) pl.image = refB64;
+            return pl;
+          })()),
+        }, 180000);
 
-      return {
-        ok: true, path: rel, bytes: buf.length, model: model, ms: Date.now() - t0, cached: false,
-        note: '图片由 AI 生成，服务商会在角落加标识',
-      };
-    } catch (e) {
-      errors.push(cand.profile.name + ' 连不上：' + (e.message || e));
+        if (!r.ok) {
+          errors.push(cand.profile.name + (withRef ? '（带参考图）' : '') + ' HTTP ' + r.status + '：' + describeErr(r));
+          continue;
+        }
+        const j = r.json || {};
+        const item = (j.images && j.images[0]) || (j.data && j.data[0]) || null;
+        if (!item) { errors.push(cand.profile.name + ' 没返回图片'); continue; }
+
+        let buf = null;
+        const url = String(item.url || '');
+        if (url.indexOf('data:') === 0) {
+          buf = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
+        } else if (item.b64_json) {
+          buf = Buffer.from(String(item.b64_json), 'base64');
+        } else if (/^https?:/.test(url)) {
+          const img = await fetch(url);
+          if (!img.ok) { errors.push('图床取图失败 ' + img.status); continue; }
+          buf = Buffer.from(await img.arrayBuffer());
+        }
+        if (!buf || !buf.length) { errors.push(cand.profile.name + ' 图片是空的'); continue; }
+
+        // 退回纯文字画出来的图，要按「不含参考图」的键落缓存，否则下次纯文字请求命中不到
+        const finalKey = withRef ? key : imgKey(prompt, model, size);
+        const rel = 'ai/img/' + finalKey + '.jpg';
+        fs.writeFileSync(path.join(ctxFiles(), rel), buf);
+        try {
+          ctxDb().prepare('INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES (?,?,?,?,?)')
+            .run('image', finalKey, rel, prompt.slice(0, 300), model);
+        } catch (e) {}
+        usageAdd('image', model, 1, 'image', 0, 'image');
+
+        return {
+          ok: true, path: rel, bytes: buf.length, model: model, ms: Date.now() - t0, cached: false,
+          refIgnored: !!refB64 && !withRef,
+          note: (!withRef && refB64)
+            ? '这个模型不认参考图，已按提示词重新画一张。想严格照着照片画，请在「设置 → 图片生成」里换一个支持图生图的模型。'
+            : '图片由 AI 生成，服务商会在角落加标识',
+        };
+      } catch (e) {
+        errors.push(cand.profile.name + (withRef ? '（带参考图）' : '') + ' 连不上：' + (e.message || e));
+      }
     }
   }
 
+  const only = errors.join('；');
+  const refHint = refB64 && /HTTP (4|5)\d\d/.test(only)
+    ? '（带参考图的请求被服务商拒了，已自动改成纯文字重画；要给模型参考图，得换支持图生图的模型）' : '';
   return {
     ok: false,
-    message: '没画出来：' + errors.join('；') +
+    message: '没画出来：' + only + refHint +
       '。请到「设置 → 模型来源」把「图片生成」这一环选成硅基流动免费档，模型填 Kwai-Kolors/Kolors，并填好 API Key。',
   };
 }
@@ -1475,24 +1488,52 @@ function zoomExpr(i) {
 }
 
 /**
+ * 字幕一行放得下多少字：竖屏 + 58px 字号，一行 13 个字，最多四行。
+ * 长段落不再一刀切成 80 字丢掉后半截，而是按句子切成多格——内容多的章，片子自然更长。
+ */
+function splitSubtitle(text, limit) {
+  const max = limit || 50;
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return [s];
+  const out = [];
+  let buf = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charAt(i);
+    buf += ch;
+    const isEnd = '。！？；'.indexOf(ch) >= 0;
+    if ((isEnd && buf.length >= max * 0.5) || buf.length >= max) {
+      out.push(buf.trim()); buf = '';
+    }
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+/**
  * 分镜规划。规则决定，不花模型的钱：
- * 一句讲述 = 一格；时长按字数走（念得完为准）；图取条目自带的照片，没有就按章内顺序轮。
+ * 一段讲述可能拆成几格（字幕一行 13 字，四行封顶）；时长按字数走；图取条目自带的照片，没有就按章内顺序轮。
+ * 不传 chapterId = 整本档案，按章节顺序一路排下去。
  */
 function apiMoviePlan(body) {
   const aid = Number(body.archiveId);
-  const chId = Number(body.chapterId);
-  if (!aid || !chId) throw new Error('要指定档案和章节');
+  const chId = Number(body.chapterId) || 0;
+  if (!aid) throw new Error('要指定档案');
   const a = ctxDb().prepare('SELECT * FROM archives WHERE id=?').get(aid);
-  const ch = ctxDb().prepare('SELECT * FROM chapters WHERE id=?').get(chId);
   if (!a) throw new Error('找不到这本档案');
+  const ch = chId ? ctxDb().prepare('SELECT * FROM chapters WHERE id=?').get(chId) : null;
 
-  const entries = ctxDb().prepare(
-    'SELECT * FROM entries WHERE chapter_id=? ORDER BY sort_key, seq').all(chId)
-    .filter(function (e) { return String(e.text || '').trim().length > 0; });
-  if (!entries.length) throw new Error('这一章还没有讲述，先攒几段再来');
+  const rawEntries = chId
+    ? ctxDb().prepare('SELECT * FROM entries WHERE chapter_id=? ORDER BY COALESCE(sort_key,seq,0), id').all(chId)
+    : ctxDb().prepare(
+      'SELECT e.* FROM entries e LEFT JOIN chapters c ON c.id=e.chapter_id ' +
+      "WHERE e.archive_id=? AND e.kind IN ('text','quote') " +
+      'ORDER BY COALESCE(c.seq, 999999), COALESCE(e.sort_key, e.seq, 0), e.id').all(aid);
+  const entries = rawEntries.filter(function (e) { return String(e.text || '').trim().length > 0; });
+  if (!entries.length) throw new Error(chId ? '这一章还没有讲述，先攒几段再来' : '这本档案还没有文字内容');
 
-  const photos = ctxDb().prepare(
-    'SELECT * FROM photos WHERE chapter_id=? ORDER BY taken_year, taken_month, id').all(chId);
+  const photos = chId
+    ? ctxDb().prepare('SELECT * FROM photos WHERE chapter_id=? ORDER BY taken_year, taken_month, id').all(chId)
+    : ctxDb().prepare('SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year, taken_month, id').all(aid);
   const byId = {};
   for (const ph of photos) byId[ph.id] = ph;
   const used = {};
@@ -1510,22 +1551,35 @@ function apiMoviePlan(body) {
     });
   }
 
-  entries.forEach(function (en, i) {
-    const text = String(en.text || '').trim().replace(/\s+/g, ' ');
+  // 整本排下来可能很长：格数和总时长都留个上限，超了就截断，并在返回里告诉人
+  const MAX_FRAMES = 160;
+  const MAX_SECONDS = 900;   // 15 分钟封顶
+  let totalSec = 0;
+  let truncated = 0;
+
+  entries.forEach(function (en) {
+    if (frames.length >= MAX_FRAMES || totalSec >= MAX_SECONDS) { truncated++; return; }
+    const text = String(en.text || '').trim();
     let ph = en.photo_id ? byId[en.photo_id] : null;
     if (!ph) {
       while (cursor < photos.length && used[photos[cursor].id]) cursor++;
       if (cursor < photos.length) { ph = photos[cursor]; used[ph.id] = 1; cursor++; }
     } else { used[ph.id] = 1; }
 
-    // 2.4 秒打底，每 9 个字加 1 秒——按朗读速度估，念不完就延长
-    const sec = Math.min(7.5, Math.max(2.8, 2.4 + text.length / 9));
-    frames.push({
-      image: ph ? ph.path : null,
-      text: text.length > 80 ? text.slice(0, 80) + '…' : text,
-      sec: Math.round(sec * 10) / 10,
-      year: en.at_year || null,
-      entryId: en.id,
+    // 一段可能切成好几格：字幕一行 13 字、最多四行，所以一格不超过 50 字，内容一句不丢
+    const parts = splitSubtitle(text, 50);
+    parts.forEach(function (piece, pi) {
+      if (frames.length >= MAX_FRAMES || totalSec >= MAX_SECONDS) { truncated++; return; }
+      const sec = Math.min(12, Math.max(2.8, 2.4 + piece.length / 9));
+      frames.push({
+        image: ph ? ph.path : null,
+        text: piece,
+        sec: Math.round(sec * 10) / 10,
+        year: en.at_year || null,
+        entryId: en.id,
+        part: pi ? pi + 1 : 0,
+      });
+      totalSec += Math.round(sec * 10) / 10;
     });
   });
 
@@ -1538,6 +1592,8 @@ function apiMoviePlan(body) {
     frames: frames,
     seconds: Math.round(total * 10) / 10,
     missing: frames.filter(function (f) { return !f.image; }).length,
+    truncated: truncated,
+    entries: entries.length,
     hasFfmpeg: !!ffmpegPath(),
   };
 }

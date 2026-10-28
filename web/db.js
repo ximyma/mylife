@@ -1671,6 +1671,62 @@
       return API.exec('UPDATE entries SET photo_id=? WHERE id=?', [photoId || null, entryId]);
     },
 
+    /**
+     * 改一条内容的时间。时间轴上四种内容都用它。
+     * kind: entry | photo | segment | media；t: { year, month, day, label }
+     */
+    setTime: function (kind, id, t) {
+      t = t || {};
+      var y = t.year ? Number(t.year) : null;
+      var m = t.month ? Number(t.month) : null;
+      var d = t.day ? Number(t.day) : null;
+      var label = t.label ? String(t.label) : null;
+      var prec = y ? (d ? 'day' : (m ? 'month' : 'year')) : null;
+      if (kind === 'photo') {
+        return API.exec('UPDATE photos SET taken_year=?, taken_month=?, taken_day=? WHERE id=?',
+          [y || 0, m, d, id]);
+      }
+      if (kind === 'segment') {
+        return API.exec('UPDATE segments SET at_year=?, at_month=?, at_day=?, at_precision=?, at_label=? WHERE id=?',
+          [y, m, d, prec, label, id]);
+      }
+      if (kind === 'media') {
+        return API.exec('UPDATE media SET at_year=?, at_month=?, at_day=?, at_precision=?, at_label=? WHERE id=?',
+          [y, m, d, prec, label, id]);
+      }
+      return API.exec('UPDATE entries SET at_year=?, at_month=?, at_day=?, at_precision=?, at_label=? WHERE id=?',
+        [y, m, d, prec, label, id]);
+    },
+
+    /** 段落还没归章时，按年份找一章归进去；找不到就留在待归档 */
+    placeEntryByYear: function (entryId, year) {
+      if (!year) return Promise.resolve({ ok: false, chapterId: null });
+      return API.query('SELECT archive_id, chapter_id FROM entries WHERE id=?', [entryId]).then(function (r) {
+        if (!r.length) return { ok: false, chapterId: null };
+        if (r[0].chapter_id) return { ok: false, chapterId: r[0].chapter_id };
+        return DB.chapterForYear(r[0].archive_id, year).then(function (chId) {
+          if (!chId) return { ok: false, chapterId: null };
+          return DB.setEntryChapter(entryId, chId).then(function () {
+            return { ok: true, chapterId: chId };
+          });
+        });
+      });
+    },
+
+    /** 把一张照片挪到另一章：照片自己的章号 + 引用它的条目一起挪到那章末尾 */
+    movePhotoChapter: function (photoId, chapterId) {
+      var cid = chapterId ? Number(chapterId) : null;
+      return API.exec('UPDATE photos SET chapter_id=? WHERE id=?', [cid, photoId]).then(function () {
+        return API.query('SELECT id FROM entries WHERE photo_id=?', [photoId]);
+      }).then(function (rows) {
+        var chain = Promise.resolve();
+        (rows || []).forEach(function (row) {
+          chain = chain.then(function () { return DB.setEntryChapter(row.id, cid); });
+        });
+        return chain;
+      }).then(function () { return { ok: true }; });
+    },
+
     /* ================= v0.5：版本（原文只读） ================= */
 
     listVersions: function (entryId) {
@@ -1797,13 +1853,16 @@
 
     SCRIPT_SYS: '你是一位写实风格的编剧，正在把一位老人的口述整理成分场剧本。\n' +
       '规则：只能使用用户给的材料，不得虚构人名、时间、地点、事件；缺的细节写 [待考]，不要自己编。\n' +
+      '必须把材料里的每一件事都排进戏里，按时间顺序推进，不许只挑开头几段写；材料多就多写几场，场次不设上限。\n' +
       '严格按下面的格式输出，不要任何额外说明：\n' +
-      '【场 1】内景 · 车间 · 日 / 1956 年春\n' +
-      '人物：桂芳、孙师傅\n' +
+      '【场 1】内景 · 〔地点〕 · 日 / 〔哪一年〕\n' +
+      '人物：〔人名〕、〔人名〕\n' +
       '△ 一句话写动作或环境。\n' +
-      '孙师傅：台词写在这里。\n' +
-      '桂芳：（小声）带情绪的台词这样写。\n' +
-      '（每个场景之间空一行；对白一行一句；旁白用「旁白：」开头。）',
+      '〔人名〕：台词写在这里。\n' +
+      '〔人名〕：（小声）带情绪的台词这样写。\n' +
+      '（每场之间空一行；对白一行一句；旁白用「旁白：」开头。）\n' +
+      '注意：上面只是格式样板，括号里的〔地点〕〔人名〕〔哪一年〕是占位符。' +
+      '真实写作时必须换成材料里出现的地点和人名，绝对不许把样板里的字样写进剧本。',
 
     generateScript: function (archiveId, chapterId, extra) {
       var chP = chapterId
@@ -1815,8 +1874,8 @@
         if (!a) throw new Error('找不到这本档案');
 
         var q = chapterId
-          ? API.query('SELECT text FROM entries WHERE chapter_id=? ORDER BY sort_key, seq', [chapterId])
-          : API.query('SELECT text FROM entries WHERE archive_id=? ORDER BY sort_key, seq LIMIT 30', [archiveId]);
+          ? API.query("SELECT text FROM entries WHERE chapter_id=? AND kind IN ('text','quote') ORDER BY COALESCE(sort_key,seq,0), id", [chapterId])
+          : API.query("SELECT text FROM entries WHERE archive_id=? AND kind IN ('text','quote') ORDER BY COALESCE(sort_key,seq,0), id", [archiveId]);
 
         return q.then(function (rows) {
           var material = rows.map(function (x) { return String(x.text || '').trim(); })
@@ -1825,13 +1884,15 @@
 
           var head = '档案主角：' + a.subject_name + (a.birth_year ? '，' + a.birth_year + ' 年生' : '') +
             (a.hometown ? '，' + a.hometown + '人' : '') + '。\n' +
-            (ch ? '本场取材自：' + (ch.title || '') + (ch.year_from ? '（' + ch.year_from + '—' + (ch.year_to || ch.year_from) + '）' : '') + '\n' : '');
+            (ch ? '本剧取材自：' + (ch.title || '') + (ch.year_from ? '（' + ch.year_from + '—' + (ch.year_to || ch.year_from) + '）' : '') + '\n'
+              : '本剧取材自整本档案，共 ' + rows.length + ' 段口述。\n');
 
           return API.ai({
             messages: [
               { role: 'system', content: DB.SCRIPT_SYS },
-              { role: 'user', content: head + '\n材料（原话）：\n' + material + '\n\n' +
-                (extra ? '这次的要求：' + extra + '\n\n' : '') + '请整理成 3 到 6 场戏。' },
+              { role: 'user', content: head + '\n材料（原话，按人生顺序）：\n' + material + '\n\n' +
+                (extra ? '这次的要求：' + extra + '\n\n' : '') +
+                '请把这些材料全部排成戏，一场接一场按时间往下走；材料多就多分几场，不要只写开头。' },
             ],
             temperature: 0.5,
           }).then(function (out) {

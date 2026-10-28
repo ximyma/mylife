@@ -164,10 +164,12 @@ const LONG = '一九五六年国棉三厂招工，我十六岁，母亲给我做
   await js('(function(){document.querySelector("#mvPlan").click();return 1;})()');
   await sleep(2500);
   const frames = await js('document.querySelectorAll(".mv-frame").length');
-  ck('分镜按讲述条数排开', frames === 5, frames);
+  // 分镜不再「一条讲述一格」：长段按句切成多格（v0.9.5 起，长段落不再截断丢字），
+  // 所以只断言「格数不少于讲述条数」，再用格数去核对每格都带改词框和时长框。
+  ck('分镜按讲述条数排开（长段会切成多格）', frames >= 5, frames);
   ck('缺图的格子标出来了', await js('!!document.querySelector(".mv-thumb span")'));
-  ck('每格能改词（textarea）', await js('document.querySelectorAll(".mv-text").length === 5'));
-  ck('每格能调时长', await js('document.querySelectorAll(".mv-sec").length === 5'));
+  ck('每格能改词（textarea）', await js('document.querySelectorAll(".mv-text").length') === frames);
+  ck('每格能调时长', await js('document.querySelectorAll(".mv-sec").length') === frames);
   ck('有配音开关', await js('!!document.querySelector("#mvVoice")'));
   ck('有配乐下拉', await js('!!document.querySelector("#mvBgm")'));
 

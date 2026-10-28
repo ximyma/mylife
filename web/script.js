@@ -25,7 +25,7 @@
       var a = r[0][0], chapters = r[1], scripts = r[2];
       if (!a) throw new Error('找不到这本档案');
 
-      var opts = '<option value="">整本（前 30 条）</option>';
+      var opts = '<option value="">整本（全部内容）</option>';
       var preCh = (window.ML && ML.qs) ? ML.qs('ch') : '';
       for (var i = 0; i < chapters.length; i++) {
         opts += '<option value="' + chapters[i].id + '"' +
@@ -46,9 +46,9 @@
         '<select class="fi" id="scCh" style="max-width:240px">' + opts + '</select>' +
         '<button class="btn primary" id="scGen">生成剧本</button>' +
         '</section>' +
-        '<section class="sc-req"><label class="ap-l">生成要求<small>可以改；留空按默认（3–6 场，只用档案事实）</small>' +
+        '<section class="sc-req"><label class="ap-l">生成要求<small>可以改；留空按默认（整段材料全排进戏、只用档案事实）</small>' +
         '<textarea id="scExtra" placeholder="例如：只写 1960 年代；每场一个地点；对白保留方言；多写母亲的部分"></textarea></label></section>' +
-        '<p class="hint dim" id="scTip">生成会用「设置 → 模型来源」里的文字模型，一次约一两千字。</p>' +
+        '<p class="hint dim" id="scTip">会把你选中的全部口述都排进戏里（不是只挑几段），整本时材料长，等得久一点。</p>' +
         (listHtml ? '<div class="sc-list" id="scList">' + listHtml + '</div>' : '') +
         '<section id="scBody"></section></main>';
 

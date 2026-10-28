@@ -60,10 +60,15 @@ const ck = (n, c, d) => {
 
   const plan = await S.post('/api/movie/plan', { archiveId: aid, chapterId: chId }, t);
   ck('规划成功', plan.ok === true, JSON.stringify(plan).slice(0, 120));
-  ck('一句讲述一格', plan.frames.length === 2, plan.frames.length);
-  ck('长句按字数加权：比短句长', plan.frames[0].sec > plan.frames[1].sec,
-    plan.frames[0].sec + ' vs ' + plan.frames[1].sec);
-  ck('单格时长封顶 7.5 秒', plan.frames[0].sec <= 7.5, plan.frames[0].sec);
+  // v0.9.5 起长讲述按句/按 50 字切格（字幕一行 13 字、四行封顶），一句不丢；
+  // 短句仍然一格。所以 2 段 → 3 格，每格都能回指到它的讲述条目。
+  ck('长讲述切成多格、短讲述一格（不丢字）', plan.frames.length === 3 &&
+    plan.frames.every(f => !!f.entryId), plan.frames.length);
+  ck('切开的格子拼回去等于原文', plan.frames.filter(f => f.entryId === e1).map(f => f.text).join('') === LONGTEXT,
+    plan.frames.map(f => f.text).join(' | ').slice(0, 80));
+  ck('长句按字数加权：比短句长', plan.frames[0].sec > plan.frames[2].sec,
+    plan.frames[0].sec + ' vs ' + plan.frames[2].sec);
+  ck('单格时长封顶 12 秒（够念完 50 字）', plan.frames[0].sec <= 12, plan.frames[0].sec);
   ck('单格时长不低于 2.8 秒', plan.frames[1].sec >= 2.8, plan.frames[1].sec);
   ck('没有照片的格子标出来缺图', plan.missing === 1, plan.missing);
   ck('规划能识别 ffmpeg 在不在', typeof plan.hasFfmpeg === 'boolean', plan.hasFfmpeg);

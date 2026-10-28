@@ -149,7 +149,7 @@
           '<button class="btn tiny" id="apRefPick">选一张图做参考</button>' +
           '<img id="apRefImg" class="ap-refimg" alt="">' +
           '<button class="btn tiny" id="apRefClear">去掉</button>' +
-          '</div><small class="ap-note">部分模型支持参考图；不支持时服务商会明确报错，去掉参考图或换个模型即可。</small></div>' +
+          '</div><small class="ap-note">不认参考图的模型（比如免费的 Kolors）会自动退回纯文字重画，界面上会写明。想严格照着照片画，得在设置里换支持图生图的模型。</small></div>' +
           '<div class="ml-modal-acts">' +
           '<button class="btn primary" id="apGo">生成</button>' +
           '<button class="btn" id="apClose">关闭</button></div>' +
@@ -204,9 +204,13 @@
               return;
             }
             var lastPath = r.path;
+            msg.textContent = r.refIgnored
+              ? '这个模型不认参考图，已按提示词重画一张（想照着照片画，换支持图生图的模型）'
+              : '每张约 4–8 秒';
             out.innerHTML =
               '<figure class="ap-fig"><img src="' + esc(fsrc(lastPath)) + '" alt="">' +
               '<figcaption>' + esc(r.model || '') + (r.cached ? ' · 缓存' : ' · ' + Math.round((r.ms || 0) / 1000) + 's') + '</figcaption></figure>' +
+              (r.refIgnored ? '<div class="warn-text small">参考图没用上：' + esc(r.note || '') + '</div>' : '') +
               '<div class="ap-result">' +
               '<button class="btn tiny primary" data-ap-insert="1">插到这一段后面</button>' +
               '<button class="btn tiny" data-ap-again="1">再画一张</button>' +

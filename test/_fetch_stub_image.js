@@ -10,8 +10,19 @@ async function fakeFetch(url, opts) {
   const u = String(url);
   if (u.indexOf('/images/generations') !== -1) {
     let model = '';
-    try { model = JSON.parse((opts && opts.body) || '{}').model; } catch (e) {}
-    try { fs.appendFileSync(DATA_DIR + '/last_model.txt', model + '\n'); } catch (e) {}
+    let withRef = false;
+    try {
+      const b = JSON.parse((opts && opts.body) || '{}');
+      model = b.model;
+      withRef = !!b.image;
+    } catch (e) {}
+    try { fs.appendFileSync(DATA_DIR + '/last_model.txt', model + (withRef ? ' (with-ref)' : '') + '\n'); } catch (e) {}
+    // 硅基流动的 Kolors 是纯文生图，不收 image 字段：带上参考图会直接 500 code 50500。
+    // 桩照抄这个真实行为，用来验证服务端「带参考图失败 → 自动退回纯文字重画」。
+    if (withRef) {
+      const err = JSON.stringify({ code: 50500, message: 'Request failed: Unknown error.' });
+      return { ok: false, status: 500, async text() { return err; } };
+    }
     if (model === 'Kwai-Kolors/Kolors') {
       const payload = JSON.stringify({ images: [{ url: 'data:image/png;base64,' + PNG }] });
       return { ok: true, status: 200, async text() { return payload; } };

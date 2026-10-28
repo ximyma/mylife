@@ -135,7 +135,11 @@ async function waitCdp() {
   await sleep(500);
   ck('选图弹窗打开了', await page.js('!!document.querySelector(".pick-grid")'));
   ck('弹窗里列出了照片', await page.js('document.querySelectorAll(".pick-ph").length >= 3'), await page.js('document.querySelectorAll(".pick-ph").length'));
+  // v0.9.5 起配图是多选：点图 → 点「配到这一段」
   await page.click('.pick-ph');
+  await sleep(300);
+  ck('选中后确认按钮可用', await page.js('(function(){var b=document.querySelector("[data-mpick-ok]");return !!b && !b.disabled})()'));
+  await page.click('[data-mpick-ok]');
   await sleep(1400);
   const rowE1 = (await q('SELECT photo_id FROM entries WHERE id=?', [e1]))[0];
   ck('配图写进了库（photo_id 有值）', rowE1 && rowE1.photo_id, JSON.stringify(rowE1));

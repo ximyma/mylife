@@ -118,6 +118,15 @@ function openDbRetry(file, tries) {
   const login = await req('POST', '/api/auth/login', { phone: '13800138000', password: '123456' });
   const token = login.json.token;
   const img = await req('POST', '/api/image', { prompt: '一栋农村两层小楼，泥瓦房，暖色调', size: '1024x1024' }, token);
+
+  // 3b) 带参考图：桩会照抄硅基流动的真实行为（Kolors 不收 image 字段 → 500 code 50500）。
+  //     服务端应当自动退回纯文字再画一次，而不是把 500 直接丢给用户。
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const imgRef = await req('POST', '/api/image', {
+    prompt: '照着这张老照片画一张插画：村口的老槐树',
+    size: '1024x1024',
+    refImage: 'data:image/png;base64,' + PNG,
+  }, token);
   await stop();
 
   // 4) 断言
@@ -133,6 +142,17 @@ function openDbRetry(file, tries) {
     img.json && img.json.message);
   ck('no [object Object] 乱码出现在报错里（若失败）',
     !(img.json && img.json.message && img.json.message.indexOf('[object Object]') !== -1));
+
+  // 5) 参考图降级：带 image 字段被 500 拒掉后，自动纯文字重画并标记 refIgnored
+  console.log('  带参考图返回：', JSON.stringify(imgRef.json).slice(0, 240));
+  ck('带参考图被拒后自动退回纯文字重画（不把 500 丢给用户）',
+    imgRef.json && imgRef.json.ok === true && /\.jpg$/.test(imgRef.json.path || ''),
+    imgRef.json && imgRef.json.message);
+  ck('返回里标记 refIgnored，前端可提示「模型不认参考图」',
+    imgRef.json && imgRef.json.refIgnored === true, JSON.stringify(imgRef.json && imgRef.json.refIgnored));
+  ck('桩里记录了「先带参考图、再纯文字」两次请求',
+    last.some(function (x) { return x.indexOf('(with-ref)') !== -1; }),
+    last.join(' | '));
 
   console.log('\n图片生成回归：' + pass + ' 通过 / ' + failN + ' 失败');
   try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (e) {}

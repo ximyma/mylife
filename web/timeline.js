@@ -99,6 +99,33 @@
           DB.moveEntry(Number(mv.getAttribute('data-tl-move')), Number(mv.getAttribute('data-dir')))
             .then(function (r) { if (!r || !r.moved) toast('已经到头了'); render(host, archiveId); })
             .catch(function (e) { toast(e.message || '移不动'); });
+          return;
+        }
+        var tm = t.closest('[data-tl-time]');
+        if (tm) {
+          var kindT = tm.getAttribute('data-kind');
+          var y0 = tm.getAttribute('data-y');
+          openTimeEdit(kindT, Number(tm.getAttribute('data-tl-time')), {
+            year: y0 ? Number(y0) : null,
+            month: Number(tm.getAttribute('data-m')) || null,
+            day: Number(tm.getAttribute('data-d')) || null,
+            label: tm.getAttribute('data-label') || '',
+          }, function () { render(host, archiveId); });
+          return;
+        }
+        var cp = t.closest('[data-tl-chap]');
+        if (cp) {
+          var kindC = cp.getAttribute('data-kind');
+          var idC = Number(cp.getAttribute('data-tl-chap'));
+          pickChapter(archiveId, function (chId) {
+            var p2 = kindC === 'photo' ? DB.movePhotoChapter(idC, chId || null)
+              : DB.setEntryChapter(idC, chId || null);
+            p2.then(function () {
+              toast(chId ? '归好了' : '退回待归档');
+              render(host, archiveId);
+            }).catch(function (e) { toast(e.message || '没归上'); });
+          });
+          return;
         }
       });
 
@@ -106,6 +133,8 @@
         openInsert(archiveId, a, chapters, function () { render(host, archiveId); });
       });
       host.querySelector('#tlBook').addEventListener('click', function () {
+        // 「看整本」不再直接跳目录：让人选 目录 / 导出 / 整本网页
+        if (window.APP && window.APP.openWholeBook) { window.APP.openWholeBook(archiveId); return; }
         go('#/a/' + archiveId);
       });
     }).catch(function (e) {
@@ -131,12 +160,108 @@
       ops += '<button class="linkbtn" data-tl-move="' + it.id + '" data-dir="-1" title="上移">↑</button>' +
         '<button class="linkbtn" data-tl-move="' + it.id + '" data-dir="1" title="下移">↓</button>';
     }
+    ops += '<button class="linkbtn" data-tl-time="' + it.id + '" data-kind="' + it.kind +
+      '" data-y="' + (it.at_year || '') + '" data-m="' + (it.at_month || '') +
+      '" data-d="' + (it.at_day || '') + '" data-label="' + esc(it.at_label || '') +
+      '" title="改这一条的时间">改时间</button>';
+    if (it.kind === 'entry' || it.kind === 'photo') {
+      ops += '<button class="linkbtn" data-tl-chap="' + it.id + '" data-kind="' + it.kind +
+        '" title="归到哪一章">归章</button>';
+    }
     ops += '<button class="linkbtn danger-t" data-tl-del="' + it.id + '" data-kind="' + it.kind + '">删</button>';
     return '<div class="tl-item">' +
       '<div class="tl-when"><span class="tl-badge ' + meta.c + '">' + meta.n + '</span>' +
       '<span class="tl-date">' + esc(dateLabel(it)) + '</span></div>' +
       '<div class="tl-body">' + body + '</div>' +
       '<div class="tl-ops">' + ops + '</div></div>';
+  }
+
+  /* ---------------- 改时间 ---------------- */
+
+  /**
+   * 时间轴上的每一条都能改时间；没有年份的也能补。
+   * 补完年份顺手把没归章的条目、或换了年份的照片，挪到年份对应的那一章。
+   */
+  function openTimeEdit(kind, id, cur, done) {
+    var back = document.createElement('div');
+    back.className = 'ml-modal-ov';
+    back.innerHTML = '<div class="ml-modal"><h3>改这条的时间</h3>' +
+      '<p class="hint dim">只记得年就填年；说得出「麦收前后」就写在最后一栏。</p>' +
+      '<div class="ae-row"><label class="fi-l">年<input class="fi" id="teY" type="number" inputmode="numeric" value="' +
+      (cur.year || '') + '" placeholder="1962"></label>' +
+      '<label class="fi-l">月<input class="fi" id="teM" type="number" min="1" max="12" value="' +
+      (cur.month || '') + '" placeholder="可不填"></label>' +
+      '<label class="fi-l">日<input class="fi" id="teD" type="number" min="1" max="31" value="' +
+      (cur.day || '') + '" placeholder="可不填"></label></div>' +
+      '<label class="fi-l">说不清的日子<input class="fi" id="teL" value="' + esc(cur.label || '') +
+      '" placeholder="麦收前后 / 刚过完年"></label>' +
+      '<div class="ml-modal-acts"><button class="btn primary" data-te-ok="1">保存</button>' +
+      '<button class="btn" data-te-cancel="1">取消</button></div>' +
+      '<div class="ml-modal-msg" id="teMsg"></div></div>';
+    document.body.appendChild(back);
+
+    back.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t.closest) return;
+      if (t === back || t.closest('[data-te-cancel]')) { back.parentNode.removeChild(back); return; }
+      if (!t.closest('[data-te-ok]')) return;
+
+      var y = Number(back.querySelector('#teY').value) || null;
+      var m = Number(back.querySelector('#teM').value) || null;
+      var d = Number(back.querySelector('#teD').value) || null;
+      var label = String(back.querySelector('#teL').value || '').trim() || null;
+      if (!y) { back.querySelector('#teMsg').textContent = '至少填哪一年'; return; }
+
+      var msg = back.querySelector('#teMsg');
+      msg.textContent = '正在存……';
+      DB.setTime(kind, id, { year: y, month: m, day: d, label: label }).then(function () {
+        if (kind === 'entry') {
+          return DB.placeEntryByYear(id, y).then(function (r) {
+            return r && r.ok ? '已保存，并按 ' + y + ' 年归到对应的一章' : '已保存';
+          });
+        }
+        if (kind === 'photo') {
+          return '已保存（想让这张图换章，点「归章」）';
+        }
+        return '已保存';
+      }).then(function (text) {
+        back.parentNode.removeChild(back);
+        toast(text || '已保存');
+        if (done) done();
+      }).catch(function (e) {
+        msg.textContent = '没存上：' + (e.message || e);
+      });
+    });
+  }
+
+  /** 选一章（0 = 退回待归档） */
+  function pickChapter(archiveId, onPick) {
+    API.query('SELECT id, title FROM chapters WHERE archive_id=? ORDER BY seq, id', [archiveId])
+      .then(function (list) {
+        var rows = '<button class="pick-ch" data-pick-c="0">（退回待归档）</button>';
+        for (var i = 0; i < list.length; i++) {
+          var t = String(list[i].title || '').replace(/^[^·]*·\s*/, '') || ('第 ' + (i + 1) + ' 章');
+          rows += '<button class="pick-ch" data-pick-c="' + list[i].id + '">' + (i + 1) + '. ' + esc(t) + '</button>';
+        }
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>归到哪一章</h3>' +
+          '<div class="pick-chs">' + rows + '</div>' +
+          '<div class="ml-modal-acts"><button class="btn" data-pick-c-cancel="1">取消</button></div></div>';
+        document.body.appendChild(ov);
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-c-cancel]'))) {
+            if (ov.parentNode) ov.parentNode.removeChild(ov);
+            return;
+          }
+          var b = ev.target.closest && ev.target.closest('[data-pick-c]');
+          if (b) {
+            var cid = Number(b.getAttribute('data-pick-c'));
+            ov.parentNode.removeChild(ov);
+            onPick(cid);
+          }
+        });
+      }).catch(function (e) { toast(e.message || '打不开'); });
   }
 
   /* ---------------- 插入抽屉 ---------------- */
