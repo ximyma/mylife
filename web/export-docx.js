@@ -52,12 +52,14 @@
 
     function para(text, opts) {
       opts = opts || {};
+      // 不用 Object.assign（Chrome 45+ 才有，安卓老 WebView 没有），显式拼 ES5 对象
+      var run = { font: fontRun.font, size: fontRun.size, text: String(text || '') };
+      if (opts.bold) run.bold = true;
       return new Paragraph({
         alignment: opts.align || AlignmentType.JUSTIFIED,
         spacing: { line: 360, after: opts.after === undefined ? 120 : opts.after },
         indent: opts.indent === false ? undefined : { firstLine: 420 },
-        children: [new TextRun(Object.assign({}, fontRun,
-          opts.bold ? { bold: true } : {}, { text: String(text || '') }))],
+        children: [new TextRun(run)],
       });
     }
 

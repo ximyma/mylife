@@ -62,7 +62,27 @@ function start(withStub) {
     })();
   });
 }
-function stop() { if (srv) { try { srv.kill(); } catch (e) {} srv = null; } }
+function stop() {
+  return new Promise(function (resolve) {
+    if (!srv) return resolve();
+    var p = srv; srv = null; var done = false;
+    var fin = function () { if (!done) { done = true; resolve(); } };
+    try { p.on('exit', fin); } catch (e) {}
+    try { p.kill(); } catch (e) {}
+    setTimeout(fin, 2500);   // 兜底：万一没触发 exit
+  });
+}
+
+// 服务刚被杀时 SQLite 的 WAL 可能还没放锁，打开库要重试几下
+function openDbRetry(file, tries) {
+  tries = tries || 20;
+  for (var i = 0; i < tries; i++) {
+    try { return new DatabaseSync(file); } catch (e) {
+      if (i === tries - 1) throw e;
+      var end = Date.now() + 120; while (Date.now() < end) {}
+    }
+  }
+}
 
 (async () => {
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
@@ -77,17 +97,17 @@ function stop() { if (srv) { try { srv.kill(); } catch (e) {} srv = null; } }
 
   // 发一个带 token 的请求，强制服务端为该用户创建 archive.db 并应用 schema
   await req('POST', '/api/query', { sql: 'SELECT 1 AS ok' }, regToken);
-  stop();
+  await stop();
 
   // 读出真实 uid，定位 archive.db
-  const adb = new DatabaseSync(path.join(DATA_DIR, 'auth.db'));
+  const adb = openDbRetry(path.join(DATA_DIR, 'auth.db'));
   const u = adb.prepare('SELECT id FROM users WHERE phone=?').get('13800138000');
   const uid = u ? u.id : 1;
   adb.close();
 
   // 2) 往该用户的 archive.db 插一条「硅基流动免费档」配置：默认模型设成文本模型 Qwen3-8B，
   //    并且「图片生成」slot 不显式绑定（= 默认 / 按规则，会回退到这条配置的 default_model）。
-  const arc = new DatabaseSync(path.join(DATA_DIR, 'users', String(uid), 'archive.db'));
+  const arc = openDbRetry(path.join(DATA_DIR, 'users', String(uid), 'archive.db'));
   arc.exec("INSERT INTO ai_profiles (name, kind, base_url, api_key, default_model, enabled, sort) VALUES ('硅基流动 · 免费档','siliconflow','https://api.siliconflow.cn/v1','sk-test','Qwen3-8B',1,0)");
   // 确保 img slot 是「默认 / 按规则」(profile_id 为 NULL)
   arc.exec("UPDATE ai_slots SET profile_id=NULL, model=NULL WHERE slot='img'");
@@ -98,7 +118,7 @@ function stop() { if (srv) { try { srv.kill(); } catch (e) {} srv = null; } }
   const login = await req('POST', '/api/auth/login', { phone: '13800138000', password: '123456' });
   const token = login.json.token;
   const img = await req('POST', '/api/image', { prompt: '一栋农村两层小楼，泥瓦房，暖色调', size: '1024x1024' }, token);
-  stop();
+  await stop();
 
   // 4) 断言
   const last = fs.existsSync(path.join(DATA_DIR, 'last_model.txt'))

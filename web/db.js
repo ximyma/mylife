@@ -642,19 +642,24 @@
         API.query('SELECT audio_path FROM segments WHERE archive_id=? AND audio_path IS NOT NULL', [id]),
         API.query('SELECT path, poster FROM media WHERE archive_id=?', [id])
       ]).then(function (r) {
-        const paths = [];
-        for (const p of r[0]) if (p.path) paths.push(p.path);
-        for (const s of r[1]) if (s.audio_path) paths.push(s.audio_path);
-        for (const m of r[2]) { if (m.path) paths.push(m.path); if (m.poster) paths.push(m.poster); }
+        // 必须 ES5：安卓 5/6 的 WebView 内核不认 const/let/for...of，用了整个文件会语法报错
+        var paths = [];
+        var i;
+        for (i = 0; i < r[0].length; i++) if (r[0][i].path) paths.push(r[0][i].path);
+        for (i = 0; i < r[1].length; i++) if (r[1][i].audio_path) paths.push(r[1][i].audio_path);
+        for (i = 0; i < r[2].length; i++) {
+          if (r[2][i].path) paths.push(r[2][i].path);
+          if (r[2][i].poster) paths.push(r[2][i].poster);
+        }
 
         return API.exec('DELETE FROM archives WHERE id=?', [id]).then(function (res) {
           // 库记录已级联删除，文件慢慢清，失败不拦着
-          let chain = Promise.resolve();
-          for (const p of paths) {
+          var chain = Promise.resolve();
+          paths.forEach(function (p) {
             chain = chain.then(function () {
               return API.file({ op: 'del', path: p }).catch(function () {});
             });
-          }
+          });
           return chain.then(function () { return res; });
         });
       });

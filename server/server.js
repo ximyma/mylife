@@ -360,9 +360,9 @@ function initSchemaOn(d) {
     all++;
     try { d.exec(clean); ok++; }
     catch (e) {
-      // ALTER TABLE 加列在第二次打开时必然"重复列名"——这是幂等迁移的正常现象，不用刷屏
+      // ALTER TABLE 加列在第二次打开时会"重复列名"——幂等迁移，结构已就绪，算成功不算失败
       const msg = String(e && e.message || '');
-      if (/duplicate column name|already exists/i.test(msg)) continue;
+      if (/duplicate column name|already exists/i.test(msg)) { ok++; continue; }
       console.warn('[schema] 跳过：', clean.slice(0, 50), msg);
     }
   }
@@ -507,16 +507,47 @@ function bind(params) {
   return (params || []).map(v => (v === null || v === undefined) ? null : String(v));
 }
 
+/** 剥掉前导空白与注释，返回小写化的语句开头。用于关键字检查，防止用注释绕过。 */
+function leadingSql(sql) {
+  let s = String(sql || '');
+  for (;;) {
+    const t = s.replace(/^\s+/, '');
+    if (t.startsWith('--')) { const nl = t.indexOf('\n'); s = nl === -1 ? '' : t.slice(nl + 1); continue; }
+    if (t.startsWith('/*')) { const e = t.indexOf('*/'); s = e === -1 ? '' : t.slice(e + 2); continue; }
+    return t.toLowerCase();
+  }
+}
+
+/**
+ * 多用户隔离：不许把别的数据库挂进来，也不许加载扩展。
+ * 不拦的话，客户端可以用 ATTACH DATABASE '<别人 archive.db>' 读到别人的数据（已实测可行）。
+ * 按分号拆成多条语句逐条看开头，既防注释/多语句绕过，也不会误伤正文里出现的 attach 字样。
+ */
+function assertNoAttach(sql) {
+  const s = String(sql || '');
+  // load_extension 可能作为函数出现在 SELECT 里，前导关键字抓不到，单独按调用形态拦
+  if (/\bload_extension\s*\(/i.test(s)) throw new Error('不允许加载扩展');
+  const parts = s.split(';');
+  for (const p of parts) {
+    const low = leadingSql(p);
+    if (/^(attach|detach)\b/.test(low)) {
+      throw new Error('不允许挂载或卸载其它数据库');
+    }
+  }
+}
+
 function apiQuery(body) {
+  assertNoAttach(body.sql);
   const stmt = ctxDb().prepare(body.sql);
   return stmt.all(...bind(body.params));
 }
 
 function apiExec(body) {
   const sql = String(body.sql || '');
-  const low = sql.trim().toLowerCase();
+  assertNoAttach(sql);
+  const low = leadingSql(sql);
   if (low.startsWith('select') || low.startsWith('pragma')) throw new Error('exec 不接受查询语句');
-  if (/^(drop|alter|attach|create|vacuum)/.test(low)) throw new Error('exec 不允许改表结构');
+  if (/^(drop|alter|attach|detach|create|vacuum|load_extension)\b/.test(low)) throw new Error('exec 不允许改表结构');
   const r = ctxDb().prepare(sql).run(...bind(body.params));
   return { ok: true, changes: Number(r.changes || 0), lastId: Number(r.lastInsertRowid || 0) };
 }
