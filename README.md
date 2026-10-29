@@ -1,8 +1,9 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.9.0 · 里程碑 3 / 第五阶段**（2026-10-24）
+**当前版本 v0.9.13**（2026-10-29）
 
-变更明细见 [CHANGELOG.md](CHANGELOG.md)｜里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
+变更明细见 [CHANGELOG.md](CHANGELOG.md)｜**给第一次用的人：[使用说明](docs/使用说明.md)**｜
+里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
 里程碑 3 任务表见 [docs/TASKS-v0.5-PROGRESS.md](docs/TASKS-v0.5-PROGRESS.md)｜功能方案见 [docs/PLAN-v0.5-FEATURES.md](docs/PLAN-v0.5-FEATURES.md)
 
 > **里程碑 1（v0.2）**：一个人在一台电脑上把档案做出来。
@@ -20,17 +21,26 @@
 - **录音 → 试听 → 转文字**：安卓走原生 `AudioRecord`（绕开 WebView 权限问题），网页走 `getUserMedia`；
     
   转写走免费语音模型，模型不存在会**自动换一个**
-- 一键**导出 / 导入**：整本档案装进一个 `.mylife.json`，换机、备份、分享都靠它
+- 一键**导出 / 导入**：整本档案装进一个 `.mylife.json`，换机、备份、分享都靠它；
+  也能**直接导入 Word**（自己导的和第三方写的都认，标题 1 分章、图片一起进来）；
+  导入撞库会先问你是**覆盖 / 另存副本 / 取消**，不会再默默多出一本同名的
 - 每段后面可**传**图片 / 视频 / 录音，直接排进卷宗
 - 模型配置**按能力过滤**：填一个 Key 自动配好三个基础环节，免费/付费一目了然
 - **封面与头像**：封面工坊可选图/裁切/换版式（4 套）与字体主色；头像独立存储，自动出三档缩略图
 - **时间轴**：四类内容按年份摆成一条线，任意时间点插入文字 / 图片 / 音频 / 视频，年份自动归章
 - **导出成册**：印刷版 HTML、**PDF**（本地 Chrome 打印）、**Word**（可编辑）、**PPT**（一页一章，聚会放映）
 - **AI 助手**：五个角色（采访者 / 编辑 / 编剧 / 音乐人 / 史官），语音或文字输入，逐字流式回复，**回复可一键插回档案**
+- **助手八种用途**：聊天 / 看图说话 / 画图 / 做视频 / **图片识字（OCR）** / **语音转文字** / **合成语音** /
+  **写歌 · 作曲**——一个框里切换，不懂 AI 也能直接用；
+  对话框顶部可**自己挑模型**（只列当前用途能用的模型，不会拿文本模型去画图）
+- **按章节给 AI 看原文**：整本太多就点「选章节…」勾几章，只把这几章发给模型（可全选 / 清空 / 记住）
 - **用量记账与任务队列**：调过几次模型、花了多少，随时可查；耗时任务进队列，可看进度、可取消
 - **朗读有音色也有配乐**：系统音色离线可用；云端音色按句合成并**缓存**（同一句只花钱一次）；
   六套程序化氛围自动避让朗读（不占体积、不涉版权）
 - **主题曲**：从档案生成三段式歌词，可改、可念（TTS+配乐）、可存为这本档案的主题曲
+- **AI 作曲演唱**：接真音乐大模型（阶跃星辰 StepAudio 3 / Mureka）**作一首完整的歌**——
+  有旋律、有人声、有编曲，可选曲风、可自带歌词、可只要伴奏；作好的歌出现在档案首页「写的歌」，
+  能播、能下载、能删。同样的要求不会重复扣费，想重来点「再来一版」
 - **润色**：条目上点「润」，五种风格出稿，左右并排看字符级差异，**采纳前原文另存一份**，可随时退回
 - **剧本**：一章口述 → 3–6 场戏（场景头 / 人物 / 动作 / 对白），只用档案事实，缺的标 [待考]；
   可打印（A4 剧本版心）也可导出 .txt
@@ -39,11 +49,34 @@
 - **内置 ffmpeg**：渲染引擎随 exe 一起分发（146MB 单文件），首次用到自动解到 `data/bin/`
 - **漫画**：一章讲述按讲述顺序排成竖版分页（2/4/6 格），气泡就是原话、点一下就能改，
   缺图的格子留虚线框；可导出网页版（单文件带走）/ 逐页图片 / 打印
-- **短片**：一章排成分镜 → 配音（可选）+ 程序化和弦垫 → 烧字幕 → 竖屏 1080×1920 mp4，
-  走任务队列、可看进度可取消，关掉页面也在后台跑
+- **AI 生视频**：在对话页直接让模型出一段视频（硅基流动两段式），成片当场落盘
+  （外链 1 小时失效），同要求不重复扣费
+- **短片**：一章（或整本）排成分镜 → **逐格配音** → **合成配乐** → 烧字幕 → 竖屏 1080×1920 mp4；
+  没有照片的章节自动出**米色文字卡**而不是黑屏，字幕带实底框，全屏也看得清；
+  走任务队列、可看进度可取消，关掉页面也在后台跑；成片登记在档案首页「合成的片子」，能播能下载**也能删**
+- - **照片说明随时改**：年份 / 地点 / 事件改完就存（v0.9.11 修掉了"一点保存就报错"的老问题）
 - Windows 版**单文件分发**：`MyLife.exe` 拷给别人就能用
 
+## 界面一瞥
+
+| 档案首页 | 助手八种用途 | AI 作曲 |
+| --- | --- | --- |
+| ![首页](shots/03-首页.png) | ![八档](shots/v0.9.12-对话七档.png) | ![作曲](shots/v0.9.13-作曲档.png) |
+
+| 成片与字幕 | 作曲弹窗 |
+| --- | --- |
+| ![短片字幕](shots/v0.9.9-照片字幕.png) | ![作曲弹窗](shots/v0.9.13-作曲弹窗.png) |
+
+（截图在 `shots/`，随版本更新。）
+
+---
+
 ## 直接跑起来
+
+> 仓库里**不带安装包**——一个 exe 146MB、内置 ffmpeg 61MB，放进 git 会让所有人clone 半天。
+> 要包就自己构建：`node tools/build-exe.js` 出 Windows 单文件版，`build-apk.bat` 出安卓包，
+> 产物落在 `dist/`，**文件名自带版本号**（`MyLife-v0.9.13-windows.exe` /
+> `MyLife-v0.9.13-android.apk`），照着文件名装就不会装到旧包。
 
 ### Windows（不想装 Node）
 
@@ -63,9 +96,11 @@ dist/win/
 
 ### 安卓
 
-装 `dist/MyLife-v0.4.1-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。
+装 `dist/MyLife-v0.9.13-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。
   
 首次打开会申请麦克风权限；登录后一切在本地跑，不联网也能用（除了调模型）。
+
+> 装完在「设置 → 关于」能看到版本号 v0.9.13，用来确认装对了。
 
 ### 改代码
 
@@ -114,8 +149,8 @@ mylife1/
 │   ├── timeline.js 时间轴与任意时间点插入
 │   ├── export.js   文档模型 + 印刷版 HTML + 一键 PDF
 │   ├── export-docx.js / export-pptx.js   Word / PPT 渲染器
-│   ├── chat.js     AI 助手（五角色 / 流式 / 插回档案）
-│   ├── song.js     主题曲（歌词 / 念白 / 配乐）
+│   ├── chat.js     AI 助手（八种用途 / 选章节 / 自选模型 / 流式 / 插回档案）
+│   ├── song.js     主题曲与 AI 作曲（歌词 / 念白 / 配乐 / 真音乐大模型）
 │   ├── polish.js   润色（字符级 diff / 原文存档 / 可退回）
 │   ├── script.js   剧本（分场 / 解析 / 打印与 txt）
 │   ├── art.js      插图（六种画风 / 人物设定卡）
@@ -139,8 +174,10 @@ mylife1/
 ├── tools/
 │   ├── sync.js          把 web/ 同步进安卓 assets
 │   ├── build-exe.js     出单文件 EXE + 冒烟测试 + 产物版本命名
+│   ├── fetch-ffmpeg.js  拉内置渲染引擎
+│   ├── reset-password.js / .bat   离线重置账号密码（不动档案）
 │   └── make-backup.py   出全量备份包
-├── test/                16 个审计脚本，435 项
+├── test/                40 个审计脚本，800+ 项（见文末「测试」）
 ├── docs/                升级方案与里程碑存档
 └── build-apk.bat        一条命令出 APK
 ```
@@ -346,32 +383,71 @@ Node 走 `fetch` + `FormData`；安卓走 `Ai.asr` 手写的 multipart（**固�
   漫画可以排、可以预览，导出走浏览器下载
 - **一键 PDF 只在桌面端**：需要本机装了 Chrome 或 Edge；没有就改用「印刷版」按 Ctrl+P 另存为 PDF
 - 时间轴排序是「上移 / 下移」按钮，不是拖拽（手机上拖拽误触太多，等分镜编辑器一起做手势）
-- 插图 / 配音 / 音乐 / 短片（P5–P7）还没接：网关与槽位已留好，模型配置里能看到对应环节
+- **AI 作曲要单独配一家**：硅基流动实测 98 个模型里没有音乐模型，需在设置里加「阶跃星辰」
+  （限时免费）或「Mureka」（按首计费）才能作歌；两家都不可用时错误里会带原话并提示换一家
+- **安卓上不能作歌 / 生视频**：这两个走 Node 后台任务（要 ffmpeg 与外链落盘），
+  手机上会自动禁用并提示去电脑上做
+- exe 未做代码签名，首次运行会有 SmartScreen 提示（点"更多信息 → 仍要运行"）
 
 ---
 
 ## 测试
 
+### 服务端与数据层
+
 ```bash
-node test/audit.js                 # 52 项 主功能
-node test/audit-auth.js            # 21 项 账号与数据隔离
-node test/audit-generate.js        # 13 项 生成规则
-node test/audit-archive-mgmt.js    #  9 项 档案级改删
-node test/audit-asr.js             # 12 项 转写契约
-node test/audit-files.js           # 18 项 文件鉴权与路径穿越
-node test/audit-android.js         # 47 项 安卓静态审计（防回归）
-node test/audit-ui.js              # 38 项 界面审计（无头浏览器）
-node test/audit-v05.js             # 56 项 v0.5 基座（表 / 队列 / 用量 / 时间轴 / 版本 / 流式）
-node test/audit-ui-v05.js          # 42 项 封面·时间轴·导出·助手（CDP 真点真存）
-node test/audit-v06.js             # 18 项 语音合成与缓存
-node test/audit-ui-v06.js          # 17 项 混音器 / 设置页 / 主题曲页
-node test/audit-ui-v07.js          # 26 项 润色（diff/采纳/原文留存）与剧本（解析/导出）
-node test/audit-v08.js             # 16 项 插图（临时 URL 落盘 / 缓存）与 ffmpeg 解包
-node test/audit-v09.js             # 23 项 分镜规则 + 真合成一条短片（验竖屏/音轨/ftyp）
-node test/audit-ui-v08.js          # 27 项 漫画排版与短片分镜（CDP 真点真改）
+node --experimental-sqlite --no-warnings test/audit.js                # 52 主功能
+node --experimental-sqlite --no-warnings test/audit-auth.js           # 21 账号与数据隔离
+node --experimental-sqlite --no-warnings test/audit-usermgmt.js       # 20 用户管理与找回密码
+node --experimental-sqlite --no-warnings test/audit-query-guard.js    #  9 SQL 越库防护（ATTACH / load_extension）
+node --experimental-sqlite --no-warnings test/audit-generate.js       # 13 生成规则
+node --experimental-sqlite --no-warnings test/audit-archive-mgmt.js   #  9 档案级改删
+node --experimental-sqlite --no-warnings test/audit-asr.js            # 12 转写契约
+node --experimental-sqlite --no-warnings test/audit-files.js          # 18 文件鉴权与路径穿越
+node --experimental-sqlite --no-warnings test/audit-v05.js            # 56 v0.5 基座（表 / 队列 / 用量 / 时间轴 / 流式）
+node --experimental-sqlite --no-warnings test/audit-v06.js            # 18 语音合成与缓存
+node --experimental-sqlite --no-warnings test/audit-v08.js            # 16 插图与 ffmpeg 解包
+node --experimental-sqlite --no-warnings test/audit-v09.js            # 27 分镜规则 + 真合成一条短片
+node --experimental-sqlite --no-warnings test/audit-image.js          #  6 文生图（含参考图降级）
+node --experimental-sqlite --no-warnings test/audit-video.js          # 21 AI 视频两段式
+node --experimental-sqlite --no-warnings test/audit-song.js           # 15 写歌与演奏
+node --experimental-sqlite --no-warnings test/audit-music.js          # 36 AI 作曲（阶跃 / Mureka 两家）
+node --experimental-sqlite --no-warnings test/audit-import.js         # 25 Word 与档案包导入
+node --experimental-sqlite --no-warnings test/audit-mvdel.js          # 11 成片删除
+node --experimental-sqlite --no-warnings test/audit-phmeta.js         #  6 照片元数据
 ```
 
-合计 **435 项**（`audit-v05.js` 盯基座，`audit-ui-v05.js` 用 CDP 真点真存，
-并校验 docx / pptx / pdf 的包结构与文件头）。`audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑
-  
-（`optString`、chunked、`available()`、cookie、回放、诊断）钉死，改坏了会当场报错。
+### 界面（CDP 真点真写库）
+
+```bash
+node test/audit-ui.js              # 38 基础界面（无头浏览器）
+node test/audit-ui-v05.js          # 42 封面·时间轴·导出·助手
+node test/audit-ui-v06.js          # 17 混音器 / 设置页 / 主题曲页
+node test/audit-ui-v07.js          # 26 润色与剧本
+node test/audit-ui-v08.js          # 27 漫画排版与短片分镜
+node test/audit-ui-v095.js         # 50 v0.9.5 体验修复
+node test/audit-ui-outline.js      # 27 目录为纲与章节页
+node test/audit-ui-edit.js         # 13 排序与配图
+node test/audit-ui-reorder.js      # 11 跨章排序与批量移动
+node test/audit-ui-place.js        # 15 插入点与照片进正文
+node test/audit-ui-ai-control.js   # 11 AI 生成可控化
+node test/audit-ui-import.js       # 41 导入去重与 Word 建档案
+node test/audit-ui-chatmodel.js    # 37 助手页自选模型
+node test/audit-ui-chatmodes.js    # 25 助手八档与选章节
+```
+
+### 静态守卫
+
+```bash
+node test/audit-android.js         # 47 安卓端（optString / chunked / cookie / 回放 / 诊断）
+node test/audit-es5.js             # 17 个前端文件的 ES5 语法守卫（老 WebView 不认 const / 箭头函数）
+```
+
+合计 **835 项**。要点：
+
+- `audit-v05.js` 盯基座；`audit-ui-v05.js` 用 CDP 真点真存，并校验 docx / pptx / pdf 的包结构与文件头。
+- `audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑钉死，改坏了会当场报错。
+- `audit-es5.js` 每次改前端都跑：只要出现 `const` / 箭头函数 / 模板字符串 / `for...of`，
+  安卓 5/6 的老机器就会整页白屏。
+- `audit-music.js` / `audit-video.js` / `audit-image.js` 用 `test/_fetch_stub_*.js` 桩住外部接口，
+  **不会真花钱**，同时又能验证"请求里带的模型对不对、失败时会不会自动降级"。

@@ -30,7 +30,26 @@ const WORKSPACE = 'C:/Users/ximym/.workbuddy/binaries/node/workspace';
 
 function step(n, msg) { console.log('\n[' + n + '] ' + msg); }
 
-fs.rmSync(TMP, { recursive: true, force: true });
+/** 同步等待（毫秒），用于等文件锁释放 */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch (e) {}
+}
+
+/** 删目录，失败重试几次；实在删不掉只警告，不打断构建 */
+function rmDirRetry(dir) {
+  for (let i = 0; i < 4; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+      return true;
+    } catch (e) {
+      sleepSync(500);
+    }
+  }
+  console.log('  （临时目录没能清干净，不影响产物：' + dir + '）');
+  return false;
+}
+
+rmDirRetry(TMP);
 fs.mkdirSync(TMP, { recursive: true });
 
 /* ---- 1. SEA 配置 ---- */
@@ -81,11 +100,11 @@ const dataKeep = path.join(TMP, 'data-keep');
 let hadData = fs.existsSync(dataDir);
 if (hadData) fs.cpSync(dataDir, dataKeep, { recursive: true });
 
-fs.rmSync(OUT, { recursive: true, force: true });
+rmDirRetry(OUT);
 fs.mkdirSync(path.join(OUT, 'resources'), { recursive: true });
 if (hadData) {
   fs.cpSync(dataKeep, dataDir, { recursive: true });
-  fs.rmSync(dataKeep, { recursive: true, force: true });
+  rmDirRetry(dataKeep);
   console.log('  （已保留现有 data/ 数据）');
 }
 const exe = path.join(OUT, 'MyLife.exe');
@@ -116,7 +135,7 @@ execFileSync(NODE_BIN, [postject, exe, 'NODE_SEA_BLOB', path.join(TMP, 'sea-prep
 /* ---- 4. 外置资源 ---- */
 step(4, '复制前端资源');
 function cp(from, to) {
-  fs.rmSync(to, { recursive: true, force: true });
+  rmDirRetry(to);
   fs.cpSync(from, to, { recursive: true });
 }
 const WEB_SRC = path.join(ROOT, 'web');
@@ -205,7 +224,7 @@ try {
 step(6.5, '单文件冒烟测试');
 {
   const smokeDir = path.join(TMP, 'smoke');
-  fs.rmSync(smokeDir, { recursive: true, force: true });
+  rmDirRetry(smokeDir);
   fs.mkdirSync(smokeDir, { recursive: true });
   fs.copyFileSync(exe, path.join(smokeDir, 'MyLife.exe'));
   const smokePort = String(4490 + Math.floor(Math.random() * 50));
@@ -231,7 +250,9 @@ step(6.5, '单文件冒烟测试');
     })();
   `, smokePort], { timeout: 20000 });
   try { proc.kill && proc.kill(); } catch (e) {}
-  fs.rmSync(smokeDir, { recursive: true, force: true });
+  // 杀软 / 沙箱会短暂锁住 sqlite 的 -shm/-wal，直接 rm 会 EBUSY 并把构建打断。
+  // 等一下再删，删不掉只警告（冒烟结果已经拿到，不该为清理失败而重新打包）。
+  rmDirRetry(smokeDir);
   if (probe.status !== 0) {
     console.error('\n冒烟测试失败：单文件 EXE 无法独立启动（常见原因：require 了本地文件）');
     console.error('不要发布这个包！');
