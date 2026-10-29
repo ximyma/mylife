@@ -5,6 +5,24 @@
 里程碑：**v0.2 = 里程碑 1**（档案管理与单文件分发）、**v0.4 = 里程碑 2**（账号体系 + 手机端全链路打通）、
 **v0.5–v0.7 = 里程碑 3**（单机版功能扩展：封面、时间轴、导出、AI 助手、语音音乐、影像化）。
 
+## v0.9.15 · 2026-10-29 —— 上 GitHub 云端打包，顺手救了 Linux/mac 一命
+
+### 新增：云端一键打包
+
+仓库自带 `.github/workflows/build.yml`：进 GitHub Actions 页选 **build → Run workflow**
+（或推一个 `v*` 标签），一次出齐 **Windows / Linux / macOS 三个单文件程序 + 安卓 APK**，
+跑完在 Artifacts 里下载。`tools/build-exe.js` 与 `tools/fetch-ffmpeg.js` 做了跨平台适配
+（postject 解析不再写死本机路径、ffmpeg 支持 darwin、macOS 注入后 ad-hoc 签名）。
+
+### 修复：Linux/mac 打包版启动即崩
+
+GitHub 云端第一次打 Linux 包就把它揪出来了：双击版启动时无条件
+`spawn('cmd', ['/c','start', 地址])` 去开浏览器——Linux 上没有 `cmd`，
+未处理的 `error` 事件把整个服务带崩。现在按平台选 `cmd / open / xdg-open`，
+并挂上 `error` 处理（没装浏览器也只是不开，服务照常跑）；
+另支持 `NO_OPEN=1` 环境变量强制不开浏览器（冒烟测试已用上）。
+冒烟测试同时加了诊断输出：启动失败时把程序自己的报错打出来，不再两眼一抹黑。
+
 ## v0.9.14 · 2026-10-29 —— 作曲接口地址拼错，真出歌时必 404
 
 用真实 Key 端到端跑第一首歌时暴露的：直连 `curl` 能提交成功，程序里却报

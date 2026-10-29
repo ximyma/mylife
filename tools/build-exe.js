@@ -258,7 +258,7 @@ step(6.5, '单文件冒烟测试');
   const outLog = path.join(smokeDir, 'smoke-out.log');
   const outFd = fs.openSync(outLog, 'w');
   const proc = spawn(path.join(smokeDir, 'MyLife.exe'), [], {
-    env: Object.assign({}, process.env, { PORT: smokePort, DATA_DIR: path.join(smokeDir, 'data') }),
+    env: Object.assign({}, process.env, { PORT: smokePort, DATA_DIR: path.join(smokeDir, 'data'), NO_OPEN: '1' }),
     stdio: ['ignore', outFd, outFd], detached: false,
   });
   const probe = spawnSync(process.execPath, ['-e', `

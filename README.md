@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.9.14**（2026-10-29）
+**当前版本 v0.9.15**（2026-10-29）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜**给第一次用的人：[使用说明](docs/使用说明.md)**｜
 里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
@@ -75,8 +75,8 @@
 
 > 仓库里**不带安装包**——一个 exe 146MB、内置 ffmpeg 61MB，放进 git 会让所有人clone 半天。
 > 要包就自己构建：`node tools/build-exe.js` 出 Windows 单文件版，`build-apk.bat` 出安卓包，
-> 产物落在 `dist/`，**文件名自带版本号**（`MyLife-v0.9.14-windows.exe` /
-> `MyLife-v0.9.14-android.apk`），照着文件名装就不会装到旧包。
+> 产物落在 `dist/`，**文件名自带版本号**（`MyLife-v0.9.15-windows.exe` /
+> `MyLife-v0.9.15-android.apk`），照着文件名装就不会装到旧包。
 
 ### Windows（不想装 Node）
 
@@ -96,11 +96,11 @@ dist/win/
 
 ### 安卓
 
-装 `dist/MyLife-v0.9.14-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。
+装 `dist/MyLife-v0.9.15-android.apk`（认准版本号，`dist/archive/` 里的是旧包）。
   
 首次打开会申请麦克风权限；登录后一切在本地跑，不联网也能用（除了调模型）。
 
-> 装完在「设置 → 关于」能看到版本号 v0.9.14，用来确认装对了。
+> 装完在「设置 → 关于」能看到版本号 v0.9.15，用来确认装对了。
 
 ### 改代码
 

@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.14';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.15';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -3349,12 +3349,18 @@ server.listen(PORT, HOST, () => {
   console.log('');
   startLog('启动成功 ' + VERSION + ' → ' + addr + '（数据：' + DATA + '）');
 
-  // 打包版双击运行：直接把浏览器打开，不用自己去敲地址
-  if (sea) {
+  // 打包版双击运行：直接把浏览器打开，不用自己去敲地址。
+  // 只在桌面系统上尝试；命令不存在也绝不能让服务退出——
+  // Linux/mac 上没有 cmd，曾把整个服务炸掉（Unhandled 'error' event）。
+  if (sea && !process.env.NO_OPEN) {
     try {
-      require('child_process')
-        .spawn('cmd', ['/c', 'start', '', addr], { detached: true, stdio: 'ignore' })
-        .unref();
+      const { spawn } = require('child_process');
+      const cmd = process.platform === 'win32' ? 'cmd'
+        : process.platform === 'darwin' ? 'open' : 'xdg-open';
+      const args = process.platform === 'win32' ? ['/c', 'start', '', addr] : [addr];
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+      child.on('error', () => {});   // 没装浏览器 / 命令不存在：吞掉，地址已在上面打印
+      child.unref();
     } catch (e) { /* 打不开也无妨，地址已经打在上面了 */ }
   }
 });
