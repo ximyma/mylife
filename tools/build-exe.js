@@ -142,8 +142,10 @@ console.log('  fuse: ' + fuse);
 let injected = false;
 for (let i = 1; i <= 20 && !injected; i++) {
   try {
+    // macOS 必须按官方文档带 --macho-segment-name，否则段注入不完整、程序起来没动静
+    const extra = process.platform === 'darwin' ? ['--macho-segment-name', 'NODE_SEA'] : [];
     execFileSync(NODE_BIN, [postject, exe, 'NODE_SEA_BLOB', path.join(TMP, 'sea-prep.blob'),
-      '--sentinel-fuse', fuse], { stdio: 'inherit' });
+      '--sentinel-fuse', fuse].concat(extra), { stdio: 'inherit' });
     injected = true;
   } catch (e) {
     if (i === 20) throw e;
@@ -281,12 +283,20 @@ step(6.5, '单文件冒烟测试');
   try { proc.kill && proc.kill(); } catch (e) {}
   if (probe.status !== 0) {
     console.error('\n冒烟测试失败：单文件 EXE 无法独立启动');
-    console.error('进程退出码：' + proc.exitCode + '，信号：' + proc.signalCode +
-      '，spawn 错误：' + (proc.spawnargs ? '' : ''));
+    console.error('进程退出码：' + proc.exitCode + '，信号：' + proc.signalCode);
     try {
       const so = fs.readFileSync(outLog, 'utf8');
       console.error('---- 程序输出（前 4000 字） ----\n' + (so || '(空)') + '\n----');
     } catch (e) { console.error('（读不到程序输出：' + e.message + '）'); }
+    // 同步直跑一次：拿真实的终止信号与 stderr（异步 spawn 杀掉后 signalCode 常为 null）
+    const sync = spawnSync(exe, [], {
+      env: Object.assign({}, process.env, { PORT: String(Number(smokePort) + 1), DATA_DIR: path.join(smokeDir, 'data2'), NO_OPEN: '1' }),
+      timeout: 6000, encoding: 'utf8',
+    });
+    console.error('同步直跑：status=' + sync.status + '，signal=' + sync.signal +
+      '，error=' + (sync.error ? sync.error.message : '无') +
+      '\nstdout: ' + String(sync.stdout || '').slice(0, 800) +
+      '\nstderr: ' + String(sync.stderr || '').slice(0, 1500));
     console.error('不要发布这个包！');
     process.exit(1);
   }
