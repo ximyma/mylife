@@ -104,6 +104,9 @@
     openSetSecurity: openSetSecurity,
     openResetPassword: openResetPassword,
     safeName: function (s) { return String(s || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60); },
+    buildWav: buildWav,        // 录音 PCM -> 16k WAV（素材箱随手记也用）
+    compress: compress,        // 照片压到 1600px（素材箱随手拍也用）
+    modalBox: modalBox,
   };
 
   /* ---------------- v0.9：账号弹窗（改密 / 密保 / 重置他人） ---------------- */
@@ -325,6 +328,17 @@
         '<main class="wrap">' +
         '<section class="hello"><h1 class="h1">我的档案</h1>' +
         '<p class="muted">一个人，一本档案。</p></section>' +
+        '<a class="promise-card" href="#/promise" title="点开看完整承诺">' +
+        '<span class="pc-lock">🔒</span><span class="pc-txt"><b>数据安全承诺</b>' +
+        '你的数据只存在这台设备里，零上传、随时导出、删除即删除</span>' +
+        '<span class="pc-more">›</span></a>' +
+        '<section class="quick-bar">' +
+        '<button class="qb" id="quickTextBtn"><span>✏️</span><b>记一句</b></button>' +
+        '<a class="qb" href="#/inbox?rec=1"><span>🎙️</span><b>说一段</b></a>' +
+        '<a class="qb" href="#/inbox?photo=1"><span>📷</span><b>拍一张</b></a>' +
+        '<a class="qb" href="#/inbox"><span>🧺</span><b>素材箱</b>' +
+        '<em class="qb-badge" id="quickBadge" hidden></em></a>' +
+        '</section>' +
         '<section class="arc-grid">' + cards +
         '<button class="arc-new" id="newBtn"><span>＋</span><b>新建档案</b>' +
         '<small>写下他的名字就能开始</small></button>' +
@@ -335,6 +349,14 @@
 
       var nb = document.getElementById('newBtn');
       if (nb) nb.onclick = askNew;
+
+      /* --- v0.9.17 随手记：素材箱角标 + 记一句 --- */
+      DB.countQuick().then(function (n) {
+        var badge = document.getElementById('quickBadge');
+        if (badge && n > 0) { badge.textContent = n > 99 ? '99+' : n; badge.hidden = false; }
+      }).catch(function () {});
+      var qtb = document.getElementById('quickTextBtn');
+      if (qtb) qtb.onclick = askQuickText;
 
       /* --- 导出 / 改 / 删 --- */
       var expHandler = function (ev) {
@@ -457,6 +479,24 @@
       app.innerHTML = topbar() + '<main class="wrap"><div class="empty">读不出来：' +
         esc(e.message) + '</div></main>';
     });
+  }
+
+  /** v0.9.17 随手记·记一句：不选档案不填年份，先进素材箱 */
+  function askQuickText() {
+    var m = modalBox('记一句', '<textarea class="fi" id="quickText" rows="4" ' +
+      'placeholder="想到什么写什么：今天妈说的一句老话、爸讲的一段往事……"></textarea>' +
+      '<div class="ml-modal-acts"><button class="btn" id="quickCancel">先不记</button>' +
+      '<button class="btn primary" id="quickOk">存进素材箱</button></div>');
+    document.getElementById('quickCancel').onclick = m.close;
+    document.getElementById('quickOk').onclick = function () {
+      var t = document.getElementById('quickText').value.trim();
+      if (!t) { m.msg('还没写内容'); return; }
+      DB.addQuick('text', t).then(function () {
+        m.close();
+        toast('存进素材箱了，有空再整理');
+        route();
+      }).catch(fail);
+    };
   }
 
   function askNew() {
@@ -2095,36 +2135,6 @@
       });
     }
 
-    /** 采到的浮点 PCM 合并、降采样到 16k、打成 16bit 单声道 WAV */
-    function buildWav(chunks, srcRate, targetRate) {
-      var total = 0, i;
-      for (i = 0; i < chunks.length; i++) total += chunks[i].length;
-      var merged = new Float32Array(total);
-      var off = 0;
-      for (i = 0; i < chunks.length; i++) { merged.set(chunks[i], off); off += chunks[i].length; }
-
-      var ratio = srcRate / targetRate;
-      var n = Math.floor(total / ratio);
-      var pcm = new Int16Array(n);
-      for (i = 0; i < n; i++) {
-        var v = merged[Math.floor(i * ratio)];
-        if (v > 1) v = 1; else if (v < -1) v = -1;
-        pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
-      }
-
-      var buf = new ArrayBuffer(44 + n * 2);
-      var dv = new DataView(buf);
-      function wstr(o, s) { for (var k = 0; k < s.length; k++) dv.setUint8(o + k, s.charCodeAt(k)); }
-      wstr(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true);
-      wstr(8, 'WAVE'); wstr(12, 'fmt ');
-      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-      dv.setUint32(24, targetRate, true); dv.setUint32(28, targetRate * 2, true);
-      dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-      wstr(36, 'data'); dv.setUint32(40, n * 2, true);
-      new Int16Array(buf, 44).set(pcm);
-      return buf;
-    }
-
     function stopRec() {
       if (!recording) return;
       if (rec.native) return stopRecNative();
@@ -2363,6 +2373,37 @@
     };
   }
 
+  /** 采到的浮点 PCM 合并、降采样到 16k、打成 16bit 单声道 WAV。
+   *  补内容页和素材箱（随手记）共用，所以放在顶层。 */
+  function buildWav(chunks, srcRate, targetRate) {
+    var total = 0, i;
+    for (i = 0; i < chunks.length; i++) total += chunks[i].length;
+    var merged = new Float32Array(total);
+    var off = 0;
+    for (i = 0; i < chunks.length; i++) { merged.set(chunks[i], off); off += chunks[i].length; }
+
+    var ratio = srcRate / targetRate;
+    var n = Math.floor(total / ratio);
+    var pcm = new Int16Array(n);
+    for (i = 0; i < n; i++) {
+      var v = merged[Math.floor(i * ratio)];
+      if (v > 1) v = 1; else if (v < -1) v = -1;
+      pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+
+    var buf = new ArrayBuffer(44 + n * 2);
+    var dv = new DataView(buf);
+    function wstr(o, s) { for (var k = 0; k < s.length; k++) dv.setUint8(o + k, s.charCodeAt(k)); }
+    wstr(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true);
+    wstr(8, 'WAVE'); wstr(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, targetRate, true); dv.setUint32(28, targetRate * 2, true);
+    dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    wstr(36, 'data'); dv.setUint32(40, n * 2, true);
+    new Int16Array(buf, 44).set(pcm);
+    return buf;
+  }
+
   /** 用 canvas 压到 1600px，避免原图太大 */
   function compress(file, done) {
     var reader = new FileReader();
@@ -2457,7 +2498,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.16';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.17';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -3380,6 +3421,8 @@
     if ((m = /^#\/a\/(\d+)\/movie/.exec(h))) return renderMovie(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h === '#/chat') return renderChat(null);
+    if (h === '#/inbox') return renderInbox();
+    if (h === '#/promise') return renderPromise();
     if (h === '#/users') return renderUsers();
     if (h.indexOf('#/settings') === 0) return renderSettings();
     return renderHome();
@@ -3389,6 +3432,16 @@
     app.innerHTML = topbar({ back: '#/a/' + id }) +
       '<main class="wrap"><div class="boot">正在排时间轴……</div></main>';
     window.TimelineUI.render(app, Number(id));
+  }
+
+  /* v0.9.17：素材箱（随手记）与数据安全承诺书 */
+  function renderInbox() {
+    window.InboxUI.render(app, { autoRec: location.hash.indexOf('rec=1') > 0,
+                                 autoPhoto: location.hash.indexOf('photo=1') > 0 });
+  }
+
+  function renderPromise() {
+    window.InboxUI.renderPromise(app);
   }
 
   function renderMovie(id) {

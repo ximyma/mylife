@@ -1334,6 +1334,95 @@
       return '/files/' + p;
     },
 
+    /* ---------------- v0.9.17 素材箱：随手记 ----------------
+     * 设计原则：录入时零门槛——不选档案、不填年份、不强制整理。
+     * 攒着，等 AI 归纳或用户有空时，再一条条「收进档案」。 */
+
+    /** 记一条：kind 'text' | 'audio' | 'photo' */
+    addQuick: function (kind, text, mediaPath, mediaSeconds) {
+      return API.exec(
+        'INSERT INTO quick_notes (kind,text,media_path,media_seconds) VALUES (?,?,?,?)',
+        [kind, text || null, mediaPath || null, mediaSeconds || null]
+      ).then(function (r) { return r.lastId; });
+    },
+
+    /** 待整理的素材，新的在前 */
+    listQuick: function () {
+      return API.query("SELECT * FROM quick_notes WHERE status='open' ORDER BY id DESC");
+    },
+
+    /** 收进档案的记录（素材箱页顶部可回顾最近收录） */
+    listQuickDone: function () {
+      return API.query(
+        'SELECT q.*, a.subject_name FROM quick_notes q ' +
+        'LEFT JOIN archives a ON a.id=q.archive_id ' +
+        "WHERE q.status='adopted' ORDER BY q.id DESC LIMIT 20");
+    },
+
+    countQuick: function () {
+      return API.query("SELECT count(*) n FROM quick_notes WHERE status='open'")
+        .then(function (r) { return r[0].n; });
+    },
+
+    getQuick: function (id) {
+      return API.query('SELECT * FROM quick_notes WHERE id=?', [id]).then(function (r) {
+        if (!r.length) throw new Error('找不到这条素材');
+        return r[0];
+      });
+    },
+
+    /** 改文字（转写完了 / 手动修订都走这里） */
+    updateQuick: function (id, fields) {
+      var sets = [], vals = [];
+      if (fields.text !== undefined) { sets.push('text=?'); vals.push(fields.text); }
+      if (fields.at_year !== undefined) { sets.push('at_year=?'); vals.push(fields.at_year); }
+      if (!sets.length) return Promise.resolve();
+      vals.push(id);
+      return API.exec('UPDATE quick_notes SET ' + sets.join(',') + ' WHERE id=?', vals);
+    },
+
+    /**
+     * 收进档案：建一条 kind='text' 的正式条目（照片/录音本体不搬，
+     * 素材里留着路径，条目文字里说明来源），素材标记 adopted。
+     */
+    adoptQuick: function (id, archiveId, year, text) {
+      text = String(text || '').trim();
+      if (!text) return Promise.reject(new Error('这条素材还没有文字，先转写或写一句'));
+      var self = this;
+      return self.getQuick(id).then(function (q) {
+        return API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE archive_id=? AND chapter_id IS NULL', [archiveId])
+          .then(function (r) {
+            return API.exec(
+              "INSERT INTO entries (archive_id,chapter_id,seq,kind,text,origin,edited,at_year) VALUES (?,NULL,?,'text',?,'user',1,?)",
+              [archiveId, r[0].s, text, year || null]);
+          }).then(function (er) {
+            return API.exec("UPDATE quick_notes SET status='adopted', archive_id=?, entry_id=? WHERE id=?",
+              [archiveId, er.lastId, id]).then(function () {
+              return { entryId: er.lastId, quick: q };
+            });
+          });
+      });
+    },
+
+    /** 收录完成后的落账（照片收录走 addPhoto 时没有 entry_id，可只传 archiveId） */
+    markQuickAdopted: function (id, archiveId, entryId) {
+      return API.exec("UPDATE quick_notes SET status='adopted', archive_id=?, entry_id=? WHERE id=?",
+        [archiveId, entryId || null, id]);
+    },
+
+    /** 不想要了：媒体文件一起清（可能还没归档，别留孤儿文件） */
+    removeQuick: function (id) {
+      return API.query('SELECT media_path FROM quick_notes WHERE id=?', [id]).then(function (r) {
+        var p = r.length && r[0].media_path;
+        var delFile = p
+          ? API.file({ op: 'del', path: p }).catch(function () {})
+          : Promise.resolve();
+        return delFile.then(function () {
+          return API.exec('DELETE FROM quick_notes WHERE id=?', [id]);
+        });
+      });
+    },
+
     /* ---------------- 生成（纯规则，同步，毫秒级） ---------------- */
 
     generate: function (archiveId) {

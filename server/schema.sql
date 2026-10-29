@@ -305,3 +305,18 @@ UNION ALL
 SELECT 'photo', p.id, p.archive_id, p.chapter_id, p.taken_year, p.taken_month, p.taken_day, 'year', NULL, p.id, COALESCE(p.event, '') FROM photos p
 UNION ALL
 SELECT 'media', m.id, m.archive_id, NULL, m.at_year, m.at_month, m.at_day, m.at_precision, m.at_label, m.id, COALESCE(m.caption, m.kind) FROM media m;
+
+-- v0.9.17 素材箱：随手记 / 随口说 / 随手拍。
+-- 先攒进这里，不定档案、不强制编年；AI 归纳后一条条"收进档案"变成正式条目。
+CREATE TABLE IF NOT EXISTS quick_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'text',          -- text / audio / photo
+  text TEXT,                                   -- 文字本体；audio 存转写结果
+  media_path TEXT,                             -- audio/photo 的文件相对路径
+  media_seconds INTEGER,                       -- audio 时长（秒）
+  status TEXT NOT NULL DEFAULT 'open',         -- open / adopted
+  archive_id INTEGER,                          -- 收进哪本档案
+  entry_id INTEGER,                            -- 收录后生成的条目
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_quick_status ON quick_notes(status, id DESC);

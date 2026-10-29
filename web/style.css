@@ -924,3 +924,41 @@ input[type=radio]{-webkit-appearance:radio;appearance:radio;border-radius:50%}
 .sc-pv summary{cursor:pointer;color:var(--accent);padding:4px 0}
 .sc-pv pre{white-space:pre-wrap;word-break:break-word;background:var(--accent-soft);
   border-radius:8px;padding:10px;max-height:220px;overflow:auto;font-size:12px;line-height:1.7;margin:6px 0 0}
+
+/* ---- v0.9.17 数据承诺卡 / 随手记快捷栏 / 素材箱 ---- */
+.promise-card{display:flex;align-items:center;gap:10px;background:#FDF8EF;border:1px solid #E4D5BC;
+  border-radius:10px;padding:10px 14px;margin:0 0 14px;color:#5A4A38;text-decoration:none}
+.promise-card:active{background:#F7EDDC}
+.pc-lock{font-size:20px}
+.pc-txt{flex:1;font-size:13px;line-height:1.45}
+.pc-txt b{display:block;font-size:14px}
+.pc-more{color:#B9A688;font-size:20px}
+.quick-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 20px}
+.qb{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;
+  background:#FFF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 4px 10px;
+  color:#5A4A38;text-decoration:none;font-size:13px}
+.qb span{font-size:22px}
+.qb-badge{position:absolute;top:-6px;right:-2px;background:#C0392B;color:#fff;border-radius:9px;
+  font-size:11px;font-style:normal;padding:1px 6px;min-width:16px;text-align:center}
+.inbox-page .inbox-lead{margin:6px 0 14px}
+.inbox-acts{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.rec-state{min-height:18px;margin:2px 0 10px}
+.q-list{margin-top:8px}
+.q-card{background:#FFF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.q-kind{font-size:13px;font-weight:600;margin-bottom:6px}
+.q-text{white-space:pre-wrap;line-height:1.6;font-size:15px}
+.q-thumb{max-width:100%;max-height:220px;border-radius:8px;display:block;margin:6px 0}
+.q-audio{width:100%;margin:4px 0 6px}
+.q-acts{margin-top:8px;display:flex;gap:8px}
+.q-done-title{margin:20px 0 8px;font-size:15px}
+.q-done-item{padding:2px 0}
+.q-sum{background:#FDF8EF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.q-sum h3{margin:0 0 8px;font-size:15px}
+.q-sum-text{line-height:1.7;font-size:15px;margin-bottom:8px}
+.promise-page .pm-lead{background:#FDF8EF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px}
+.pm-item{background:#FFF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.pm-item p{margin:6px 0 0;color:#7A6A56;line-height:1.65;font-size:14px}
+.small{font-size:12px}
+@media(min-width:720px){
+  .quick-bar{max-width:520px}
+}
