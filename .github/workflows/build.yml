@@ -28,7 +28,7 @@ jobs:
         include:
           - { os: windows-latest, plat: windows }
           - { os: ubuntu-latest,  plat: linux }
-          - { os: macos-13,       plat: macos }
+          - { os: macos-latest,   plat: macos }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:

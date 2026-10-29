@@ -126,7 +126,7 @@ python tools/make-backup.py  :: 全量备份包（源码 + EXE + APK）
 | --- | --- | --- |
 | `MyLife-windows` | Windows | 单文件 `.exe`，内置 ffmpeg |
 | `MyLife-linux` | Linux x64 | 单文件，内置 ffmpeg |
-| `MyLife-macos` | macOS x64 | 单文件，ad-hoc 签名；被拦时 `xattr -cr MyLife` |
+| `MyLife-macos` | macOS（Apple Silicon） | 单文件，ad-hoc 签名；被拦时 `xattr -cr MyLife` |
 | `MyLife-android` | 安卓 | debug 签名 APK，装上就能用 |
 
 ---

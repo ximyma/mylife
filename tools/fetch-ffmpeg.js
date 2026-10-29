@@ -22,7 +22,8 @@ const TARGET = path.join(BIN, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffm
 const PKG = process.platform === 'win32'
   ? { name: '@ffmpeg-installer/win32-x64', ver: '4.1.0', file: 'ffmpeg.exe' }
   : process.platform === 'darwin'
-  ? { name: '@ffmpeg-installer/darwin-x64', ver: '4.1.0', file: 'ffmpeg' }
+  ? { name: '@ffmpeg-installer/darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64'),
+      ver: process.arch === 'arm64' ? '4.1.5' : '4.1.0', file: 'ffmpeg' }
   : { name: '@ffmpeg-installer/linux-x64', ver: '4.1.0', file: 'ffmpeg' };
 
 function download(url, dest) {
