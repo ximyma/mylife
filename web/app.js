@@ -332,6 +332,13 @@
         '<span class="pc-lock">🔒</span><span class="pc-txt"><b>数据安全承诺</b>' +
         '你的数据只存在这台设备里，零上传、随时导出、删除即删除</span>' +
         '<span class="pc-more">›</span></a>' +
+        '<a class="promise-card iv-card" href="#/interview" title="AI 扮演采访者，追问式访谈">' +
+        '<span class="pc-lock">🎤</span><span class="pc-txt"><b>AI 访谈</b>' +
+        '像聊天一样，AI 把一生的故事问出来、整理好，一键收进档案</span>' +
+        '<span class="pc-more">›</span></a>' +
+        '<a class="promise-card wq-card" href="#/interview" id="weeklyCard" hidden>' +
+        '<span class="pc-lock">💭</span><span class="pc-txt"><b>本周一题</b><span id="weeklyQ"></span></span>' +
+        '<span class="pc-more">›</span></a>' +
         '<section class="quick-bar">' +
         '<button class="qb" id="quickTextBtn"><span>✏️</span><b>记一句</b></button>' +
         '<a class="qb" href="#/inbox?rec=1"><span>🎙️</span><b>说一段</b></a>' +
@@ -357,6 +364,29 @@
       }).catch(function () {});
       var qtb = document.getElementById('quickTextBtn');
       if (qtb) qtb.onclick = askQuickText;
+
+      /* --- v0.9.18 每周一题：按周轮换从问题库取题，点开直接进对应主题的访谈 --- */
+      try {
+        var topics = window.MLQ ? window.MLQ.topics : [];
+        if (topics.length) {
+          var now = new Date();
+          var wk = Math.floor((now - new Date(now.getFullYear(), 0, 1)) / 604800000);
+          var flat = [], ti, qi;
+          for (ti = 0; ti < topics.length; ti++) {
+            for (qi = 0; qi < topics[ti].qs.length; qi++) {
+              flat.push({ t: ti, q: qi, text: topics[ti].qs[qi][0] });
+            }
+          }
+          var pick = flat[(wk * 7) % flat.length];
+          var wc = document.getElementById('weeklyCard');
+          if (wc) {
+            wc.hidden = false;
+            wc.href = '#/interview?t=' + pick.t;
+            var wq = document.getElementById('weeklyQ');
+            if (wq) wq.textContent = pick.text;
+          }
+        }
+      } catch (eWq) {}
 
       /* --- 导出 / 改 / 删 --- */
       var expHandler = function (ev) {
@@ -688,6 +718,7 @@
         '<button class="btn tiny" data-aid="' + id + '" data-cover-open="1">换封面</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="timeline">时间轴</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-export-open="1">导出文档</button>' +
+        '<button class="btn tiny" data-aid="' + id + '" data-share-card="1">分享卡片</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="chat">AI 助手</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="song">主题曲</button>' +
         '<button class="btn tiny" data-aid="' + id + '" data-goto="script">剧本</button>' +
@@ -2498,7 +2529,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.17';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.18';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2752,6 +2783,13 @@
         esc(cfg['pref.font'] || '18') + '">' +
         '<b id="prefFontVal">' + esc(cfg['pref.font'] || '18') + '</b></div>' +
 
+        '<div class="pref-row"><span>界面大字</span>' +
+        '<select class="fi" id="prefBigFont" style="max-width:150px">' +
+        '<option value="0"' + (cfg['pref.bigfont'] !== '1' && cfg['pref.bigfont'] !== '2' ? ' selected' : '') + '>标准</option>' +
+        '<option value="1"' + (cfg['pref.bigfont'] === '1' ? ' selected' : '') + '>大字（1.15×）</option>' +
+        '<option value="2"' + (cfg['pref.bigfont'] === '2' ? ' selected' : '') + '>特大（1.3×）</option>' +
+        '</select><span class="muted">给长辈看的适老化放大</span></div>' +
+
         '<div class="pref-row"><span>夜间模式</span>' +
         '<input type="checkbox" id="prefNight" class="switch"' +
         (cfg['pref.night'] === '1' ? ' checked' : '') + '>' +
@@ -2798,6 +2836,15 @@
         '<div class="pref-row"><button class="btn tiny" id="jobTest">跑一次自检</button>' +
         '<span class="muted">排一个后台任务，看进度能不能正常跑完</span></div>' +
         '<div class="job-bar" id="jobBar" hidden><i></i><span>排队中</span></div>';
+
+      /* ---- 整库备份（v0.9.18 backup-schema v1） ---- */
+      html += '<h2 class="set-h">整库备份</h2>' +
+        '<p class="hint">把全部档案（含照片、录音）、素材箱和阅读偏好存成一个文件。' +
+        '换手机、换电脑，用同一个文件导回来就行。模型密钥不进备份，导回后要重新填。</p>' +
+        '<div class="pref-row"><button class="btn tiny" id="bkExport">导出整库备份</button>' +
+        '<label class="btn tiny ghost" id="bkImportBtn">导回备份' +
+        '<input type="file" id="bkImport" accept=".json,application/json" hidden></label>' +
+        '<span class="muted" id="bkState"></span></div>';
 
       /* ---- 关于 ---- */
       var myPhone = '';
@@ -3115,6 +3162,77 @@
         applyPrefs();
       }).catch(fail);
     };
+    var bigFont = document.getElementById('prefBigFont');
+    if (bigFont) bigFont.onchange = function () {
+      DB.setPref('bigfont', bigFont.value).then(function () {
+        applyPrefs();
+        toast(bigFont.value === '0' ? '已切回标准字号' : '已放大，整个界面都变大了');
+      }).catch(fail);
+    };
+
+    /* ---- v0.9.18 整库备份 / 导回 ---- */
+    var bkExport = document.getElementById('bkExport');
+    var bkState = document.getElementById('bkState');
+    if (bkExport) bkExport.onclick = function () {
+      bkExport.disabled = true;
+      var oldT = bkExport.textContent;
+      bkExport.textContent = '打包中……';
+      if (bkState) bkState.textContent = '正在把照片录音读进来，档案多要等一会儿';
+      DB.exportAll().then(function (pack) {
+        var fname = '我的人生档案-整库备份-' + new Date().toISOString().slice(0, 10) + '.mylife-backup.json';
+        bkExport.disabled = false;
+        bkExport.textContent = oldT;
+        if (bkState) bkState.textContent = '共 ' + pack.packs.length + ' 本档案';
+        var body = JSON.stringify(pack);
+        if (window.NativeIO && window.NativeIO.saveExport) {
+          toast(window.NativeIO.saveExport(body, fname) ? '备份已存到手机 Download 目录' : '保存失败');
+        } else {
+          var blob = new Blob([body], { type: 'application/json' });
+          var a2 = document.createElement('a');
+          a2.href = URL.createObjectURL(blob);
+          a2.download = fname;
+          document.body.appendChild(a2);
+          a2.click();
+          document.body.removeChild(a2);
+          setTimeout(function () { URL.revokeObjectURL(a2.href); }, 2000);
+          toast('已导出 ' + fname);
+        }
+      }).catch(function (e) {
+        bkExport.disabled = false;
+        bkExport.textContent = oldT;
+        if (bkState) bkState.textContent = '';
+        fail(e);
+      });
+    };
+    var bkImport = document.getElementById('bkImport');
+    if (bkImport) bkImport.onchange = function () {
+      var f = bkImport.files && bkImport.files[0];
+      bkImport.value = '';
+      if (!f) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        var data = null;
+        try { data = JSON.parse(String(fr.result || '')); } catch (e) {}
+        if (!data || data.format !== 'mylife-backup') {
+          toast('这不是本程序的整库备份文件'); return;
+        }
+        var n = (data.packs || []).length;
+        if (!confirm('导回这份备份？\n\n包含 ' + n + ' 本档案，全部按「另存一本」进来，' +
+          '不会覆盖现有的档案。继续吗？')) return;
+        if (bkState) bkState.textContent = '导回中 0/' + n + '……';
+        DB.importBackup(data, function (done, total) {
+          if (bkState) bkState.textContent = '导回中 ' + done + '/' + total + '……';
+        }).then(function () {
+          if (bkState) bkState.textContent = '导回完成';
+          toast('备份导回完成，去首页看看');
+          applyPrefs();
+        }).catch(function (e) {
+          if (bkState) bkState.textContent = '';
+          fail(e);
+        });
+      };
+      fr.readAsText(f, 'utf-8');
+    };
 
     var ttsMode = document.getElementById('prefTtsMode');
     if (ttsMode) ttsMode.onchange = function () {
@@ -3265,6 +3383,11 @@
     }).then(function (n) {
       if (n === '1') document.body.className = 'night';
       else document.body.className = '';
+      // v0.9.18 大字模式：0 标准 / 1 大字 / 2 特大
+      return DB.getPref('bigfont', '0');
+    }).then(function (bf) {
+      var de = document.documentElement;
+      de.className = bf === '1' ? 'font-lg' : bf === '2' ? 'font-xl' : '';
     }).catch(function () {});
   }
 
@@ -3421,7 +3544,8 @@
     if ((m = /^#\/a\/(\d+)\/movie/.exec(h))) return renderMovie(m[1]);
     if ((m = /^#\/a\/(\d+)/.exec(h))) return renderArchive(m[1]);
     if (h === '#/chat') return renderChat(null);
-    if (h === '#/inbox') return renderInbox();
+    if ((m = /^#\/interview(?:\?a=(\d+))?(?:[?&]t=(\d+))?/.exec(h))) return renderInterview(m[1], m[2]);
+    if (h.indexOf('#/inbox') === 0) return renderInbox();   // 带 ?rec=1 / ?photo=1 也要命中（v0.9.18 修复）
     if (h === '#/promise') return renderPromise();
     if (h === '#/users') return renderUsers();
     if (h.indexOf('#/settings') === 0) return renderSettings();
@@ -3438,6 +3562,16 @@
   function renderInbox() {
     window.InboxUI.render(app, { autoRec: location.hash.indexOf('rec=1') > 0,
                                  autoPhoto: location.hash.indexOf('photo=1') > 0 });
+  }
+
+  /* v0.9.18：AI 访谈模式 */
+  function renderInterview(archiveId, topicIdx) {
+    app.innerHTML = topbar({ back: '#/', title: 'AI 访谈' }) +
+      '<main class="wrap"><div class="boot">正在摆好麦克风……</div></main>';
+    window.InterviewUI.render(app, {
+      archiveId: archiveId ? Number(archiveId) : null,
+      topic: topicIdx ? Number(topicIdx) : 0
+    });
   }
 
   function renderPromise() {
@@ -3518,8 +3652,153 @@
       var ex = t.closest('[data-export-open]');
       if (ex) {
         openExportSheet(Number(ex.getAttribute('data-aid')));
+        return;
+      }
+      var sc = t.closest('[data-share-card]');
+      if (sc) {
+        openShareCard(Number(sc.getAttribute('data-aid')));
       }
     });
+  }
+
+  /**
+   * v0.9.18 分享卡片：canvas 画一张「封面照片 + 金句」的竖版卡片，存成 PNG。
+   * 金句取第一章的 quote，没有就从正文里挑最长的一段开头；照片没有就画素封面。
+   * 纯本地画，不发网络请求。
+   */
+  function openShareCard(archiveId) {
+    DB.getArchive(archiveId).then(function (d) {
+      var a = d.archive;
+      if (!a) throw new Error('找不到这本档案');
+
+      // 金句：章 quote 优先，正文兜底
+      var quote = '';
+      for (var i = 0; i < d.chapters.length; i++) {
+        if (String(d.chapters[i].quote || '').trim()) { quote = d.chapters[i].quote.trim(); break; }
+      }
+      if (!quote) {
+        var best = 0;
+        for (var e = 0; e < d.entries.length; e++) {
+          var tx = String(d.entries[e].text || '').trim();
+          if (tx.length > best) { best = tx.length; quote = tx; }
+        }
+        quote = quote.slice(0, 80);
+      }
+      if (quote.length > 90) quote = quote.slice(0, 90) + '……';
+
+      // 封面照片读成 dataURL（画进 canvas 再导出才不污染）
+      var coverPhoto = null;
+      for (var c = 0; c < d.photos.length; c++) {
+        if (String(d.photos[c].id) === String(a.cover_photo_id)) coverPhoto = d.photos[c];
+      }
+      if (!coverPhoto && d.photos.length) coverPhoto = d.photos[0];
+      var coverRead = coverPhoto
+        ? API.file({ op: 'read', path: coverPhoto.path })
+            .then(function (f) { return f && f.base64 ? 'data:image/jpeg;base64,' + f.base64 : null; },
+              function () { return null; })
+        : Promise.resolve(null);
+
+      return coverRead.then(function (coverUrl) {
+        var W = 900, H = 1350;
+        var cv = document.createElement('canvas');
+        cv.width = W; cv.height = H;
+        var ctx = cv.getContext('2d');
+        var SERIF = 'Georgia,"Songti SC","Noto Serif CJK SC",serif';
+
+        // 纸底
+        ctx.fillStyle = '#F5EFE6';
+        ctx.fillRect(0, 0, W, H);
+
+        // 封面照片区（有图画满上半幅，没图画素色块+描边）
+        var loadedImg = null;
+        if (coverUrl) {
+          var img = new Image();
+          img.onload = function () { loadedImg = img; drawRest(); };
+          img.onerror = function () { drawRest(); };
+          img.src = coverUrl;
+        } else { drawRest(); }
+
+        function drawRest() {
+          if (loadedImg) {
+            // cover 裁切铺满 900x780
+            var iw = loadedImg.width, ih = loadedImg.height;
+            var s = Math.max(W / iw, 780 / ih);
+            var dw = iw * s, dh = ih * s;
+            ctx.drawImage(loadedImg, (W - dw) / 2, (780 - dh) / 2 > 0 ? (780 - dh) / 2 : 0, dw, dh);
+          } else {
+            ctx.fillStyle = '#EFE4D2';
+            ctx.fillRect(0, 0, W, 780);
+            ctx.fillStyle = '#C9B896';
+            ctx.font = '120px ' + SERIF;
+            ctx.textAlign = 'center';
+            ctx.fillText((a.subject_name || '').slice(0, 1) || '档', W / 2, 450);
+          }
+          // 下半幅
+          ctx.fillStyle = '#F5EFE6';
+          ctx.fillRect(0, 780, W, H - 780);
+          ctx.fillStyle = '#D8C9AE';
+          ctx.fillRect(0, 780, W, 4);
+
+          ctx.textAlign = 'center';
+          // 金句（手动换行）
+          ctx.fillStyle = '#2B2622';
+          ctx.font = '34px ' + SERIF;
+          var line = '', lines = [];
+          var chars = String(quote || '这里收藏着一个普通人的一生。').split('');
+          for (var li = 0; li < chars.length; li++) {
+            if (ctx.measureText(line + chars[li]).width > W - 160) { lines.push(line); line = chars[li]; }
+            else line += chars[li];
+          }
+          if (line) lines.push(line);
+          var ty = 900;
+          for (li = 0; li < lines.length && li < 4; li++) {
+            ctx.fillText(lines[li], W / 2, ty);
+            ty += 52;
+          }
+
+          // 名字与年份
+          ctx.font = 'bold 56px ' + SERIF;
+          ctx.fillStyle = '#8A4B2A';
+          ctx.fillText(String(a.subject_name || ''), W / 2, ty + 80);
+          ctx.font = '26px ' + SERIF;
+          ctx.fillStyle = '#8C837A';
+          var yrs = DB.yearLabel(a.birth_year, a.death_year);
+          ctx.fillText(yrs ? yrs + ' · 一个人，一本档案' : '一个人，一本档案', W / 2, ty + 130);
+
+          // 底部小字
+          ctx.font = '22px sans-serif';
+          ctx.fillStyle = '#B9A688';
+          ctx.fillText('《我的人生档案》 · 数据只存在这台设备里', W / 2, H - 60);
+
+          var url = cv.toDataURL('image/png');
+          var fname = '分享卡片-' + (a.subject_name || '') + '.png';
+          if (window.NativeIO && window.NativeIO.saveExport) {
+            var raw = url.slice(url.indexOf(',') + 1);
+            toast(window.NativeIO.saveBase64
+              ? (window.NativeIO.saveBase64(raw, fname) ? '卡片已存到手机相册/Download' : '保存失败')
+              : '卡片生成好了（此版本请在网页端下载）');
+          } else {
+            var a2 = document.createElement('a');
+            a2.href = url;
+            a2.download = fname;
+            document.body.appendChild(a2);
+            a2.click();
+            document.body.removeChild(a2);
+            toast('卡片已生成，开始下载');
+          }
+          // 顺手展示一眼
+          var ov = document.createElement('div');
+          ov.className = 'ml-modal-ov';
+          ov.innerHTML = '<div class="ml-modal"><h3>分享卡片</h3>' +
+            '<img src="' + url + '" style="max-width:100%;border-radius:8px" alt="分享卡片">' +
+            '<div class="ml-modal-acts"><button class="btn" id="scClose">关闭</button></div></div>';
+          document.body.appendChild(ov);
+          ov.onclick = function (e2) {
+            if (e2.target === ov || e2.target.id === 'scClose') ov.parentNode.removeChild(ov);
+          };
+        }
+      });
+    }).catch(fail);
   }
 
   /**

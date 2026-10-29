@@ -428,6 +428,104 @@
     },
 
     /**
+     * v0.9.18 整库备份（backup-schema v1）：
+     * 全部档案包（含照片/录音本体）+ 素材箱（含媒体文件）+ 阅读偏好。
+     * 模型配置（服务商 Key）刻意不进备份——密钥不该躺在备份文件里。
+     */
+    exportAll: function () {
+      var self = this;
+      return API.query('SELECT id FROM archives WHERE deleted_at IS NULL ORDER BY id').then(function (rows) {
+        var chain = Promise.resolve(), packs = [];
+        rows.forEach(function (r) {
+          chain = chain.then(function () {
+            return self.exportArchive(r.id).then(function (p) { packs.push(p); });
+          });
+        });
+        return chain.then(function () {
+          return API.query('SELECT * FROM quick_notes').then(function (qn) {
+            // 素材箱的录音/照片本体也读进来，换设备不丢
+            var reads = [];
+            for (var i = 0; i < qn.length; i++) {
+              (function (q) {
+                if (q.media_path) {
+                  reads.push(API.file({ op: 'read', path: q.media_path })
+                    .then(function (f) { q.b64 = f.base64; }, function () { q.b64 = null; }));
+                }
+              })(qn[i]);
+            }
+            return Promise.all(reads).then(function () {
+              return API.query("SELECT k, v FROM settings WHERE k LIKE 'pref.%'")
+                .then(function (prefs) {
+                  return {
+                    format: 'mylife-backup', schema: 1, version: 1,
+                    exported_at: new Date().toISOString(),
+                    packs: packs, quick_notes: qn, settings: prefs
+                  };
+                });
+            });
+          });
+        });
+      });
+    },
+
+    /**
+     * 整库恢复：档案全部按「另存一本」导回（不覆盖现有的），
+     * 素材箱 open 状态的记录也回来；偏好按键覆盖。
+     */
+    importBackup: function (data, onProg) {
+      if (!data || data.format !== 'mylife-backup' || !Array.isArray(data.packs)) {
+        return Promise.reject(new Error('这不是本程序的整库备份文件'));
+      }
+      var self = this;
+      var packs = data.packs, done = 0;
+      var chain = Promise.resolve();
+      packs.forEach(function (p) {
+        chain = chain.then(function () {
+          return self.importArchive(p).then(function () {
+            done++;
+            if (onProg) onProg(done, packs.length);
+          });
+        });
+      });
+      return chain.then(function () {
+        var qn = data.quick_notes || [];
+        var qChain = Promise.resolve();
+        for (var i = 0; i < qn.length; i++) {
+          (function (q) {
+            qChain = qChain.then(function () {
+              var put = q.b64 && q.media_path
+                ? API.file({ op: 'save', kind: /\.(jpg|jpeg|png|webp)$/i.test(q.media_path) ? 'photo' : 'audio',
+                    name: 'restored-' + Date.now() + '-' + i + (extOf(q.media_path) || '.bin'), base64: q.b64 })
+                    .then(function (r) { return r.path; }, function () { return null; })
+                : Promise.resolve(null);
+              return put.then(function (np) {
+                return API.exec(
+                  'INSERT INTO quick_notes (kind,text,media_path,media_seconds,status,created_at) VALUES (?,?,?,?,?,?)',
+                  [q.kind || 'text', q.text || null, np, q.media_seconds || null,
+                   q.status === 'adopted' ? 'adopted' : 'open', q.created_at || nowSql()]);
+              });
+            });
+          })(qn[i]);
+        }
+        return qChain.then(function () {
+          var sChain = Promise.resolve();
+          var prefs = data.settings || [];
+          for (var j = 0; j < prefs.length; j++) {
+            (function (s) {
+              sChain = sChain.then(function () { return self.saveSetting(s.k, s.v); });
+            })(prefs[j]);
+          }
+          return sChain;
+        });
+      });
+
+      function extOf(p) {
+        var m = /\.([a-z0-9]{2,5})$/i.exec(String(p || ''));
+        return m ? ('.' + m[1]) : '';
+      }
+    },
+
+    /**
      * 导入前先看看库里是不是已经有同一本：编号相同，或名字相同，都算「同一本」。
      * 以前不看这个，导一次多一本一模一样的（编号名字全一样），用户根本分不清哪本是哪本。
      */
@@ -1421,6 +1519,21 @@
           return API.exec('DELETE FROM quick_notes WHERE id=?', [id]);
         });
       });
+    },
+
+    /**
+     * v0.9.18 AI 访谈：把一条整理好的口述直接建成待归档条目
+     * （不经过素材箱，访谈纪要拆条批量收录用）。
+     */
+    addEntryText: function (archiveId, year, text) {
+      text = String(text || '').trim();
+      if (!text) return Promise.reject(new Error('内容为空'));
+      return API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE archive_id=? AND chapter_id IS NULL',
+        [archiveId]).then(function (r) {
+          return API.exec(
+            "INSERT INTO entries (archive_id,chapter_id,seq,kind,text,origin,edited,at_year) VALUES (?,NULL,?,'text',?,'user',1,?)",
+            [archiveId, r[0].s, text, year || null]);
+        }).then(function (er) { return er.lastId; });
     },
 
     /* ---------------- 生成（纯规则，同步，毫秒级） ---------------- */
