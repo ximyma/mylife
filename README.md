@@ -118,6 +118,17 @@ build-apk.bat                :: 安卓 APK
 python tools/make-backup.py  :: 全量备份包（源码 + EXE + APK）
 ```
 
+**不想在本机装环境？用 GitHub 云端打包**：仓库自带 `.github/workflows/build.yml`，
+进仓库 Actions 页选 **build → Run workflow**（或推一个 `v*` 标签），
+一次出齐四个平台的包，跑完在 Artifacts 里下载：
+
+| 产物 | 平台 | 说明 |
+| --- | --- | --- |
+| `MyLife-windows` | Windows | 单文件 `.exe`，内置 ffmpeg |
+| `MyLife-linux` | Linux x64 | 单文件，内置 ffmpeg |
+| `MyLife-macos` | macOS x64 | 单文件，ad-hoc 签名；被拦时 `xattr -cr MyLife` |
+| `MyLife-android` | 安卓 | debug 签名 APK，装上就能用 |
+
 ---
 
 ## 和旧版的区别

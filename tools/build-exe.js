@@ -108,16 +108,22 @@ if (hadData) {
   rmDirRetry(dataKeep);
   console.log('  （已保留现有 data/ 数据）');
 }
-const exe = path.join(OUT, 'MyLife.exe');
+const exe = path.join(OUT, 'MyLife' + (process.platform === 'win32' ? '.exe' : ''));
 fs.copyFileSync(NODE_BIN, exe);
 console.log('  ' + exe);
 
 /* ---- 3. 注入 blob ---- */
 step(3, '注入应用');
-const postject = path.join(WORKSPACE, 'node_modules', 'postject', 'dist', 'cli.js');
-if (!fs.existsSync(postject)) {
+// postject 先找项目 node_modules（CI 上 npm install postject --no-save 装在这），
+// 找不到再回退到本机 WorkBuddy 工作区
+const POSTJECT_CANDIDATES = [
+  path.join(ROOT, 'node_modules', 'postject', 'dist', 'cli.js'),
+  path.join(WORKSPACE, 'node_modules', 'postject', 'dist', 'cli.js'),
+];
+const postject = POSTJECT_CANDIDATES.find(fs.existsSync);
+if (!postject) {
   console.error('缺 postject。先装：');
-  console.error('  cd ' + WORKSPACE + ' && npm install postject');
+  console.error('  npm install postject --no-save');
   process.exit(1);
 }
 // fuse 串随 Node 版本变，写死会翻车（Node 22.22 实际值就和文档里的示例不同），
@@ -143,6 +149,12 @@ for (let i = 1; i <= 20 && !injected; i++) {
     console.log('  第 ' + i + ' 次注入没成（wasm 内存不够），等 8 秒再来');
     sleepSync(8000);
   }
+}
+
+// macOS：注入动过 Mach-O 签名，必须重新 ad-hoc 签名，否则启动直接被杀
+if (process.platform === 'darwin') {
+  const cs = spawnSync('codesign', ['--force', '--sign', '-', exe]);
+  console.log(cs.status === 0 ? '  macOS ad-hoc 签名 OK' : '  （codesign 失败，运行时可能被拦）');
 }
 
 /* ---- 4. 外置资源 ---- */
@@ -291,12 +303,16 @@ try {
     console.log('  ' + apkOut);
   }
 
-  const winOut = path.join(distRoot, 'MyLife-v' + vn + '-windows.exe');
+  // 平台后缀：windows → .exe；macos / linux → 无扩展名
+  const PLAT = process.platform === 'win32' ? 'windows'
+    : process.platform === 'darwin' ? 'macos' : 'linux';
+  const EXT = process.platform === 'win32' ? '.exe' : '';
+  const winOut = path.join(distRoot, 'MyLife-v' + vn + '-' + PLAT + EXT);
   fs.copyFileSync(exe, winOut);
   console.log('  ' + winOut);
 
   for (const f of fs.readdirSync(distRoot)) {
-    if (/^MyLife-v.*-(android\.apk|windows\.exe)$/.test(f) &&
+    if (/^MyLife-v.*-(android\.apk|windows\.exe|macos|linux)$/.test(f) &&
         f.indexOf('v' + vn + '-') < 0) {
       fs.renameSync(path.join(distRoot, f), path.join(arc, f));
     }

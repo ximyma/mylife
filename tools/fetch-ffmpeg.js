@@ -21,6 +21,8 @@ const TARGET = path.join(BIN, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffm
 
 const PKG = process.platform === 'win32'
   ? { name: '@ffmpeg-installer/win32-x64', ver: '4.1.0', file: 'ffmpeg.exe' }
+  : process.platform === 'darwin'
+  ? { name: '@ffmpeg-installer/darwin-x64', ver: '4.1.0', file: 'ffmpeg' }
   : { name: '@ffmpeg-installer/linux-x64', ver: '4.1.0', file: 'ffmpeg' };
 
 function download(url, dest) {
@@ -61,6 +63,7 @@ function download(url, dest) {
   execFileSync('tar', ['xzf', tgz, '-C', BIN], { stdio: 'inherit' });
   const picked = path.join(BIN, 'package', PKG.file);
   fs.renameSync(picked, TARGET);
+  if (process.platform !== 'win32') fs.chmodSync(TARGET, 0o755);   // npm 包里不带执行位
   fs.rmSync(path.join(BIN, 'package'), { recursive: true, force: true });
   fs.rmSync(tgz, { force: true });
   const size = fs.statSync(TARGET).size;

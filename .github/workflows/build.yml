@@ -1,0 +1,96 @@
+# 云端打包：Windows / Linux / macOS 单文件程序 + 安卓 APK
+#
+# 手动触发：仓库 Actions 页 → build → Run workflow
+# 自动触发：推 v* 标签（如 v0.9.14）时
+#
+# 产物在每次运行的 Artifacts 区下载：
+#   MyLife-windows / MyLife-linux / MyLife-macos / MyLife-android
+#
+# 说明：
+#   - 单文件程序用 Node 官方 SEA（tools/build-exe.js），ffmpeg 已内置；
+#   - macOS 包注入后做了 ad-hoc 签名（codesign --sign -），本机首次打开
+#     若被 Gatekeeper 拦，右键 → 打开，或 `xattr -cr MyLife-macos`；
+#   - APK 是 debug 签名，装起来就能用，正式发布前再换正式签名。
+
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  exe:
+    name: 单文件程序 · ${{ matrix.plat }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, plat: windows }
+          - { os: ubuntu-latest,  plat: linux }
+          - { os: macos-13,       plat: macos }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装 postject（SEA 注入器）
+        run: npm install postject --no-save --loglevel=error
+
+      - name: 拉 ffmpeg（会内置进程序）
+        run: node tools/fetch-ffmpeg.js
+
+      - name: 打包 + 冒烟测试
+        run: node tools/build-exe.js
+
+      - name: 收集产物
+        shell: bash
+        run: |
+          mkdir -p out
+          if [ -f dist/win/MyLife.exe ]; then cp dist/win/MyLife.exe out/; fi
+          if [ -f dist/win/MyLife ];    then cp dist/win/MyLife    out/; fi
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyLife-${{ matrix.plat }}
+          path: out/*
+          if-no-files-found: error
+
+  apk:
+    name: 安卓 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 装 Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: 打 APK（debug 签名）
+        run: gradle -p android assembleDebug --no-daemon
+
+      - name: 改名对齐版本号
+        shell: bash
+        run: |
+          VN=$(grep -oP 'versionName "\K[^"]+' android/app/build.gradle)
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk "out/MyLife-v${VN}-android.apk"
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyLife-android
+          path: out/*
+          if-no-files-found: error
