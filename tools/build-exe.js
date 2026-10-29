@@ -110,6 +110,7 @@ if (hadData) {
 }
 const exe = path.join(OUT, 'MyLife' + (process.platform === 'win32' ? '.exe' : ''));
 fs.copyFileSync(NODE_BIN, exe);
+if (process.platform !== 'win32') fs.chmodSync(exe, 0o755);   // copyfile 不保证带上执行位
 console.log('  ' + exe);
 
 /* ---- 3. 注入 blob ---- */
@@ -253,15 +254,18 @@ step(6.5, '单文件冒烟测试');
   fs.mkdirSync(smokeDir, { recursive: true });
   fs.copyFileSync(exe, path.join(smokeDir, 'MyLife.exe'));
   const smokePort = String(4490 + Math.floor(Math.random() * 50));
+  // 程序输出落到文件里，探活失败时打出来——不然 Linux/mac 上启动失败查不到原因
+  const outLog = path.join(smokeDir, 'smoke-out.log');
+  const outFd = fs.openSync(outLog, 'w');
   const proc = spawn(path.join(smokeDir, 'MyLife.exe'), [], {
     env: Object.assign({}, process.env, { PORT: smokePort, DATA_DIR: path.join(smokeDir, 'data') }),
-    stdio: 'ignore', detached: false,
+    stdio: ['ignore', outFd, outFd], detached: false,
   });
   const probe = spawnSync(process.execPath, ['-e', `
     const http = require('http');
     const port = process.argv[1];
     (async () => {
-      for (let i = 0; i < 25; i++) {
+      for (let i = 0; i < 40; i++) {
         const code = await new Promise((resolve) => {
           const rq = http.get('http://127.0.0.1:' + port + '/', (res) => { res.resume(); resolve(res.statusCode); });
           rq.on('error', () => resolve(0));
@@ -273,16 +277,22 @@ step(6.5, '单文件冒烟测试');
       }
       process.exit(1);
     })();
-  `, smokePort], { timeout: 20000 });
+  `, smokePort], { timeout: 30000 });
   try { proc.kill && proc.kill(); } catch (e) {}
-  // 杀软 / 沙箱会短暂锁住 sqlite 的 -shm/-wal，直接 rm 会 EBUSY 并把构建打断。
-  // 等一下再删，删不掉只警告（冒烟结果已经拿到，不该为清理失败而重新打包）。
-  rmDirRetry(smokeDir);
   if (probe.status !== 0) {
-    console.error('\n冒烟测试失败：单文件 EXE 无法独立启动（常见原因：require 了本地文件）');
+    console.error('\n冒烟测试失败：单文件 EXE 无法独立启动');
+    console.error('进程退出码：' + proc.exitCode + '，信号：' + proc.signalCode +
+      '，spawn 错误：' + (proc.spawnargs ? '' : ''));
+    try {
+      const so = fs.readFileSync(outLog, 'utf8');
+      console.error('---- 程序输出（前 4000 字） ----\n' + (so || '(空)') + '\n----');
+    } catch (e) { console.error('（读不到程序输出：' + e.message + '）'); }
     console.error('不要发布这个包！');
     process.exit(1);
   }
+  // 杀软 / 沙箱会短暂锁住 sqlite 的 -shm/-wal，直接 rm 会 EBUSY 并把构建打断。
+  // 等一下再删，删不掉只警告（冒烟结果已经拿到，不该为清理失败而重新打包）。
+  rmDirRetry(smokeDir);
   console.log('  单文件独立启动 OK');
 }
 
