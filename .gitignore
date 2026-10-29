@@ -29,3 +29,17 @@ tmp/
 
 # 内置播放/渲染引擎（体积大，用 tools/fetch-ffmpeg.js 拉取，不入库）
 bin/
+
+# ---- Node 常用（合并自 GitHub 初始提交）----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.*
+!.env.example
+.npm
+.cache
+.nyc_output
+coverage/
+*.tsbuildinfo
