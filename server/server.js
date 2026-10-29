@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.13';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.14';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -2334,6 +2334,10 @@ registerJob('aivideo', async function (p, ctx) {
  *             POST /v1/audio/music/query  {task_id} → {status, audio(base64)}
  *   Mureka    POST /v1/song/generate      {lyrics, model, prompt, n}
  *             GET  /v1/song/query/{id}    → {status, choices:[{url}]}
+ *
+ * ⚠️ 上面写的是**完整 API 路径**；代码里用 endpointOf()（= base_url，本身已含 /v1）拼接，
+ *    所以实际写的是 '/audio/music/submit'。曾经多写一层 /v1 变成 /v1/v1/... 被判 404，
+ *    而测试桩只按子串匹配、发现不了——真链路必须自己跑一次。
  */
 function musicVendorOf(p) {
   const s = (String((p && p.base_url) || '') + ' ' + String((p && p.kind) || '')).toLowerCase();
@@ -2428,7 +2432,7 @@ registerJob('aimusic', async function (p, ctx) {
         if (instrumental) body.instrumental = true;
         else if (lyrics) body.lyrics = lyrics;
 
-        const sub = await fetchJson(endpointOf(cand.profile) + '/v1/audio/music/submit', {
+        const sub = await fetchJson(endpointOf(cand.profile) + '/audio/music/submit', {
           method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(body),
         }, 90000);
         if (!sub.ok) {
@@ -2448,7 +2452,7 @@ registerJob('aimusic', async function (p, ctx) {
         if (noLyric && !instrumental) {
           musicNote = '没给歌词，这家（Mureka）只能作成纯音乐；想要人声就把歌词填上，或改用阶跃星辰（能自己写词）';
         }
-        const sub = await fetchJson(endpointOf(cand.profile) + '/v1/song/generate', {
+        const sub = await fetchJson(endpointOf(cand.profile) + '/song/generate', {
           method: 'POST', headers: authHeaders(cand.profile), body: JSON.stringify(body),
         }, 90000);
         if (!sub.ok) {
@@ -2470,12 +2474,12 @@ registerJob('aimusic', async function (p, ctx) {
 
         let st;
         if (vendor === 'stepfun') {
-          st = await fetchJson(endpointOf(cand.profile) + '/v1/audio/music/query', {
+          st = await fetchJson(endpointOf(cand.profile) + '/audio/music/query', {
             method: 'POST', headers: authHeaders(cand.profile),
             body: JSON.stringify({ task_id: taskId }),
           }, 30000);
         } else {
-          st = await fetchJson(endpointOf(cand.profile) + '/v1/song/query/' + encodeURIComponent(taskId), {
+          st = await fetchJson(endpointOf(cand.profile) + '/song/query/' + encodeURIComponent(taskId), {
             method: 'GET', headers: authHeaders(cand.profile),
           }, 30000);
         }

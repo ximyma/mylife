@@ -39,6 +39,7 @@ async function fakeFetch(url, opts) {
     log('stepfun submit ' + JSON.stringify({
       task: body.task, model: body.model_id, cap: body.caption,
       lyr: body.lyrics ? 'with-lyrics' : 'no-lyrics', inst: !!body.instrumental, fmt: body.response_format,
+      url: u,
     }));
     // 模型名里带 FAIL 当作服务商拒绝，用来验证失败与兜底换家
     if (String(body.model_id || '').indexOf('FAIL') !== -1) {
@@ -64,6 +65,7 @@ async function fakeFetch(url, opts) {
     log('mureka submit ' + JSON.stringify({
       model: body.model, prompt: body.prompt,
       lyr: body.lyrics === '[Instrumental]' ? 'instrumental' : 'with-lyrics', n: body.n,
+      url: u,
     }));
     // 曲风描述里带 FAIL 当作这家也拒绝（余额不足之类），用来验证两家都拒时的报错
     if (String(body.prompt || '').indexOf('FAIL') !== -1) {

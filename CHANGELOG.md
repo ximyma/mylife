@@ -5,6 +5,52 @@
 里程碑：**v0.2 = 里程碑 1**（档案管理与单文件分发）、**v0.4 = 里程碑 2**（账号体系 + 手机端全链路打通）、
 **v0.5–v0.7 = 里程碑 3**（单机版功能扩展：封面、时间轴、导出、AI 助手、语音音乐、影像化）。
 
+## v0.9.14 · 2026-10-29 —— 作曲接口地址拼错，真出歌时必 404
+
+用真实 Key 端到端跑第一首歌时暴露的：直连 `curl` 能提交成功，程序里却报
+`阶跃星辰 提交失败 HTTP 404`。
+
+### 根因
+
+`endpointOf(p)` 返回的就是 `base_url`（各家的地址**本身已经带 `/v1`**），
+而音乐相关的 4 处调用又各写了一遍 `/v1`：
+
+```
+https://api.stepfun.com/v1  +  /v1/audio/music/submit   →  /v1/v1/audio/music/submit  → 404
+```
+
+对话、转写、生图、生视频都是写 `'/chat/completions'` 这种不带 `/v1` 的形式，
+只有作曲这四行写错了——所以别的功能一直正常，唯独作曲永远提交不出去。
+
+### 修复
+
+- 4 处改成 `'/audio/music/submit'`、`'/audio/music/query'`、`'/song/generate'`、`'/song/query/'`。
+- 注释里写明"上面是完整 API 路径，代码里不要再带 /v1"，防止后人照注释抄回去。
+
+### 为什么测试没抓到
+
+`test/_fetch_stub_music.js` 是按**子串**匹配的（`u.indexOf('/audio/music/submit')`），
+多一层 `/v1` 照样命中，36 项全绿。这是第二次被桩掩盖的真 bug
+（上一次是 `audit-phmeta` 之前的 `note` 列名）。
+
+### 补的防回归
+
+- 桩现在把**实际请求的完整 URL** 记进 `last_music.txt`；
+- `test/audit-music.js` 新增 2 条断言：阶跃必须等于 `https://api.stepfun.com/v1/audio/music/submit`、
+  Mureka 必须等于 `https://api.mureka.ai/v1/song/generate`，**不许出现 `/v1/v1/`** —— 38/38。
+
+### 真机验证（用申请到的阶跃 Key 实跑）
+
+- 提交 → 轮询 → 落盘全通：出曲 **3 分 11 秒 / 3.06 MB / 48kHz 立体声 / mean -16.7 dB**（有声音不削波）；
+- 模型自己写了词（`rewritten_lyrics`）并返回 `audio` base64，与程序解析的字段完全一致；
+- 成品登记进档案「写的歌」（`media.kind='audio'`），缓存键入库，同描述不会重复扣费。
+
+> 顺带确认：**音乐模型不能走 `/v1/chat/completions`**，会返回
+> `The model "stepaudio-3-music-preview" does not exist or you do not have access to it`（404）。
+> 设置页「测试」对作曲槽位会说清楚这一点。
+
+---
+
 ## v0.9.13 · 2026-10-29 —— 真作曲：让音乐大模型写一首歌，不只是给歌词
 
 上一版「演奏出来」本质是本地朗读配和弦（TTS 念词 + 算出来的钢琴琶音），用户接着问：

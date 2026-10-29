@@ -70,7 +70,8 @@ assets['schema.sql'] = path.join(ROOT, 'server', 'schema.sql');
 
 // ffmpeg：内置进 exe。单文件分发时只有一个 exe，不能指望旁边有 bin/。
 const FF = path.join(ROOT, 'bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-const hasFF = fs.existsSync(FF) && fs.statSync(FF).size > 1024 * 1024;
+// NO_FF=1 可打"轻量包"（不含内置 ffmpeg）——postject 注入时内存不够时的兜底
+const hasFF = !process.env.NO_FF && fs.existsSync(FF) && fs.statSync(FF).size > 1024 * 1024;
 if (hasFF) {
   assets['bin/' + path.basename(FF)] = FF;
   console.log('  内置 ffmpeg ' + Math.round(fs.statSync(FF).size / 1048576) + ' MB');
@@ -129,8 +130,20 @@ if (!m) {
 }
 const fuse = m[0];
 console.log('  fuse: ' + fuse);
-execFileSync(NODE_BIN, [postject, exe, 'NODE_SEA_BLOB', path.join(TMP, 'sea-prep.blob'),
-  '--sentinel-fuse', fuse], { stdio: 'inherit' });
+// postject 是 wasm，注入时要把整个 exe + blob 读进内存；内存紧张时会报
+// "Array buffer allocation failed" 然后 Aborted()。实测重试几次就能过，所以别一失败就放弃。
+let injected = false;
+for (let i = 1; i <= 20 && !injected; i++) {
+  try {
+    execFileSync(NODE_BIN, [postject, exe, 'NODE_SEA_BLOB', path.join(TMP, 'sea-prep.blob'),
+      '--sentinel-fuse', fuse], { stdio: 'inherit' });
+    injected = true;
+  } catch (e) {
+    if (i === 20) throw e;
+    console.log('  第 ' + i + ' 次注入没成（wasm 内存不够），等 8 秒再来');
+    sleepSync(8000);
+  }
+}
 
 /* ---- 4. 外置资源 ---- */
 step(4, '复制前端资源');

@@ -189,6 +189,12 @@ function lastLines() {
   ck('歌词一起发过去了', /"lyr":"with-lyrics"/.test(sf1), sf1);
   ck('要的是 mp3', /"fmt":"mp3"/.test(sf1), sf1);
 
+  // 真踩过的坑：base_url 本身已带 /v1，代码里再写 /v1 会拼成 /v1/v1/... 被服务商判 404。
+  // 桩是按子串匹配的，这种错它照样"通过"，所以在这里把 URL 钉死。
+  const url1 = (sf1.match(/"url":"([^"]+)"/) || [])[1] || '';
+  ck('提交地址是 /v1/audio/music/submit（没有重复的 /v1）',
+    url1 === 'https://api.stepfun.com/v1/audio/music/submit', url1);
+
   const med1 = await q("SELECT id,kind,path,mime,bytes FROM media WHERE archive_id=? AND kind='audio'", [aid]);
   ck('成品登记进档案（kind=audio）', med1.length === 1 && med1[0].path === r1.path, JSON.stringify(med1));
 
@@ -210,6 +216,9 @@ function lastLines() {
     abs2 + ' ' + (abs2 && fs.existsSync(abs2) ? fs.statSync(abs2).size : 'missing'));
   const mkLine = lastLines().filter(s => s.indexOf('mureka submit') === 0).pop() || '';
   ck('Mureka 收到的是歌词而非占位符', /"lyr":"with-lyrics"/.test(mkLine), mkLine);
+  const mkUrl = (mkLine.match(/"url":"([^"]+)"/) || [])[1] || '';
+  ck('Mureka 提交地址是 /v1/song/generate（没有重复的 /v1）',
+    mkUrl === 'https://api.mureka.ai/v1/song/generate', mkUrl);
 
   // 没给歌词 + 没勾纯音乐：Mureka 只能作纯音乐，必须说清楚（不能闷声出个没人声的版本）
   const c3 = await req('/api/jobs/create', {
