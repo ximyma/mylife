@@ -1,6 +1,6 @@
 # 我的人生档案 · The Story of My Life
 
-**当前版本 v0.9.18**（2026-10-29）
+**当前版本 v0.9.19**（2026-10-30）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜**给第一次用的人：[使用说明](docs/使用说明.md)**｜
 里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
@@ -428,6 +428,7 @@ node --experimental-sqlite --no-warnings test/audit-mvdel.js          # 11 成�
 node --experimental-sqlite --no-warnings test/audit-phmeta.js         #  6 照片元数据
 node --experimental-sqlite --no-warnings test/audit-quick.js          # 20 素材箱（随手记）
 node --experimental-sqlite --no-warnings test/audit-v0918.js          # 35 AI 访谈·问题库·整库备份·分享卡片
+node --experimental-sqlite --no-warnings test/audit-v0919.js          # 31 翻书预览·数据自检·小程序同步
 ```
 
 ### 界面（CDP 真点真写库）
@@ -456,7 +457,7 @@ node test/audit-android.js         # 47 安卓端（optString / chunked / cookie
 node test/audit-es5.js             # 17 个前端文件的 ES5 语法守卫（老 WebView 不认 const / 箭头函数）
 ```
 
-合计 **910 项**。要点：
+合计 **941 项**。要点：
 
 - `audit-v05.js` 盯基座；`audit-ui-v05.js` 用 CDP 真点真存，并校验 docx / pptx / pdf 的包结构与文件头。
 - `audit-android.js` 是纯静态检查，把里程碑 2 期间踩过的每个坑钉死，改坏了会当场报错。

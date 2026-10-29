@@ -2529,7 +2529,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.18';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.19';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -3814,6 +3814,8 @@
       '<small>一章一行，点进去读那一章；改、听、配图都在章节页</small></button>' +
       '<button class="ex-card" data-wb="export"><b>去导出</b>' +
       '<small>先预览成书排版，再出 Word / PDF / PPT 或打印</small></button>' +
+      '<button class="ex-card" data-wb="flip"><b>📖 翻书看</b>' +
+      '<small>把整本变成一本能翻的书：双页摊开、翻页有声音般的动画，适合给老人翻着看</small></button>' +
       '<button class="ex-card" data-wb="html"><b>生成整本网页</b>' +
       '<small>带封面、目录和全部正文，新窗口打开，可滚动通读、可打印、可另存</small></button>' +
       '<div class="ml-modal-acts"><button class="btn" data-wb="cancel">取消</button></div>' +
@@ -3838,6 +3840,18 @@
       if (kind === 'export') {
         ov.parentNode.removeChild(ov);
         openExportSheet(archiveId);
+        return;
+      }
+      if (kind === 'flip') {
+        ov.parentNode.removeChild(ov);
+        msg.textContent = '正在把整本装订成书……';
+        window.Exporter.model(archiveId).then(function (bm) {
+          return window.Exporter.inlineImages(bm, 140).then(function (inl) {
+            window.BookFlip.open(bm, { theme: 'paper', images: inl.map });
+          });
+        }).catch(function (e) {
+          toast('翻书没打开：' + (e.message || e));
+        });
         return;
       }
 
@@ -3890,6 +3904,8 @@
    * 成书预览：先把排版结果放进 iframe，让人看清章节、图片、顺序对不对，
    * 再决定导出 Word / PDF / PPT。不再是「点一下就给个文件」。
    */
+  var lastPreview = null;   // { m, map }：最近一次成书预览的模型与内嵌图，翻书直接复用
+
   function openDocPreview(m, opts) {
     opts = opts || {};
     var back = document.createElement('div');
@@ -3901,6 +3917,7 @@
       '<iframe class="pv-frame" id="pvFrame" title="成书预览"></iframe></div>' +
       '<div class="pv-acts">' +
       '<button class="btn tiny" data-pv-close="1">返回</button>' +
+      '<button class="btn tiny" data-pv="flip">📖 翻书看</button>' +
       '<span class="pv-note">这里只是排版检查，还没生成文件</span>' +
       '<button class="btn tiny" data-pv="docx">导出 Word</button>' +
       '<button class="btn tiny" data-pv="pdf">导出 PDF</button>' +
@@ -3912,6 +3929,7 @@
     var frame = back.querySelector('#pvFrame');
 
     window.Exporter.inlineImages(m, 100).then(function (inl) {
+      lastPreview = { m: m, map: inl.map };
       frame.srcdoc = window.Exporter.html(m, { theme: opts.theme, size: opts.size, images: inl.map });
       tip.textContent = '共 ' + m.meta.chapters + ' 章 · 约 ' + m.meta.words + ' 字 · ' +
         m.meta.photos + ' 张照片';
@@ -3923,6 +3941,17 @@
       var t = ev.target;
       if (!t.closest) return;
       if (t.closest('[data-pv-close]')) { back.remove(); return; }
+      if (t.closest('[data-pv="flip"]')) {
+        // 翻书看：同一份排版数据直接变一本能翻的书
+        back.remove();
+        var useMap = (lastPreview && lastPreview.m === m) ? lastPreview.map : null;
+        var flipP = useMap ? Promise.resolve({ map: useMap })
+          : window.Exporter.inlineImages(m, 120);
+        flipP.then(function (inl) {
+          window.BookFlip.open(m, { theme: opts.theme, images: inl.map });
+        }).catch(function (e) { fail(e); });
+        return;
+      }
       var b = t.closest('[data-pv]');
       if (!b) return;
       var kind = b.getAttribute('data-pv');

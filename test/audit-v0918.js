@@ -139,12 +139,13 @@ function read(p) { return fs.readFileSync(path.join(ROOT, p), 'utf8'); }
   ok('style.css 有访谈样式', css.includes('.iv-log') && css.includes('.iv-sum'));
   ok('style.css 有大字模式样式', css.includes('html.font-lg') && css.includes('html.font-xl'));
 
-  // —— P6 版本一致 ——
-  ok('web/app.js 版本 v0.9.18', app.includes("APP_VERSION = 'v0.9.18'"));
-  ok('server.js 版本 v0.9.18', read('server/server.js').includes("'v0.9.18'"));
+  // —— P6 版本一致（跨文件比对，升版本不用改这里）——
+  const ver = (app.match(/APP_VERSION = '(v[\d.]+)'/) || [])[1];
+  ok('web/app.js 有版本号', !!ver, app.slice(0, 0));
+  ok('server.js 版本与 web 一致', ver && read('server/server.js').includes("'" + ver + "'"));
   const gradle = read('android/app/build.gradle');
-  ok('安卓 versionCode 33 / versionName 0.9.18',
-    gradle.includes('versionCode 33') && gradle.includes('versionName "0.9.18"'));
+  const vn = ver ? ver.replace(/^v/, '') : '';
+  ok('安卓 versionName 与 web 一致', vn && gradle.includes('versionName "' + vn + '"'));
 
   console.log('');
   console.log(`v0.9.18 审计：${passed} 通过 / ${failed} 失败`);

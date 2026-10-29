@@ -10,14 +10,25 @@ const path = require('path');
 const http = require('http');
 
 function startServer(tag) {
-  const DATA_DIR = path.join(__dirname, '..', 'tmp', 'audit-data-' + tag);
-  fs.rmSync(DATA_DIR, { recursive: true, force: true });
+  // 固定名字方便翻现场，但清不干净时（文件被占用/权限受限）必须让路：
+  // 否则上一轮残留的库会让「注册」撞号，整轮审计直接崩在起跑线上。
+  let DATA_DIR = path.join(__dirname, '..', 'tmp', 'audit-data-' + tag);
+  if (!emptyDir(DATA_DIR)) {
+    DATA_DIR = path.join(__dirname, '..', 'tmp', 'audit-data-' + tag + '-' + Date.now());
+    emptyDir(DATA_DIR);
+  }
   const PORT = 4410 + Math.floor(Math.random() * 80);
   const proc = spawn(process.execPath, [path.join(ROOT(), 'server', 'server.js')], {
     env: Object.assign({}, process.env, { DATA_DIR: DATA_DIR, PORT: String(PORT) }),
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const base = 'http://127.0.0.1:' + PORT;
+
+  /** 清掉整个目录；清不掉（文件被占用等）返回 false，让调用方换个名字再来 */
+  function emptyDir(dir) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 清不掉不致命 */ }
+    try { return !fs.existsSync(dir); } catch (e) { return false; }
+  }
 
   function post(p, body, token) {
     return new Promise((resolve, reject) => {

@@ -17,7 +17,14 @@ const path = require('path');
 const http = require('http');
 
 const ROOT = path.join(__dirname, '..');
-const DATA_DIR = path.join(ROOT, 'tmp', 'audit-video-data');
+// 固定名字方便翻现场；清不干净时（文件被占用）必须换名字，
+// 否则上一轮残留的库会让下面 13800138000 注册撞号，整套审计崩在起跑线上。
+let DATA_DIR = path.join(ROOT, 'tmp', 'audit-video-data');
+if (!emptyDir(DATA_DIR)) { DATA_DIR = DATA_DIR + '-' + Date.now(); emptyDir(DATA_DIR); }
+function emptyDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 清不掉不致命 */ }
+  try { return !fs.existsSync(dir); } catch (e) { return false; }
+}
 const PORT = 4430 + Math.floor(Math.random() * 40);   // 随机端口：批量跑测试时不跟别的套件抢
 const STUB = path.join(__dirname, '_fetch_stub_video.js');
 

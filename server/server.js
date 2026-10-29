@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.18';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.19';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -2780,6 +2780,57 @@ function apiExportSave(body) {
   return { ok: true, path: 'exports/' + filename, bytes: buf.length };
 }
 
+/* ---------------- 数据自检（v0.9.19）：设置页「数据库自检」按钮 ---------------- */
+
+/**
+ * 数据自检：把库里的家底数一遍报给用户看。
+ * 设置页写的是「保存了却看不到数据时点这个，把弹出的信息截图发我」——
+ * 所以这里要给的是能定位问题的硬信息：每张表的行数、数据目录、媒体文件个数。
+ */
+function apiDebugData() {
+  const db = ctxDb();
+  const count = (t) => {
+    try { return db.prepare('SELECT COUNT(*) AS n FROM ' + t).get().n; }
+    catch (e) { return 'ERR: ' + e.message; }
+  };
+  const filesDir = ctxFiles();
+  let mediaCount = 0, mediaBytes = 0;
+  try {
+    if (fs.existsSync(filesDir)) {
+      const walk = (d) => {
+        for (const name of fs.readdirSync(d)) {
+          const p = path.join(d, name);
+          const st = fs.statSync(p);
+          if (st.isDirectory()) walk(p);
+          else { mediaCount++; mediaBytes += st.size; }
+        }
+      };
+      walk(filesDir);
+    }
+  } catch (e) { mediaCount = 'ERR: ' + e.message; }
+  return {
+    ok: true,
+    time: new Date().toLocaleString('zh-CN'),
+    tables: {
+      archives: count('archives'),
+      chapters: count('chapters'),
+      segments: count('segments'),
+      entries: count('entries'),
+      photos: count('photos'),
+      media: count('media'),
+      quick_notes: count('quick_notes'),
+      exports: count('exports'),
+      ai_threads: count('ai_threads'),
+      ai_messages: count('ai_messages'),
+    },
+    dataDir: DATA,
+    filesDir: filesDir,
+    mediaFiles: mediaCount,
+    mediaBytes: mediaBytes,
+    mediaSizeText: (mediaBytes / 1048576).toFixed(1) + ' MB',
+  };
+}
+
 /* ---------------- 导入 Word（.docx）：把文档读回成档案 ---------------- */
 
 /**
@@ -3220,6 +3271,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/export/pdf') out = await apiExportPdf(body);
           else if (pathname === '/api/export/save') out = apiExportSave(body);
           else if (pathname === '/api/docx/parse') out = apiDocxParse(body);
+          else if (pathname === '/api/debug/data') out = apiDebugData();
           else return sendJson(res, 404, { __error: '未知接口 ' + pathname });
           return sendJson(res, 200, out);
         } catch (e) {
