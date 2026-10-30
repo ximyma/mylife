@@ -364,6 +364,29 @@
     return lines.join('\n');
   }
 
+  /* 本地整理：AI 不可用（未配置/请求失败）时，把回答原话拆条，保证访谈内容能收进档案。
+     输出与 AI 纪要同格式（纪要 + ===== + JSON 数组），直接复用 parseEntries/renderSummary。 */
+  function localSummaryText() {
+    var answers = [];
+    for (var i = 0; i < S.log.length; i++) {
+      if (S.log[i].role !== 'user') continue;
+      var t = String(S.log[i].text || '').trim();
+      if (!t || t.indexOf('跳过') >= 0 || t.length < 6) continue;
+      answers.push(t);
+    }
+    var arr = answers.slice(-12).map(function (t) {
+      var ym = t.match(/(1[89]\d{2}|20\d{2})\s*年/);
+      return { year: ym ? parseInt(ym[1], 10) : null, text: t.slice(0, 400) };
+    });
+    var tp = topic(S.topic);
+    var head = '【访谈纪要 · 本地整理】\n主题：' + (tp.icon || '') + ' ' + (tp.n || '') +
+      '\n共讲 ' + arr.length + ' 段内容。\n' +
+      (arr.length
+        ? '（AI 整理暂不可用，以下按你的原话整理，可逐条修改后收进档案。）'
+        : '（这段访谈没有可收录的回答，先回去多聊几句吧。）');
+    return head + '\n=====\n' + JSON.stringify(arr);
+  }
+
   function endInterview(appEl) {
     if (S.log.length < 2) {
       toast('还没问几句，先聊一会儿再整理');
@@ -387,16 +410,8 @@
       if (!r || !r.ok) throw new Error((r && r.message) || '模型没回话');
       renderSummary(appEl, String(r.text || ''));
     }).catch(function (e) {
-      var box = document.getElementById('ivSumWait');
-      if (box) box.textContent = '（整理没成：' + ((e && e.message) || e) + '）。' +
-        '访谈原话都在档案对话记录里，可以直接复制，或点返回再试。';
-      var back = document.createElement('div');
-      back.className = 'row';
-      back.innerHTML = '<button class="btn" id="ivSumRetry">回访谈继续</button>';
-      box.parentNode.insertBefore(back, box.nextSibling);
-      document.getElementById('ivSumRetry').onclick = function () {
-        S.on = true; saveState(); renderSession(appEl, true);
-      };
+      // AI 整理失败/未配置模型：降级为本地整理，访谈内容不白聊
+      renderSummary(appEl, localSummaryText());
     });
   }
 

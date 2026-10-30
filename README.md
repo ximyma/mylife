@@ -1,6 +1,6 @@
-# 我的人生档案 · The Story of My Life
+# 岁月记录助手 · The Story of My Life
 
-**当前版本 v0.9.19**（2026-10-30）
+**当前版本 v0.9.20**（2026-10-30）
 
 变更明细见 [CHANGELOG.md](CHANGELOG.md)｜**给第一次用的人：[使用说明](docs/使用说明.md)**｜
 里程碑 2 存档见 [docs/MILESTONE-2.md](docs/MILESTONE-2.md)｜
