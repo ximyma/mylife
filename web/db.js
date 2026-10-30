@@ -853,6 +853,8 @@
       // 音乐大模型：名字里带 music / audio-3 / mureka。-music 要在 tts 之前判，
       // 否则 stepaudio-3-music-preview 会被 speech 规则吃掉
       if (/music|mureka|stepaudio-3/.test(s)) return 'music';
+      // XingChen 系 ASR 免费档调不了（上游 403），从转文字下拉里排除（v0.9.34）
+      if (/xingchen.*asr/.test(s)) return 'asr-pro';
       if (/asr|whisper|sensevoice/.test(s)) return 'asr';
       if (/tts|cosyvoice|speech/.test(s)) return 'tts';
       if (/ocr|vl|vision/.test(s)) return 'vision';

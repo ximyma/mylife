@@ -9,6 +9,7 @@
 
   var esc = function (s) { return window.ML.esc(s); };
   var fsrc = function (p) { return window.ML.fsrc(p); };
+  var toast = function (m) { window.ML.toast(m); };
 
   /* ================= 数据安全承诺书 ================= */
 
@@ -83,6 +84,7 @@
       '</div>' +
       '<div id="qRecState" class="muted small rec-state"></div>' +
       '<div id="qSumBox" hidden></div>' +
+      '<div id="qAiBox"></div>' +
       '<div id="qList" class="q-list"><div class="boot">正在翻素材箱……</div></div>' +
       '<div id="qDone"></div>' +
       '</main>';
@@ -101,8 +103,117 @@
     }
 
     loadList();
+    loadAiMade();
+    bindAiBox(document.getElementById('qAiBox'));
     if (opts.autoRec && canRec()) toggleRec();
     if (opts.autoPhoto) document.getElementById('qPhotoFile').click();
+  }
+
+  /* ---- AI 产的料：画过的图、合成的片子、作的曲，生成即落库，这里统一翻得到 ---- */
+
+  var aiRows = [];   // loadAiMade 的查询结果，点击按钮时按序号取
+
+  function loadAiMade() {
+    var box = document.getElementById('qAiBox');
+    if (!box) return;
+    window.API.query("SELECT capability, path, prompt, model FROM ai_assets ORDER BY id DESC LIMIT 18")
+      .then(function (rows) {
+        if (!rows || !rows.length) { box.innerHTML = ''; aiRows = []; return; }
+        aiRows = rows;
+        var html = '<h2 class="sec-label">AI 产 的 料</h2><div class="ai-grid">';
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          var icon = r.capability === 'video' ? '🎬' : '🎵';
+          var ops = '';
+          if (r.capability === 'image') {
+            ops = '<button class="btn tiny" data-ai-arch="' + i + '">收进档案</button>' +
+                  '<button class="btn tiny" data-ai-gal="' + i + '">存到相册</button>';
+          } else if (r.capability === 'video') {
+            ops = '<button class="btn tiny" data-ai-arch="' + i + '">收进档案</button>';
+          } else {
+            ops = '<span class="muted small">在「歌本」页管理</span>';
+          }
+          html += '<figure class="ai-asset">' +
+            '<a class="art-thumb" href="' + esc(fsrc(r.path)) + '" target="_blank" ' +
+            'title="' + esc(String(r.prompt || '').slice(0, 60)) + '">' +
+            (r.capability === 'image'
+              ? '<img src="' + esc(fsrc(r.path)) + '" alt="" loading="lazy">'
+              : '<span class="ai-asset-icon">' + icon + '</span>') +
+            '</a>' +
+            '<figcaption class="ai-asset-cap">' + esc(String(r.prompt || '').slice(0, 18)) + '</figcaption>' +
+            '<div class="ai-asset-ops">' + ops + '</div>' +
+            '</figure>';
+        }
+        html += '</div><p class="muted small">「收进档案」先进待归档，回档案页再「放进某章 / 插到某段」；「存到相册」直接进手机相册的「岁月记录助手」相簿。</p>';
+        box.innerHTML = html;
+      }).catch(function () { box.innerHTML = ''; aiRows = []; });   // 老库没有 ai_assets 就不显示这一区
+  }
+
+  /** 选一本档案收进去：先进待归档照片/合成的片子，归章在档案页做 */
+  function aiIntoArchive(r, btn) {
+    window.API.query('SELECT id, subject_name FROM archives ORDER BY id DESC').then(function (list) {
+      if (!list || !list.length) { toast('还没有档案，先回首页建一本'); return; }
+      var chips = '';
+      for (var i = 0; i < list.length; i++) {
+        chips += '<button class="chip" data-ai-arch-id="' + list[i].id + '" data-ai-arch-name="' +
+          esc(list[i].subject_name || '') + '">' + esc(list[i].subject_name || ('档案 ' + list[i].id)) + '</button>';
+      }
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal pick-modal"><h3>收进哪本档案？</h3>' +
+        '<p class="hint dim">' + (r.capability === 'video' ? '片子进「合成的片子」' : '图先进待归档照片，再放进某章或插到某段') + '</p>' +
+        '<div class="pick-grid">' + chips + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn" data-ai-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', function (ev) {
+        if (!ev.target.closest) return;
+        if (ev.target === ov || ev.target.closest('[data-ai-cancel]')) {
+          document.body.removeChild(ov); return;
+        }
+        var ab = ev.target.closest('[data-ai-arch-id]');
+        if (!ab) return;
+        var aid = Number(ab.getAttribute('data-ai-arch-id'));
+        var aname = ab.getAttribute('data-ai-arch-name') || '';
+        var sql, params;
+        if (r.capability === 'video') {
+          sql = 'INSERT INTO media (archive_id,kind,path,mime,bytes,caption) VALUES (?,?,?,?,?,?)';
+          params = [aid, 'video', r.path, 'video/mp4', null, String(r.prompt || 'AI 片子').slice(0, 120)];
+        } else {
+          sql = 'INSERT INTO photos (archive_id,path,taken_year,place,event) VALUES (?,?,?,?,?)';
+          params = [aid, r.path, 0, 'AI 插图', String(r.prompt || 'AI 插图').slice(0, 40)];
+        }
+        window.API.exec(sql, params).then(function () {
+          document.body.removeChild(ov);
+          if (btn) { btn.textContent = '已收进'; btn.disabled = true; }
+          toast('存进《' + aname + '》了，' + (r.capability === 'video' ? '档案首页「合成的片子」' : '待归档照片里') + '能看到');
+        }).catch(function (e) { toast(e.message || '没存上'); });
+      });
+    }).catch(function (e) { toast('翻档案失败：' + (e.message || e)); });
+  }
+
+  function aiToGallery(r, btn) {
+    window.API.gallery({ path: r.path }).then(function (g) {
+      if (!g || !g.ok) throw new Error((g && g.message) || '没存上');
+      if (btn) { btn.textContent = '已存'; btn.disabled = true; }
+      toast('存到 ' + (g.where || '系统相册') + ' 了');
+    }).catch(function (e) { toast(e.message || '没存上'); });
+  }
+
+  function bindAiBox(box) {
+    box.addEventListener('click', function (ev) {
+      if (!ev.target.closest) return;
+      var ab = ev.target.closest('[data-ai-arch]');
+      if (ab) {
+        var r1 = aiRows[Number(ab.getAttribute('data-ai-arch'))];
+        if (r1) aiIntoArchive(r1, ab);
+        return;
+      }
+      var gb = ev.target.closest('[data-ai-gal]');
+      if (gb) {
+        var r2 = aiRows[Number(gb.getAttribute('data-ai-gal'))];
+        if (r2) aiToGallery(r2, gb);
+      }
+    });
   }
 
   /* ---- 列表 ---- */

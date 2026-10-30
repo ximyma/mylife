@@ -58,7 +58,22 @@ public class Auth {
                 "token TEXT PRIMARY KEY," +
                 "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE," +
                 "expires_at TEXT NOT NULL)");
+        // v0.9.27 对齐桌面端：管理员标记 + 密保（老库补列，幂等）
+        addCol(d, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
+        addCol(d, "users", "security_q", "TEXT");
+        addCol(d, "users", "security_a", "TEXT");
+        try {
+            d.execSQL("DELETE FROM sessions WHERE expires_at <= datetime('now')");   // 顺手清过期会话
+        } catch (Exception ignored) {
+        }
         this.adb = d;
+    }
+
+    private static void addCol(SQLiteDatabase d, String table, String col, String def) {
+        try {
+            d.execSQL("ALTER TABLE " + table + " ADD COLUMN " + col + " " + def);
+        } catch (Exception alreadyThere) {
+        }
     }
 
     private static String hashPw(String password, String salt) throws Exception {
@@ -121,11 +136,13 @@ public class Auth {
 
             boolean migrate = userCount() == 0 && MainActivity.hasLegacyData(ctx);
 
+            boolean firstOne = userCount() == 0;   // 全机第一个账号 = 管理员（与桌面同规则）
             android.content.ContentValues cv = new android.content.ContentValues();
             cv.put("phone", phone);
             cv.put("password_hash", hash);
             cv.put("salt", saltHex);
             cv.put("nickname", nickname == null || nickname.trim().isEmpty() ? null : nickname.trim());
+            cv.put("is_admin", firstOne ? 1 : 0);
             long uid = adb.insert("users", null, cv);
 
             if (migrate) {
@@ -138,6 +155,7 @@ public class Auth {
             out.put("phone", phone);
             out.put("token", issueToken(uid));
             out.put("migrated", migrate);
+            out.put("isAdmin", firstOne);
             out.put("message", migrate ? "注册成功，旧档案已归属这个账号" : "注册成功");
             return out.toString();
         } finally {
@@ -204,7 +222,7 @@ public class Auth {
         String token = hex(b);
         // 过期时间用 SQLite 的日期函数算，保证与 verify 的比较一致
         adb.execSQL("INSERT INTO sessions (token, user_id, expires_at) " +
-                "VALUES (?, ?, datetime('now','+30 days'))", new Object[]{token, uid});
+                "VALUES (?, ?, datetime('now','+" + TOKEN_DAYS + " days'))", new Object[]{token, uid});
         return token;
     }
 
@@ -238,5 +256,162 @@ public class Auth {
             adb.execSQL("DELETE FROM sessions WHERE token=?", new Object[]{token});
         } catch (Exception ignored) {
         }
+    }
+
+    /* ---------------- 用户管理 / 密保找回（v0.9.27 对齐桌面端，同语义同返回结构） ----------------
+     * 首个账号是管理员；管理员可增删用户、重置他人密码；
+     * 普通用户可改自己密码、设密保问题自助找回。密保答案 sha256（转小写去空格）存储。 */
+
+    private static String hashAnswer(String a) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] out = md.digest(String.valueOf(a == null ? "" : a).trim().toLowerCase().getBytes("UTF-8"));
+            return hex(out);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    public boolean isAdmin(long uid) {
+        android.database.Cursor c = adb.rawQuery("SELECT is_admin FROM users WHERE id=?",
+                new String[]{String.valueOf(uid)});
+        boolean ok = c.moveToFirst() && c.getInt(0) == 1;
+        c.close();
+        return ok;
+    }
+
+    public String listUsersJson() throws Exception {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        android.database.Cursor c = adb.rawQuery(
+                "SELECT id, phone, nickname, is_admin, created_at FROM users ORDER BY id", null);
+        while (c.moveToNext()) {
+            JSONObject o = new JSONObject();
+            o.put("id", c.getLong(0));
+            o.put("phone", c.getString(1));
+            o.put("nickname", c.getString(2));
+            o.put("isAdmin", c.getInt(3) == 1);
+            o.put("createdAt", c.getString(4));
+            arr.put(o);
+        }
+        c.close();
+        return arr.toString();
+    }
+
+    public void addUser(long actorUid, String phone, String password, String nickname, boolean makeAdmin) throws Exception {
+        if (!isAdmin(actorUid)) throw new Exception("只有管理员能添加用户");
+        if (phone == null || !phone.matches("1[3-9]\\d{9}")) throw new Exception("手机号格式不对");
+        if (password == null || password.length() < 6) throw new Exception("密码至少 6 位");
+        if (phoneTaken(phone)) throw new Exception("这个手机号已经存在");
+        SecureRandom rnd = new SecureRandom();
+        byte[] salt = new byte[16];
+        rnd.nextBytes(salt);
+        String saltHex = hex(salt);
+        android.content.ContentValues cv = new android.content.ContentValues();
+        cv.put("phone", phone);
+        cv.put("password_hash", hashPw(password, saltHex));
+        cv.put("salt", saltHex);
+        cv.put("nickname", nickname == null || nickname.trim().isEmpty() ? null : nickname.trim());
+        cv.put("is_admin", makeAdmin ? 1 : 0);
+        adb.insert("users", null, cv);
+    }
+
+    public void deleteUser(long actorUid, long targetUid) throws Exception {
+        if (!isAdmin(actorUid)) throw new Exception("只有管理员能删除用户");
+        if (actorUid == targetUid) throw new Exception("不能删除自己");
+        android.database.Cursor c = adb.rawQuery("SELECT is_admin FROM users WHERE id=?",
+                new String[]{String.valueOf(targetUid)});
+        boolean exists = c.moveToFirst();
+        boolean targetAdmin = exists && c.getInt(0) == 1;
+        c.close();
+        if (!exists) throw new Exception("用户不存在");
+        if (targetAdmin) {
+            android.database.Cursor cc = adb.rawQuery("SELECT count(*) FROM users WHERE is_admin=1", null);
+            cc.moveToFirst();
+            int admins = cc.getInt(0);
+            cc.close();
+            if (admins <= 1) throw new Exception("至少保留一个管理员");
+        }
+        // 级联删会话；该用户的档案目录保留（与桌面同：不主动清数据）
+        adb.execSQL("DELETE FROM sessions WHERE user_id=?", new Object[]{targetUid});
+        adb.execSQL("DELETE FROM users WHERE id=?", new Object[]{targetUid});
+    }
+
+    public void changePassword(long uid, String oldPw, String newPw) throws Exception {
+        if (newPw == null || newPw.length() < 6) throw new Exception("新密码至少 6 位");
+        android.database.Cursor c = adb.rawQuery("SELECT password_hash, salt FROM users WHERE id=?",
+                new String[]{String.valueOf(uid)});
+        boolean ok = false;
+        String oldHash = null, salt = null;
+        if (c.moveToFirst()) {
+            oldHash = c.getString(0);
+            salt = c.getString(1);
+            try {
+                ok = oldHash.equals(hashPw(oldPw == null ? "" : oldPw, salt));
+            } catch (Exception ignored) {
+            }
+        }
+        c.close();
+        if (!ok) throw new Exception("原密码不对");
+        SecureRandom rnd = new SecureRandom();
+        byte[] s2 = new byte[16];
+        rnd.nextBytes(s2);
+        String saltHex = hex(s2);
+        adb.execSQL("UPDATE users SET password_hash=?, salt=? WHERE id=?",
+                new Object[]{hashPw(newPw, saltHex), saltHex, uid});
+    }
+
+    public void resetPassword(long actorUid, long targetUid, String newPw) throws Exception {
+        if (!isAdmin(actorUid)) throw new Exception("只有管理员能重置密码");
+        if (newPw == null || newPw.length() < 6) throw new Exception("新密码至少 6 位");
+        android.database.Cursor c = adb.rawQuery("SELECT 1 FROM users WHERE id=?",
+                new String[]{String.valueOf(targetUid)});
+        boolean exists = c.moveToFirst();
+        c.close();
+        if (!exists) throw new Exception("用户不存在");
+        SecureRandom rnd = new SecureRandom();
+        byte[] s2 = new byte[16];
+        rnd.nextBytes(s2);
+        String saltHex = hex(s2);
+        adb.execSQL("UPDATE users SET password_hash=?, salt=? WHERE id=?",
+                new Object[]{hashPw(newPw, saltHex), saltHex, targetUid});
+    }
+
+    public void setSecurity(long uid, String q, String a) throws Exception {
+        if (q == null || q.trim().isEmpty() || a == null || a.trim().isEmpty()) {
+            throw new Exception("密保问题和答案都要填");
+        }
+        adb.execSQL("UPDATE users SET security_q=?, security_a=? WHERE id=?",
+                new Object[]{q.trim(), hashAnswer(a), uid});
+    }
+
+    public String getSecurityQuestion(String phone) throws Exception {
+        android.database.Cursor c = adb.rawQuery("SELECT security_q FROM users WHERE phone=?",
+                new String[]{phone == null ? "" : phone});
+        boolean exists = c.moveToFirst();
+        String q = exists ? c.getString(0) : null;
+        c.close();
+        if (!exists) throw new Exception("这个手机号没注册过");
+        if (q == null || q.trim().isEmpty()) throw new Exception("该账号未设置密保问题，无法自助找回，请联系管理员重置");
+        return q;
+    }
+
+    public void recoverPassword(String phone, String answer, String newPw) throws Exception {
+        if (newPw == null || newPw.length() < 6) throw new Exception("新密码至少 6 位");
+        android.database.Cursor c = adb.rawQuery("SELECT id, security_a FROM users WHERE phone=?",
+                new String[]{phone == null ? "" : phone});
+        boolean exists = c.moveToFirst();
+        long uid = exists ? c.getLong(0) : -1;
+        String aHash = exists ? c.getString(1) : null;
+        c.close();
+        if (!exists) throw new Exception("这个手机号没注册过");
+        if (aHash == null || aHash.isEmpty()) throw new Exception("该账号未设置密保问题，无法自助找回，请联系管理员重置");
+        if (!aHash.equals(hashAnswer(answer))) throw new Exception("密保答案不对");
+        SecureRandom rnd = new SecureRandom();
+        byte[] s2 = new byte[16];
+        rnd.nextBytes(s2);
+        String saltHex = hex(s2);
+        adb.execSQL("UPDATE users SET password_hash=?, salt=? WHERE id=?",
+                new Object[]{hashPw(newPw, saltHex), saltHex, uid});
+        adb.execSQL("DELETE FROM sessions WHERE user_id=?", new Object[]{uid});   // 找回后旧会话全失效
     }
 }

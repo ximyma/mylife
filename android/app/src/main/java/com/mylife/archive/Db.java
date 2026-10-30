@@ -150,9 +150,12 @@ public class Db {
         // 而业务 SQL 大量字段本来就允许空（死亡年、籍贯、default_model...）。
         // 必须用 compileStatement + bindNull 才能正确写 NULL。
         android.database.sqlite.SQLiteStatement st = db.compileStatement(sql);
-        bindArgs(st, params);
-        st.executeInsert();
-        st.close();
+        try {
+            bindArgs(st, params);
+            st.executeInsert();
+        } finally {
+            st.close();     // SQL 出错也不能漏，否则本地句柄越积越多
+        }
         JSONObject r = new JSONObject();
         r.put("ok", true);
         r.put("changes", scalar("SELECT changes()"));

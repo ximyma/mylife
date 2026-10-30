@@ -28,6 +28,11 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
+    <!-- Android 9 及以下写公共目录（存到相册/导出落盘）必需；10+ 走 MediaStore 不需要 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- 朗读时不让系统休眠 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 

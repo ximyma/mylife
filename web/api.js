@@ -97,7 +97,7 @@
    * 与其在每个调用点写 String()，不如在唯一入口把数字型的列还原成数字：
    * 两边数据形状一致，后面就不会再踩同一个坑。
    */
-  var NUM_FIELD = /^(id|uid|seq|sort|enabled|.*_id|.*_count|.*_year|year|year_from|year_to|taken_year|birth_year|death_year|width|height|bytes|size)$/;
+  var NUM_FIELD = /^(id|uid|seq|sort|enabled|.*_id|.*_count|.*_year|year|year_from|year_to|taken_year|birth_year|death_year|width|height|bytes|size|units|cost|progress|duration_ms|seconds|chapter_id|archive_id|photo_id|media_id|cancel_flag|isAdmin|is_admin)$/;
 
   function normalizeRows(rows) {
     if (!Array.isArray(rows)) return rows;
@@ -205,6 +205,11 @@
     /** 插图生成：opts { prompt, size?, steps?, cfg?, profileId? } -> {ok, path, cached} */
     image: function (opts) {
       return post('/api/image', opts || {}, 200000);
+    },
+
+    /** 存到系统相册（安卓）/ 下载目录（电脑）：{ path } -> {ok, where} */
+    gallery: function (opts) {
+      return post('/api/gallery/save', opts || {}, 60000);
     },
 
     /** 短片分镜：规则生成，不调模型 -> { frames, seconds, missing } */

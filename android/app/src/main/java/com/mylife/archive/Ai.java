@@ -285,7 +285,8 @@ public final class Ai {
             if (j != null) {
                 JSONArray ch = j.optJSONArray("choices");
                 if (ch != null && ch.length() > 0) {
-                    JSONObject msg = ch.optJSONObject(0).optJSONObject("message");
+                    JSONObject c0 = ch.optJSONObject(0);
+                    JSONObject msg = c0 == null ? null : c0.optJSONObject("message");
                     if (msg != null) text = Json.sv(msg, "content");
                 }
             }
@@ -321,7 +322,8 @@ public final class Ai {
             body.put("model", model);
             body.put("messages", messages);
             body.put("temperature", in.optDouble("temperature", 0.7));
-            if (in.has("maxTokens")) body.put("max_tokens", in.optInt("maxTokens"));
+            int mt = in.optInt("maxTokens", -1);
+            if (mt > 0) body.put("max_tokens", mt);      // has 但为 null 时 optInt 给 0/-1，别发 max_tokens:0
             body.put("stream", false);
 
             JSONObject r = call(base(p) + "/chat/completions", "POST",
@@ -393,6 +395,12 @@ public final class Ai {
             String model = Json.sv(in, "model");
             if (model.length() == 0) model = modelOf(p);
             if (model.length() == 0) return msg(false, "这条配置还没选模型");
+            // v0.9.33：槽位绑了配置但没绑语音模型时，modelOf 会兜底到聊天默认模型，
+            // 拿聊天/翻译模型打转写接口会被上游 403（Illegal operation）。宁可提醒也不瞎打。
+            if (Json.sv(in, "model").length() == 0 && Json.sv(p, "__model").length() == 0) {
+                return msg(false, "「语音转文字」还没绑定语音识别模型，不能拿聊天模型去转写（上游会 403）。"
+                        + "去 设置→AI 配置 给「语音转文字」绑一条，硅基流动免费可用 FunAudioLLM/SenseVoiceSmall。");
+            }
 
             String rel = Json.sv(in, "path").replace("..", "").replace("\\", "/");
             if (rel.length() == 0) return msg(false, "没有指定音频");
@@ -458,7 +466,7 @@ public final class Ai {
                 if (j.has("usage")) o.put("usage", j.get("usage"));
                 if (j.has("language")) o.put("language", j.get("language"));
             }
-            usageAdd(db, "asr", model, text.trim().length(), "char");
+            usageAdd(db, "asr", model, Math.max(1, size / 1024.0), "KB");   // 与桌面 server.js 同单位
             return o.toString();
 
         } catch (Exception e) {
@@ -516,11 +524,43 @@ public final class Ai {
                 refB64 = comma >= 0 ? raw.substring(comma + 1) : raw;
             }
 
-            String key = sha1(prompt + "|" + model + "|" + size).substring(0, 20);
-            File dir = new File(new File(new File(new File(ctx.getFilesDir(), "users"),
-                    String.valueOf(uid)), "files"), "ai/img");
+            // 缓存键带参考图签名（长度+前 64 字符），与桌面端 imgKey 同规则——
+            // 不带的话「先带图生成、后纯文字请求」会错拿被参考图影响的那张
+            String refSig = refB64.length() > 0
+                    ? ("|ref:" + refB64.length() + ":" + refB64.substring(0, Math.min(64, refB64.length())))
+                    : "";
+            String key = sha1(prompt + refSig + "|" + model + "|" + size).substring(0, 20);
+            File filesRoot = new File(new File(new File(ctx.getFilesDir(), "users"),
+                    String.valueOf(uid)), "files");
+            File dir = new File(filesRoot, "ai/img");
             //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
+
+            // 与桌面端同规则：同一描述+模型+尺寸命中 ai_assets 直接给旧图，不重复扣费。
+            // 前端「重画一张」会带 again=1 绕过缓存。
+            if (in.optInt("again", 0) != 1) {
+                try {
+                    JSONArray ck = new JSONArray();
+                    ck.put(key);
+                    JSONArray hit = new JSONArray(db.query(
+                            "SELECT path FROM ai_assets WHERE cache_key=? AND capability='image'", ck));
+                    if (hit.length() > 0) {
+                        String oldPath = hit.getJSONObject(0).optString("path", "");
+                        File oldFile = oldPath.length() > 0 ? new File(filesRoot, oldPath) : null;
+                        if (oldFile != null && oldFile.exists()) {
+                            JSONObject o = new JSONObject();
+                            o.put("ok", true);
+                            o.put("path", oldPath);
+                            o.put("bytes", oldFile.length());
+                            o.put("model", model);
+                            o.put("ms", System.currentTimeMillis() - t0);
+                            o.put("cached", true);
+                            o.put("note", "这张是之前画过的，直接给你（没重复扣费）。想换个样子就点「重画一张」");
+                            return o.toString();
+                        }
+                    }
+                } catch (Exception ignored) { /* 老库没有 ai_assets 也不会崩 */ }
+            }
 
             String[] errors = new String[2];
             int errN = 0;
@@ -580,6 +620,16 @@ public final class Ai {
                     java.io.FileOutputStream fo = new java.io.FileOutputStream(new File(dir, key + ".jpg"));
                     fo.write(buf);
                     fo.close();
+
+                    // 登记进 ai_assets：插图页「画过的」画廊和缓存命中都靠这张表（桌面端同款行为）
+                    try {
+                        JSONArray aa = new JSONArray();
+                        aa.put(key);
+                        aa.put(rel);
+                        aa.put(prompt.length() > 300 ? prompt.substring(0, 300) : prompt);
+                        aa.put(model);
+                        db.exec("INSERT INTO ai_assets (capability, cache_key, path, prompt, model) VALUES ('image',?,?,?,?)", aa);
+                    } catch (Exception ignored) { /* 老库没这张表也不影响出图 */ }
 
                     usageAdd(db, "image", model, 1, "call");
 
@@ -662,7 +712,7 @@ public final class Ai {
                     + "\n→ 检查手机网络（或用的是需要代理的接口）";
         }
         if (status == 401 || status == 403) {
-            return "HTTP " + status + "：API Key 不对或用不了\n→ " + shorten(body, 200);
+            return "HTTP " + status + "：API Key 不对或用不了（把聊天/翻译模型绑到转写用途也会这样）\n→ " + shorten(body, 200);
         }
         if (status == 413) {
             return "HTTP 413：音频太大，服务端不收\n→ " + shorten(body, 160);
@@ -807,19 +857,34 @@ public final class Ai {
                 writeLine(out, "{\"t\":\"err\",\"message\":\"没有要发送的内容\"}");
                 return;
             }
-            JSONArray profiles = new JSONArray(db.query(
-                    "SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id", new JSONArray()));
-            if (profiles.length() == 0) {
+            // 与桌面 profileChain 同约定：先按前端指定（profileId/model/slot，比如带图走 vision）拿首选，
+            // 再按 sort 补足到 3 条候选。之前固定取前 3 条，无视手选模型，提字/带图对话必挂。
+            java.util.ArrayList<JSONObject> cands = new java.util.ArrayList<JSONObject>();
+            JSONObject first = pick(db, in);
+            if (first != null) cands.add(first);
+            if (cands.size() == 0) {
                 writeLine(out, "{\"t\":\"err\",\"message\":\"还没配模型。打开「设置 → 模型来源」加一条。\"}");
                 return;
             }
-            int tried = 0;
-            for (int i = 0; i < profiles.length() && tried < 3; i++) {
+            JSONArray profiles = new JSONArray(db.query(
+                    "SELECT * FROM ai_profiles WHERE enabled=1 ORDER BY sort, id", new JSONArray()));
+            for (int i = 0; i < profiles.length() && cands.size() < 3; i++) {
                 JSONObject p = profiles.getJSONObject(i);
+                if (p.optLong("id") == first.optLong("id")) continue;
+                if (modelOf(p).length() == 0) continue;
+                cands.add(p);
+            }
+            int tried = 0;
+            for (int i = 0; i < cands.size() && tried < 3; i++) {
+                JSONObject p = cands.get(i);
                 String model = modelOf(p);
                 if (model.length() == 0) continue;
                 tried++;
-                if (streamOne(p, model, in, msgs, out)) return;
+                String got = streamOne(p, model, in, msgs, out);
+                if (got != null) {
+                    usageAdd(db, "text", model, got.length() / 2.0, "char");
+                    return;
+                }
             }
             writeLine(out, "{\"t\":\"err\",\"message\":\"所有模型都没通，检查网络或 Key\"}");
         } catch (Exception e) {
@@ -827,8 +892,9 @@ public final class Ai {
         }
     }
 
-    private static boolean streamOne(JSONObject p, String model, JSONObject in,
-                                     JSONArray msgs, OutputStream out) {
+    /** 返回整段回复文本（成功）或 null（失败，前端会收到 retry/err 事件） */
+    private static String streamOne(JSONObject p, String model, JSONObject in,
+                                    JSONArray msgs, OutputStream out) {
         HttpURLConnection conn = null;
         try {
             JSONObject body = new JSONObject();
@@ -856,7 +922,7 @@ public final class Ai {
                 writeLine(out, "{\"t\":\"retry\",\"message\":\""
                         + Json.esc(Json.sv(p, "name") + " HTTP " + code) + "\"}");
                 Log.w(TAG, "流式失败 " + code + " " + shorten(err, 120));
-                return false;
+                return null;
             }
 
             BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
@@ -887,10 +953,10 @@ public final class Ai {
             br.close();
             writeLine(out, "{\"t\":\"done\",\"text\":\"" + Json.esc(full.toString())
                     + "\",\"model\":\"" + Json.esc(model) + "\"}");
-            return true;
+            return full.toString();
         } catch (Exception e) {
             writeLine(out, "{\"t\":\"retry\",\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}");
-            return false;
+            return null;
         } finally {
             if (conn != null) conn.disconnect();
         }
@@ -993,7 +1059,8 @@ public final class Ai {
                 return msg(false, "还没配「朗读」用的模型，先用系统音色读。");
             }
 
-            String model = modelOf(p);
+            String model = Json.sv(in, "model");
+            if (model.length() == 0) model = modelOf(p);
             if (model.length() == 0) model = "tts-1";
             String voice = Json.sv(in, "voice");
             if (voice.length() == 0) {
@@ -1032,9 +1099,17 @@ public final class Ai {
             if (buf == null || buf.length == 0) {
                 return msg(false, Json.sv(p, "name") + " 返回空音频，先用系统音色读。");
             }
-            java.io.FileOutputStream fo = new java.io.FileOutputStream(f);
+            // 先写 tmp 再改名：写一半失败（磁盘满/OOM）不会留下残缺文件被缓存永久命中
+            File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(tmp);
             fo.write(buf);
             fo.close();
+            if (!f.exists() || f.delete()) {
+                if (!tmp.renameTo(f)) {
+                    tmp.delete();
+                    return msg(false, "音频落盘失败，先用系统音色读。");
+                }
+            }
 
             usageAdd(db, "tts", model, text.length(), "char");
 
@@ -1121,7 +1196,9 @@ public final class Ai {
 
             /* ③ 混音写 WAV：逐小节合成伴奏，叠上人声，落盘 */
             boolean withVoice = voice != null && voice.length > 0;
-            java.io.FileOutputStream fo = new java.io.FileOutputStream(out);
+            // 写 tmp 再改名：中途 OOM/磁盘满不会留半截 wav 被缓存判定命中
+            File tmpWav = new File(dir, "song.wav.tmp");
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(tmpWav);
             fo.write(wavHeader(totalN * 4, SR, 2));
             int barSamples = (int) Math.round(prog.bar * SR);
             float bgmVol = withVoice ? 0.5f : 0.9f;
@@ -1166,6 +1243,8 @@ public final class Ai {
                 fo.write(pcm);
             }
             fo.close();
+            if (out.exists() && !out.delete()) tmpWav.delete();
+            else if (!tmpWav.renameTo(out)) tmpWav.delete();
 
             if (withVoice) usageAdd(db, "tts", "", lyrics.length(), "char");
 
@@ -1240,6 +1319,7 @@ public final class Ai {
 
     private static float[] decodeMp3Mono(File f, int targetSr) throws Exception {
         android.media.MediaExtractor ex = new android.media.MediaExtractor();
+        android.media.MediaCodec dec = null;
         try {
             ex.setDataSource(f.getAbsolutePath());
             int ti = -1;
@@ -1253,11 +1333,10 @@ public final class Ai {
             int srcSr = fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
             int srcCh = fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
             ex.selectTrack(ti);
-            android.media.MediaCodec dec = android.media.MediaCodec.createDecoderByType(
+            dec = android.media.MediaCodec.createDecoderByType(
                     fmt.getString(android.media.MediaFormat.KEY_MIME));
             dec.configure(fmt, null, null, 0);
             dec.start();
-
             ByteArrayOutputStream pcmBytes = new ByteArrayOutputStream();
             android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
             boolean eosIn = false, eosOut = false;
@@ -1290,7 +1369,6 @@ public final class Ai {
                 }
             }
             dec.stop();
-            dec.release();
 
             /* 解出来的 PCM 是 16bit 交织多声道 → 折成单声道 float */
             byte[] raw = pcmBytes.toByteArray();
@@ -1320,6 +1398,10 @@ public final class Ai {
             }
             return out;
         } finally {
+            // 异常路径也必须还 codec：泄漏几次后设备配额耗尽，后续所有解码全挂
+            if (dec != null) {
+                try { dec.release(); } catch (Exception ignored) {}
+            }
             try { ex.release(); } catch (Exception ignored) {}
         }
     }

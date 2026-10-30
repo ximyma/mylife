@@ -52,9 +52,9 @@
     chat: { n: '聊天', kinds: ['text', 'vision'],
       ph: '说点什么……（Ctrl+Enter 发送）' },
     img: { n: '画图', kinds: ['t2i'],
-      ph: '想要什么画面？比如：1962 年的车间，天窗漏下一道光，墙上贴着红纸标语' },
+      ph: '想要什么画面？比如：1962 年的车间，天窗漏下一道光（绑了档案还能选章节取材）' },
     vid: { n: '视频', kinds: ['t2v'],
-      ph: '要一段什么画面？写清动作、场景、镜头，比如：老人坐在竹椅上摇蒲扇，镜头缓慢推近' },
+      ph: '要一段什么画面？写清动作、场景、镜头（绑了档案还能选章节取材）' },
     ocr: { n: '提字', kinds: ['vision'],
       ph: '先点 📎 传一张带字的图（老信、奖状、证件都行），再说要不要整理格式' },
     asr: { n: '转文字', kinds: ['asr'],
@@ -400,6 +400,31 @@
 
   /* ---------------- 画图 / 生成视频：同一个输入框，换个干活的模型 ---------------- */
 
+  /**
+   * 手选章节 → 画图/视频取材：把选中章节的原文摘出来（按剩余额度截断），
+   * 融进画面提示词。文生图模型看不到档案库，不把原文喂给它就只会按字面画。
+   */
+  function chapterExcerpt(chIds, cap) {
+    if (!cur.archiveId || !chIds || !chIds.length) return Promise.resolve('');
+    var marks = chIds.map(function () { return '?'; }).join(',');
+    return API.query('SELECT e.at_year, e.text FROM entries e ' +
+      'LEFT JOIN chapters c ON c.id = e.chapter_id ' +
+      'WHERE e.archive_id=? AND e.chapter_id IN (' + marks + ") AND e.kind IN ('text','quote') " +
+      'ORDER BY COALESCE(c.seq, 999999), COALESCE(e.sort_key, e.seq, 0), e.id',
+      [cur.archiveId].concat(chIds)).then(function (list) {
+        var out = [], used = 0;
+        for (var i = 0; i < list.length; i++) {
+          var tx = String(list[i].text || '').replace(/\s+/g, ' ').trim();
+          if (!tx) continue;
+          if (used + tx.length > cap) tx = tx.slice(0, cap - used);
+          out.push((list[i].at_year ? list[i].at_year + '年，' : '') + tx);
+          used += tx.length;
+          if (used >= cap) break;
+        }
+        return out.join('；');
+      }).catch(function () { return ''; });
+  }
+
   function pushAI(host, placeholder) {
     var log = host.querySelector('#chatLog');
     if (!log) return null;
@@ -443,104 +468,141 @@
   }
 
   function doImage(host, text, atts, extra, again) {
-    var prompt = text || '';
-    if (extra) prompt = prompt ? (prompt + '\n' + extra) : extra;
+    var raw = text || '';
+    if (extra) raw = raw ? (raw + '\n' + extra) : extra;
     var ref = null, i;
     for (i = 0; i < atts.length; i++) if (atts[i].kind === 'image') { ref = atts[i]; break; }
-    if (!prompt && ref) prompt = '照着这张照片画一幅';
-    if (!prompt) { toast('写一句画面描述吧'); return; }
 
-    clearInput(host);
-    pushUser(host, prompt);
-    var ui = pushAI(host, '正在画……');
-    if (!ui) return;
-    ui.tEl.textContent = again ? '重新画一张……（大概 4–10 秒）' : '正在画……（一般 4–10 秒）';
+    // 勾了章节：原文融进提示词（模型自己看不到档案库）。重画时传 raw，不会越叠越长。
+    chapterExcerpt(cur.chapters, 900).then(function (ctxText) {
+      var prompt = raw;
+      if (ctxText) {
+        var userCap = Math.max(60, 1100 - ctxText.length);
+        prompt = '画面依据这些真实经历，环境、衣着、物件都要符合当时的年代，不要画成现代：' + ctxText +
+          '。' + (String(raw).trim() ? ('\n画面要求：' + String(raw).slice(0, userCap)) : '画其中最有代表性的一幕。');
+      }
+      if (!prompt && ref) prompt = '照着这张照片画一幅';
+      if (!prompt) { toast('写一句画面描述吧（或先点「选章节」取材）'); return; }
 
-    var o = { prompt: prompt, size: '1024x1024' };
-    if (pick.profileId) o.profileId = pick.profileId;
-    if (pick.model) o.model = pick.model;
-    if (ref) o.refImage = ref.dataUrl;
-    if (again) o.again = 1;      // 绕过缓存：同一句话也能再画一版
+      clearInput(host);
+      pushUser(host, raw || '（按章节取材作画）');
+      var ui = pushAI(host, '正在画……');
+      if (!ui) return;
+      ui.tEl.textContent = again ? '重新画一张……（大概 4–10 秒）' : '正在画……（一般 4–10 秒）';
 
-    API.image(o).then(function (r) {
-      if (!r || !r.ok) throw new Error((r && r.message) || '没画出来');
-      // 同一个描述缓存的是同一个文件名，加个时间戳免得浏览器拿旧图
-      var url = ML.fsrc ? ML.fsrc(r.path) : ('/files/' + r.path);
-      url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
-      ui.tEl.innerHTML =
-        '<img class="chat-img" src="' + esc(url) + '" alt="AI 生成的图">' +
-        '<div class="chat-media-ops">' +
-        '<a class="linkbtn" href="' + esc(url) + '" download>下载</a>' +
-        '<button class="linkbtn" data-save-media="1">存进档案</button>' +
-        '<button class="linkbtn" data-redraw="1">重画一张</button></div>' +
-        '<div class="chat-note">' +
-        esc(r.note || (r.cached ? '这张是之前画过的，直接给你（没重复扣费）。想换个样子就点「重画一张」' : '')) + '</div>';
-      var b = ui.tEl.querySelector('[data-save-media]');
-      if (b) b.onclick = function () { saveToArchive('photo', r.path, r.bytes || 0, prompt, b); };
-      var rd = ui.tEl.querySelector('[data-redraw]');
-      if (rd) rd.onclick = function () { doImage(host, prompt, [], '', true); };
-      logMedia(prompt, '（画了一张图：' + r.path + '）');
-    }).catch(function (e) {
-      ui.tEl.textContent = '（没画出来：' + ((e && e.message) || e) + '）';
+      var o = { prompt: prompt, size: '1024x1024' };
+      if (pick.profileId) o.profileId = pick.profileId;
+      if (pick.model) o.model = pick.model;
+      if (ref) o.refImage = ref.dataUrl;
+      if (again) o.again = 1;      // 绕过缓存：同一句话也能再画一版
+
+      API.image(o).then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.message) || '没画出来');
+        // 同一个描述缓存的是同一个文件名，加个时间戳免得浏览器拿旧图
+        var url = ML.fsrc ? ML.fsrc(r.path) : ('/files/' + r.path);
+        url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+        ui.tEl.innerHTML =
+          '<img class="chat-img" src="' + esc(url) + '" alt="AI 生成的图">' +
+          '<div class="chat-media-ops">' +
+          '<button class="linkbtn" data-gal-save="1">存到相册</button>' +
+          '<button class="linkbtn" data-save-media="1">存进档案</button>' +
+          '<button class="linkbtn" data-redraw="1">重画一张</button></div>' +
+          '<div class="chat-note">' +
+          esc(r.note || (r.cached ? '这张是之前画过的，直接给你（没重复扣费）。想换个样子就点「重画一张」' : '')) + '</div>';
+        var b = ui.tEl.querySelector('[data-save-media]');
+        if (b && cur.archiveId) {
+          // 生成即入库：自动落进当前档案的待归档照片，不用记得点按钮（失败时保留手动按钮）
+          API.exec('INSERT INTO photos (archive_id,path,taken_year,place,event) VALUES (?,?,?,?,?)',
+            [cur.archiveId, r.path, 0, 'AI 插图', String(raw || 'AI 插图').slice(0, 40)])
+            .then(function () {
+              b.outerHTML = '<span class="chat-ok">已自动存进档案 · 待归档照片里能看到</span>';
+            }).catch(function () { /* 落库失败就还用手动按钮 */ });
+        } else if (b) {
+          b.onclick = function () { saveToArchive('photo', r.path, r.bytes || 0, raw || 'AI 插图', b); };
+        }
+        var g = ui.tEl.querySelector('[data-gal-save]');
+        if (g) g.onclick = function () {
+          API.gallery({ path: r.path }).then(function (gr) {
+            if (!gr || !gr.ok) throw new Error((gr && gr.message) || '没存上');
+            g.textContent = '已存'; g.disabled = true;
+            toast('存到 ' + (gr.where || '系统相册') + ' 了');
+          }).catch(function (e) { toast(e.message || '没存上'); });
+        };
+        var rd = ui.tEl.querySelector('[data-redraw]');
+        if (rd) rd.onclick = function () { doImage(host, raw, [], '', true); };
+        logMedia(raw || '（按章节取材作画）', '（画了一张图：' + r.path + '）');
+      }).catch(function (e) {
+        ui.tEl.textContent = '（没画出来：' + ((e && e.message) || e) + '）';
+      });
     });
   }
 
   function doVideo(host, text, atts, extra) {
-    var prompt = text || '';
-    if (extra) prompt = prompt ? (prompt + '\n' + extra) : extra;
+    var raw = text || '';
+    if (extra) raw = raw ? (raw + '\n' + extra) : extra;
     var ref = null, i;
     for (i = 0; i < atts.length; i++) if (atts[i].kind === 'image') { ref = atts[i]; break; }
-    if (!prompt && ref) prompt = '让这张照片里的人动起来，镜头缓慢推近';
-    if (!prompt) { toast('写一句画面描述吧'); return; }
 
-    clearInput(host);
-    pushUser(host, prompt);
-    var ui = pushAI(host, '正在排任务……');
-    if (!ui) return;
+    // 勾了章节：原文融进提示词（与画图同一套取材逻辑）
+    chapterExcerpt(cur.chapters, 700).then(function (ctxText) {
+      var prompt = raw;
+      if (ctxText) {
+        var userCap = Math.max(60, 1100 - ctxText.length);
+        prompt = '画面依据这些真实经历，环境、衣着要符合当时的年代：' + ctxText +
+          '。' + (String(raw).trim() ? ('\n画面要求：' + String(raw).slice(0, userCap)) : '选其中最有画面感的一幕动起来。');
+      }
+      if (!prompt && ref) prompt = '让这张照片里的人动起来，镜头缓慢推近';
+      if (!prompt) { toast('写一句画面描述吧（或先点「选章节」取材）'); return; }
 
-    var payload = { prompt: prompt, size: '720x1280' };
-    if (pick.profileId) payload.profileId = pick.profileId;
-    if (pick.model) payload.model = pick.model;
-    if (cur.archiveId) payload.archiveId = cur.archiveId;
+      clearInput(host);
+      pushUser(host, raw || '（按章节取材生成）');
+      var ui = pushAI(host, '正在排任务……');
+      if (!ui) return;
 
-    var start = function () {
-      ui.tEl.textContent = '已交给服务商，排队中……';
-      API.job.create('aivideo', payload).then(function (r) {
-        if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
-        pollVideo(r.id, ui, prompt, redo);
-      }).catch(function (e) {
-        ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
-      });
-    };
+      var payload = { prompt: prompt, size: '720x1280' };
+      if (pick.profileId) payload.profileId = pick.profileId;
+      if (pick.model) payload.model = pick.model;
+      if (cur.archiveId) payload.archiveId = cur.archiveId;
 
-    // 同一句描述默认复用上次的成片（不重复扣费）；想换个版本点「再来一版」
-    var redo = function () {
-      payload.again = 1;
-      ui.tEl.textContent = '再来一版……';
-      API.job.create('aivideo', payload).then(function (r) {
-        if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
-        pollVideo(r.id, ui, prompt, redo);
-      }).catch(function (e) {
-        ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
-      });
-    };
-
-    if (ref) {
-      var raw = String(ref.dataUrl || '');
-      var comma = raw.indexOf(',');
-      ui.tEl.textContent = '正在上传参考图……';
-      API.file({ op: 'save', dir: 'video-src', name: 'v' + Date.now() + '.jpg',
-        base64: comma > 0 ? raw.slice(comma + 1) : raw })
-        .then(function (f) {
-          if (!f || !f.ok) throw new Error((f && f.message) || '参考图没存下来');
-          payload.imagePath = f.path;
-          start();
+      var start = function () {
+        ui.tEl.textContent = '已交给服务商，排队中……';
+        API.job.create('aivideo', payload).then(function (r) {
+          if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
+          pollVideo(r.id, ui, prompt, redo);
         }).catch(function (e) {
-          ui.tEl.textContent = '（参考图没传上去：' + ((e && e.message) || e) + '）';
+          ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
         });
-      return;
-    }
-    start();
+      };
+
+      // 同一句描述默认复用上次的成片（不重复扣费）；想换个版本点「再来一版」
+      var redo = function () {
+        payload.again = 1;
+        ui.tEl.textContent = '再来一版……';
+        API.job.create('aivideo', payload).then(function (r) {
+          if (!r || !r.id) throw new Error((r && r.message) || '任务没排上');
+          pollVideo(r.id, ui, prompt, redo);
+        }).catch(function (e) {
+          ui.tEl.textContent = '（没排上：' + ((e && e.message) || e) + '）';
+        });
+      };
+
+      if (ref) {
+        var durl = String(ref.dataUrl || '');
+        var comma = durl.indexOf(',');
+        ui.tEl.textContent = '正在上传参考图……';
+        API.file({ op: 'save', dir: 'video-src', name: 'v' + Date.now() + '.jpg',
+          base64: comma > 0 ? durl.slice(comma + 1) : durl })
+          .then(function (f) {
+            if (!f || !f.ok) throw new Error((f && f.message) || '参考图没存下来');
+            payload.imagePath = f.path;
+            start();
+          }).catch(function (e) {
+            ui.tEl.textContent = '（参考图没传上去：' + ((e && e.message) || e) + '）';
+          });
+        return;
+      }
+      start();
+    });
   }
 
   function pollVideo(id, ui, prompt, redo) {
@@ -1015,7 +1077,7 @@
       var sql, params;
       if (kind === 'photo') {
         sql = 'INSERT INTO photos (archive_id,path,taken_year,place,event) VALUES (?,?,?,?,?)';
-        params = [aid, filePath, null, 'AI 插图', String(caption || 'AI 插图').slice(0, 40)];
+        params = [aid, filePath, 0, 'AI 插图', String(caption || 'AI 插图').slice(0, 40)];
       } else {
         sql = 'INSERT INTO media (archive_id,kind,path,mime,bytes,caption) VALUES (?,?,?,?,?,?)';
         params = [aid, 'video', filePath, 'video/mp4', bytes || null, String(caption || 'AI 视频').slice(0, 120)];
@@ -1576,27 +1638,49 @@
     var btn = host.querySelector('#chatVoice');
     var N = window.NativeRec;
     if (N) {
-      try {
-        if (String(N.state() || '') !== 'recording') {
-          N.ask();
-          var r = String(N.start(API.auth.token(), 'chat-' + Date.now() + '.wav') || '');
-          if (r.indexOf('ok') !== 0) { toast('录音开不了：' + r); return; }
+      // 用按钮 data-on 记状态（与素材箱/访谈页一致）；
+      // 注意 N.state() 返回的是 JSON（{"perm":..,"running":..}），不能拿来和 'recording' 比
+      if (!btn.getAttribute('data-on')) {
+        var st = '';
+        try { st = String(N.state() || ''); } catch (e) { st = ''; }
+        var startIt = function () {
+          var r = '';
+          try { r = String(N.start(API.auth.token(), 'chat-' + Date.now() + '.wav') || ''); }
+          catch (e) { r = 'err:' + e.message; }
+          // 自愈：上次会话残留的录音没停掉会让 start 报「已经在录了」——先收掉再开
+          if (r.indexOf('已经在录') >= 0) {
+            try { N.stop(); } catch (e) {}
+            try { r = String(N.start(API.auth.token(), 'chat-' + Date.now() + '.wav') || ''); } catch (e) { r = 'err:' + e.message; }
+          }
+          if (r.indexOf('ok') !== 0) { toast('录音开不了：' + r.replace(/^err:/, '')); return; }
           btn.textContent = '■ 停';
           btn.setAttribute('data-on', '1');
+        };
+        if (st.indexOf('granted') < 0) {
+          window.__micPerm = function (res) {
+            window.__micPerm = null;
+            if (String(res) === 'granted') startIt();
+            else toast('系统没放行麦克风，到「设置 → 应用 → 权限」打开');
+          };
+          try { N.ask(); } catch (e) { window.__micPerm = null; toast('要不了权限：' + e.message); }
           return;
         }
-        var out = {};
-        try { out = JSON.parse(String(N.stop() || '{}')); } catch (e) { out = {}; }
-        btn.textContent = '🎙 说';
-        btn.removeAttribute('data-on');
-        if (!out.ok) { toast('这段没录上'); return; }
-        toast('转写中……');
-        API.asr({ path: out.path }).then(function (r2) {
-          if (!r2.ok) { toast(r2.message || '转不出来'); return; }
-          textEl.value = (textEl.value ? textEl.value + ' ' : '') + r2.text;
-        }, function (e) { fail(e); });
+        startIt();
         return;
-      } catch (e) { toast('录音出错：' + e.message); return; }
+      }
+      // 停止 → 转写 → 填进输入框
+      btn.textContent = '🎙 说';
+      btn.removeAttribute('data-on');
+      var out = {};
+      try { out = JSON.parse(String(N.stop() || '{}')); } catch (e) { out = {}; }
+      if (!out || !out.ok) { toast('这段没录上，再试一次'); return; }
+      toast('转写中……');
+      API.asr({ path: out.path }).then(function (r2) {
+        if (!r2 || !r2.ok) { toast((r2 && r2.message) || '转不出来'); return; }
+        textEl.value = (textEl.value ? textEl.value + ' ' : '') + r2.text;
+        textEl.focus();
+      }, function (e) { fail(e); });
+      return;
     }
 
     if (btn.getAttribute('data-on')) { btn.textContent = '🎙 说'; btn.removeAttribute('data-on'); if (window.__chatStop) window.__chatStop(); return; }

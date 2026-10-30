@@ -63,7 +63,9 @@ public final class Files {
     }
 
     private static String save(File rootDir, String json) throws Exception {
-        String kind = Json.str(json, "kind", "misc");
+        // 前端大多传 dir（照片/缩略图/导出物各归各位），老代码传 kind——dir 优先
+        String kind = Json.str(json, "dir", "");
+        if (kind.length() == 0) kind = Json.str(json, "kind", "misc");
         String name = Json.str(json, "name", String.valueOf(System.currentTimeMillis()));
         String b64 = Json.str(json, "base64", "");
         // 允许 dataURL 前缀
@@ -139,5 +141,65 @@ public final class Files {
         r.put("ok", true);
         r.put("items", arr);
         return r.toString();
+    }
+
+    /**
+     * 存到系统相册：rel 是 users/<uid>/files 下的相对路径（如 ai/img/x.jpg）。
+     * Android 10+ 走 MediaStore（无需存储权限）；老系统写公共图片目录再扫一遍。
+     * WebView 里 <a download> 不生效（没有 DownloadListener），前端存图全靠这个口。
+     */
+    public static String gallery(Context ctx, long uid, String json) {
+        try {
+            String rel = Json.str(json, "path", "");
+            if (rel.length() == 0) return Json.err("没有文件路径");
+            File f = new File(root(ctx, uid), rel.replace("..", ""));
+            if (!f.isFile()) return Json.err("文件不存在");
+            String name = "suiyue_" + Long.toString(System.currentTimeMillis(), 36) + ".jpg";
+            String where = "相册/Pictures/岁月记录助手/" + name;
+
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_PICTURES + "/岁月记录助手");
+                cv.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                android.net.Uri uri = ctx.getContentResolver().insert(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) return Json.err("系统相册拒绝了这次写入");
+                java.io.OutputStream os = ctx.getContentResolver().openOutputStream(uri);
+                if (os == null) return Json.err("相册输出流打不开");
+                FileInputStream is = new FileInputStream(f);
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
+                is.close();
+                os.flush();
+                os.close();
+            } else {
+                File dir = new File(android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_PICTURES), "岁月记录助手");
+                if (!dir.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dir.mkdirs();
+                }
+                File dst = new File(dir, name);
+                FileInputStream is = new FileInputStream(f);
+                FileOutputStream fo = new FileOutputStream(dst);
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = is.read(buf)) > 0) fo.write(buf, 0, n);
+                is.close();
+                fo.flush();
+                fo.close();
+                android.media.MediaScannerConnection.scanFile(ctx,
+                        new String[]{dst.getAbsolutePath()}, new String[]{"image/jpeg"}, null);
+            }
+            JSONObject r = new JSONObject();
+            r.put("ok", true);
+            r.put("where", where);
+            return r.toString();
+        } catch (Exception e) {
+            return Json.err(String.valueOf(e.getMessage()));
+        }
     }
 }

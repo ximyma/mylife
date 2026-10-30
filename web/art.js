@@ -186,6 +186,7 @@
         var go = ov.querySelector('#apGo');
         var out = ov.querySelector('#apOut');
         var msg = ov.querySelector('#apMsg');
+        var auto = null;   // 自动插进正文的那张 {photoId}；重画时替换同一条，不留一串重复
 
         go.addEventListener('click', function () {
           var p = String(promptEl.value || '').trim();
@@ -198,42 +199,48 @@
 
           API.image(req).then(function (r) {
             go.disabled = false;
-            msg.textContent = '每张约 4–8 秒';
             if (!r || !r.ok) {
+              msg.textContent = '';
               out.innerHTML = '<div class="warn-text">' + esc((r && r.message) || '没画出来') + '</div>';
               return;
             }
             var lastPath = r.path;
-            msg.textContent = r.refIgnored
-              ? '这个模型不认参考图，已按提示词重画一张（想照着照片画，换支持图生图的模型）'
-              : '每张约 4–8 秒';
+
+            // 生成即插到这段后面；重画替换上一张（图不满意就重画，段落里永远只有最新那张）
+            var year = entry.at_year || a.birth_year || 0;
+            var put = auto
+              ? API.exec('UPDATE photos SET path=? WHERE id=?', [lastPath, auto.photoId])
+              : API.exec('INSERT INTO photos (archive_id,path,taken_year,place,event,chapter_id,role) VALUES (?,?,?,?,?,?,?)',
+                  [archiveId, lastPath, year, 'AI 插图', 'AI 生成的插图', entry.chapter_id || null, 'inline'])
+                  .then(function (res) {
+                    auto = { photoId: res.lastId };
+                    return DB.insertAfter(archiveId, { afterId: entry.id, kind: 'photo', photoId: auto.photoId });
+                  });
+            put.then(function () {
+              msg.textContent = '已插到这一段后面；不满意点「再画一张」会替换它';
+            }).catch(function (e) {
+              msg.textContent = '图画好了，但没插进正文：' + (e.message || '未知错误');
+            });
+
             out.innerHTML =
               '<figure class="ap-fig"><img src="' + esc(fsrc(lastPath)) + '" alt="">' +
               '<figcaption>' + esc(r.model || '') + (r.cached ? ' · 缓存' : ' · ' + Math.round((r.ms || 0) / 1000) + 's') + '</figcaption></figure>' +
               (r.refIgnored ? '<div class="warn-text small">参考图没用上：' + esc(r.note || '') + '</div>' : '') +
               '<div class="ap-result">' +
-              '<button class="btn tiny primary" data-ap-insert="1">插到这一段后面</button>' +
-              '<button class="btn tiny" data-ap-again="1">再画一张</button>' +
-              '<button class="btn tiny" data-ap-time="1">存进时间轴</button>' +
+              '<button class="btn tiny" data-ap-again="1">再画一张（替换这张）</button>' +
+              '<button class="btn tiny" data-ap-drop="1">不插了</button>' +
               '</div>';
 
             out.querySelector('[data-ap-again]').addEventListener('click', function () { go.click(); });
-            out.querySelector('[data-ap-insert]').addEventListener('click', function () {
-              var year = entry.at_year || a.birth_year || 0;
-              API.exec('INSERT INTO photos (archive_id,path,taken_year,place,event,chapter_id,role) VALUES (?,?,?,?,?,?,?)',
-                [archiveId, lastPath, year, 'AI 插图', 'AI 生成的插图', entry.chapter_id || null, 'inline'])
-                .then(function (res) {
-                  return DB.insertAfter(archiveId, { afterId: entry.id, kind: 'photo', photoId: res.lastId });
+            out.querySelector('[data-ap-drop]').addEventListener('click', function () {
+              if (!auto) { document.body.removeChild(ov); return; }
+              API.exec('DELETE FROM entries WHERE archive_id=? AND kind=\'photo\' AND photo_id=?',
+                [archiveId, auto.photoId])
+                .then(function () {
+                  return API.exec('DELETE FROM photos WHERE id=?', [auto.photoId]);
                 })
-                .then(function () { toast('已插到这一段后面'); document.body.removeChild(ov); })
-                .catch(function (e) { toast(e.message || '没插上'); });
-            });
-            out.querySelector('[data-ap-time]').addEventListener('click', function () {
-              var y = window.prompt('这张图放在哪一年？（只填年份）', String(entry.at_year || a.birth_year || ''));
-              if (!y) return;
-              DB.insertAt({ archiveId: archiveId, year: Number(y), kind: 'photo', photoPath: lastPath, place: 'AI 插图', text: 'AI 生成的插图' })
-                .then(function () { toast('已存进 ' + y + ' 年'); document.body.removeChild(ov); })
-                .catch(function (e) { toast(e.message || '没存上'); });
+                .then(function () { auto = null; toast('收回了，正文里没有这张'); document.body.removeChild(ov); })
+                .catch(function (e) { toast(e.message || '没收回'); document.body.removeChild(ov); });
             });
           }, function (e) {
             go.disabled = false; msg.textContent = '';

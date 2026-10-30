@@ -89,6 +89,12 @@ public class LocalServer {
             if (socket != null) socket.close();
         } catch (Exception ignored) {
         }
+        synchronized (userDbs) {
+            for (Db d : userDbs.values()) {
+                try { d.close(); } catch (Exception ignored) {}
+            }
+            userDbs.clear();
+        }
         pool.shutdownNow();
     }
 
@@ -101,7 +107,8 @@ public class LocalServer {
                     public void run() {
                         try {
                             handle(client);
-                        } catch (Exception e) {
+                        } catch (Throwable e) {
+                            // Throwable：OOM 之类的 Error 也得回个话，别让前端只见"网络出错了"
                             Log.w(TAG, "请求处理失败：" + e.getMessage());
                         } finally {
                             try { client.close(); } catch (Exception ignored) {}
@@ -167,7 +174,7 @@ public class LocalServer {
         }
 
         if (path.startsWith("/api/auth/")) {
-            String json = routeAuth(path, body, authHeader);
+            String json = routeAuth(path, method, body, authHeader);
             // 登录/注册成功顺手种 cookie：<img src> 和 <audio src> 发不了
             // Authorization 头，没有 cookie 就一律 401——这正是安卓端
             // 照片不显示、录音点不动的原因（Node 端一直有 Set-Cookie）。
@@ -183,7 +190,9 @@ public class LocalServer {
         if (path.startsWith("/api/")) {
             Auth.User user = auth.verify(tokenFrom(authHeader, cookieHeader, query));
             if (user == null) {
-                writeJson(out, "{\"__auth\":\"需要登录\"}");
+                // 与桌面端同约定：带 401 状态码。前端 api.js 只认 HTTP 401，
+                // 之前回 200 的话 token 过期后前端永远不踢回登录页，只会一堆 JS 报错。
+                writeJson(out, "{\"__auth\":\"需要登录\"}", null, 401);
                 return;
             }
             Db udb = dbForUser(user.uid);
@@ -279,8 +288,8 @@ public class LocalServer {
         }
     }
 
-    /** 注册 / 登录 / 验证码（免 token）；me / logout 带 token */
-    private String routeAuth(String path, byte[] body, String authHeader) {
+    /** 注册 / 登录 / 验证码 / 找回（免 token）；me / 用户管理 / 密保 / 改密 带 token */
+    private String routeAuth(String path, String method, byte[] body, String authHeader) {
         try {
             String json = new String(body, "UTF-8");
             if (path.equals("/api/auth/register")) return auth.register(
@@ -289,14 +298,61 @@ public class LocalServer {
             if (path.equals("/api/auth/login")) return auth.login(
                     Json.str(json, "phone"), Json.str(json, "password"));
             if (path.equals("/api/auth/sms")) return auth.sms(Json.str(json, "phone"));
+            if (path.equals("/api/auth/recover/q")) {
+                try {
+                    return "{\"ok\":true,\"question\":\"" + Json.esc(auth.getSecurityQuestion(Json.str(json, "phone"))) + "\"}";
+                } catch (Exception e) {
+                    return "{\"ok\":false,\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}";
+                }
+            }
+            if (path.equals("/api/auth/recover")) {
+                try {
+                    auth.recoverPassword(Json.str(json, "phone"), Json.str(json, "answer"), Json.str(json, "password"));
+                    return "{\"ok\":true}";
+                } catch (Exception e) {
+                    return "{\"ok\":false,\"message\":\"" + Json.esc(String.valueOf(e.getMessage())) + "\"}";
+                }
+            }
             if (path.equals("/api/auth/logout")) {
                 auth.logout(tokenOf(authHeader));
                 return "{\"ok\":true}";
             }
+
+            // 以下都要登录态
+            Auth.User u = auth.verify(tokenOf(authHeader));
+            if (u == null) return "{\"__auth\":\"需要登录\"}";
             if (path.equals("/api/auth/me")) {
-                Auth.User u = auth.verify(tokenOf(authHeader));
-                if (u == null) return "{\"__auth\":\"需要登录\"}";
                 return "{\"ok\":true,\"uid\":" + u.uid + ",\"phone\":\"" + Json.esc(u.phone) + "\"}";
+            }
+            if (path.equals("/api/auth/me/password")) {
+                auth.changePassword(u.uid, Json.str(json, "old"), Json.str(json, "password"));
+                return "{\"ok\":true}";
+            }
+            if (path.equals("/api/auth/me/security")) {
+                auth.setSecurity(u.uid, Json.str(json, "question"), Json.str(json, "answer"));
+                return "{\"ok\":true}";
+            }
+            if (path.equals("/api/auth/users") && "GET".equals(method)) {
+                if (!auth.isAdmin(u.uid)) return "{\"__error\":\"需要管理员权限\"}";
+                return "{\"ok\":true,\"users\":" + auth.listUsersJson() + ",\"me\":" + u.uid + "}";
+            }
+            if (path.equals("/api/auth/users") && "POST".equals(method)) {
+                auth.addUser(u.uid, Json.str(json, "phone"), Json.str(json, "password"),
+                        Json.str(json, "nickname"), "true".equals(Json.str(json, "isAdmin", "false"))
+                                || Json.str(json, "isAdmin").equals("1"));
+                return "{\"ok\":true}";
+            }
+            java.util.regex.Matcher md = java.util.regex.Pattern
+                    .compile("^/api/auth/users/(\\d+)/reset$").matcher(path);
+            if (md.matches() && "POST".equals(method)) {
+                auth.resetPassword(u.uid, Long.parseLong(md.group(1)), Json.str(json, "password"));
+                return "{\"ok\":true}";
+            }
+            java.util.regex.Matcher mu = java.util.regex.Pattern
+                    .compile("^/api/auth/users/(\\d+)$").matcher(path);
+            if (mu.matches() && "DELETE".equals(method)) {
+                auth.deleteUser(u.uid, Long.parseLong(mu.group(1)));
+                return "{\"ok\":true}";
             }
             return "{\"__error\":\"未知接口 " + path + "\"}";
         } catch (Exception e) {
@@ -453,6 +509,9 @@ public class LocalServer {
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);
             }
+            if (path.equals("/api/gallery/save")) {
+                return Files.gallery(ctx, uid, json);
+            }
             if (path.equals("/api/jobs")) {
                 return Jobs.get(udb, json);
             }
@@ -560,6 +619,7 @@ public class LocalServer {
                 is.close();
                 return;
             }
+            if (end < start) end = start;      // 防御：畸形 Range 导致 Content-Length 为负
             is.skip(start);
             long len = end - start + 1;
             StringBuilder h = new StringBuilder();
@@ -569,6 +629,7 @@ public class LocalServer {
             h.append("Content-Range: bytes ").append(start).append("-").append(end).append("/").append(size).append("\r\n");
             h.append("Accept-Ranges: bytes\r\n");
             h.append("Cache-Control: private, max-age=86400\r\n");
+            h.append("Connection: close\r\n");
             h.append("\r\n");
             out.write(h.toString().getBytes("UTF-8"));
             copyN(is, out, len);
@@ -579,6 +640,7 @@ public class LocalServer {
             h.append("Content-Length: ").append(size).append("\r\n");
             h.append("Accept-Ranges: bytes\r\n");
             h.append("Cache-Control: private, max-age=86400\r\n");
+            h.append("Connection: close\r\n");
             h.append("\r\n");
             out.write(h.toString().getBytes("UTF-8"));
             copyN(is, out, size);
@@ -604,17 +666,22 @@ public class LocalServer {
     private static final byte[] CRLF = "\r\n".getBytes();
 
     private void writeJson(OutputStream out, String json) throws Exception {
-        writeJson(out, json, null);
+        writeJson(out, json, null, 200);
     }
 
     private void writeJson(OutputStream out, String json, String extraHeaders) throws Exception {
+        writeJson(out, json, extraHeaders, 200);
+    }
+
+    private void writeJson(OutputStream out, String json, String extraHeaders, int status) throws Exception {
         byte[] data = json.getBytes("UTF-8");
         StringBuilder h = new StringBuilder();
-        h.append("HTTP/1.1 200 OK").append("\r\n");
+        h.append("HTTP/1.1 ").append(status).append(status == 200 ? " OK" : " Unauthorized").append("\r\n");
         h.append("Content-Type: application/json; charset=utf-8").append("\r\n");
         h.append("Content-Length: ").append(data.length).append("\r\n");
         h.append("Cache-Control: no-store").append("\r\n");
         h.append("Access-Control-Allow-Origin: *").append("\r\n");
+        h.append("Connection: close").append("\r\n");
         if (extraHeaders != null && extraHeaders.length() > 0) h.append(extraHeaders);
         h.append("\r\n");
         out.write(h.toString().getBytes("UTF-8"));
@@ -625,7 +692,7 @@ public class LocalServer {
     private void writeText(OutputStream out, int code, String text) throws Exception {
         byte[] data = text.getBytes("UTF-8");
         String head = "HTTP/1.1 " + code + " X\r\nContent-Type: text/plain; charset=utf-8\r\n"
-                + "Content-Length: " + data.length + "\r\n\r\n";
+                + "Content-Length: " + data.length + "\r\nConnection: close\r\n\r\n";
         out.write(head.getBytes("UTF-8"));
         out.write(data);
         out.flush();
@@ -637,6 +704,7 @@ public class LocalServer {
         h.append("Content-Type: ").append(type).append("\r\n");
         h.append("Content-Length: ").append(data.length).append("\r\n");
         h.append("Cache-Control: no-cache").append("\r\n");
+        h.append("Connection: close").append("\r\n");
         if (extra != null) h.append(extra);
         h.append("\r\n");
         out.write(h.toString().getBytes("UTF-8"));

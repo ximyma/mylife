@@ -15,11 +15,12 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.22';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.34';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -882,6 +883,12 @@ async function apiAsr(body) {
   // body.model 优先：前端在"模型不存在"时会显式换一个模型重试
   const useModel = body.model || model || profile.default_model;
   if (!useModel) return { ok: false, message: '这条配置还没选模型' };
+  // v0.9.33：asr 槽位绑了配置但没绑语音模型时不能用聊天默认模型兜底（上游 403）
+  if (!body.model && !model) {
+    return { ok: false,
+      message: '「语音转文字」还没绑定语音识别模型，不能拿聊天模型去转写（上游会 403）。'
+        + '去 设置→AI 配置 给「语音转文字」绑一条，硅基流动免费可用 FunAudioLLM/SenseVoiceSmall。' };
+  }
 
   // 超过 25MB 的服务端通常不接受，提前说清楚而不是让人干等
   const size = fs.statSync(abs).size;
@@ -1008,6 +1015,19 @@ function apiFile(body) {
   }
 
   throw new Error('未知操作 ' + op);
+}
+
+/** 存到系统相册/下载目录：桌面端把文件复制到 下载/岁月记录助手/（与安卓 MediaStore 同名接口） */
+function apiGallerySave(body) {
+  const files = ctxFiles();
+  const abs = path.join(files, safePath(body.path || ''));
+  if (!abs.startsWith(files) || !fs.existsSync(abs)) throw new Error('文件不存在');
+  const home = os.homedir();
+  const dir = path.join(home, 'Downloads', '岁月记录助手');
+  fs.mkdirSync(dir, { recursive: true });
+  const dst = path.join(dir, 'suiyue_' + Date.now().toString(36) + '.jpg');
+  fs.copyFileSync(abs, dst);
+  return { ok: true, where: dst };
 }
 
 /* ================= v0.5 基座：用量记账 / 任务队列 / 能力网关 ================= */
@@ -3259,6 +3279,7 @@ const server = http.createServer(async (req, res) => {
           else if (pathname === '/api/ai/chat') return await apiChatStream(req, res, body);
           else if (pathname === '/api/ai/usage') out = usageSummary(body);
           else if (pathname === '/api/file') out = apiFile(body);
+          else if (pathname === '/api/gallery/save') out = apiGallerySave(body);
           else if (pathname === '/api/asr') out = await apiAsr(body);
           else if (pathname === '/api/tts') out = await apiTts(body);
           else if (pathname === '/api/song/make') out = await apiSongMake(body);

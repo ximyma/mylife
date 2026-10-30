@@ -229,6 +229,11 @@ public class MainActivity extends Activity {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> cb,
                                              FileChooserParams params) {
+                // 上一次的回调没还就来了新的：必须先给旧的回 null，
+                // 否则 WebView 认为上一次还没结束，之后再也不弹选择器
+                if (fileCallback != null) {
+                    try { fileCallback.onReceiveValue(null); } catch (Exception ignored) {}
+                }
                 fileCallback = cb;
                 try {
                     Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -256,6 +261,10 @@ public class MainActivity extends Activity {
         web.addJavascriptInterface(new TtsBridge(), "NativeTTS");
         web.addJavascriptInterface(new NativeIO(), "NativeIO");
         web.addJavascriptInterface(new NativeRec(), "NativeRec");
+        // 开启 WebView 远程调试：电脑 chrome://inspect 可看 console/元素；logcat 能收到 JS 报错
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            WebView.setWebContentsDebuggingEnabled(true);
+        }
     }
 
     /* ---------------- 录音桥（v0.3.3） ---------------- */
@@ -440,6 +449,11 @@ public class MainActivity extends Activity {
             addPerm(need, Manifest.permission.READ_MEDIA_AUDIO);
         } else {
             addPerm(need, Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
+        // Android 9 及以下写公共目录（存到相册 / 导出进 Download）需要运行时授权；
+        // 10+ 走 MediaStore 免授权，Manifest 里这条也限了 maxSdkVersion=28
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            addPerm(need, Manifest.permission.WRITE_EXTERNAL_STORAGE);
         }
         if (!need.isEmpty()) {
             requestPermissions(need.toArray(new String[0]), REQ_PERM);

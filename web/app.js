@@ -1481,6 +1481,7 @@
   function openPhotoPicker(aid, onPick) {
     API.query('SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ORDER BY taken_year, id', [aid])
       .then(function (photos) {
+        fetchAiImages(aid).then(function (ais) {
         var grid = '', i;
         for (i = 0; i < photos.length; i++) {
           var p = photos[i];
@@ -1492,11 +1493,19 @@
         ov.className = 'ml-modal-ov';
         ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选一张照片配到这一段</h3>' +
           '<div class="pick-grid">' + (grid || '<p class="muted">这本档案还没有照片</p>') + '</div>' +
+          aiPickGrid(ais) +
           '<div class="ml-modal-acts"><button class="btn" data-pick-cancel="1">取消</button></div></div>';
         document.body.appendChild(ov);
         ov.addEventListener('click', function (ev) {
           if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-cancel]'))) {
             document.body.removeChild(ov);
+            return;
+          }
+          var ab = ev.target.closest && ev.target.closest('[data-pick-ai]');
+          if (ab) {
+            var aiId = Number(ab.getAttribute('data-pick-ai'));
+            document.body.removeChild(ov);
+            adoptAiImage(aid, aiId, onPick);
             return;
           }
           var pb = ev.target.closest && ev.target.closest('[data-pick-ph]');
@@ -1506,6 +1515,7 @@
             onPick(pid);
           }
         });
+        }).catch(fail);
       }).catch(fail);
   }
 
@@ -1516,6 +1526,7 @@
   function openMultiPhotoPicker(aid, title, onPick) {
     API.query('SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ORDER BY taken_year, id', [aid])
       .then(function (photos) {
+        fetchAiImages(aid).then(function (ais) {
         var picked = {}, count = 0;
         var grid = '', i;
         for (i = 0; i < photos.length; i++) {
@@ -1525,11 +1536,20 @@
             '<span>' + esc(p.taken_year || '') + (p.place ? ' · ' + esc(p.place) : '') + '</span>' +
             '<em class="mpick-tick">✓</em></button>';
         }
+        var aiGrid = '', a;
+        for (i = 0; i < ais.length; i++) {
+          a = ais[i];
+          aiGrid += '<button class="pick-ph mpick ai-ph" data-mpick="ai:' + a.id + '" title="' + esc(String(a.prompt || '').slice(0, 60)) + '">' +
+            '<img src="' + esc(fsrc(a.path)) + '" alt="" loading="lazy">' +
+            '<span>AI · ' + esc(String(a.prompt || 'AI 生成的图').slice(0, 14)) + '</span>' +
+            '<em class="mpick-tick">✓</em></button>';
+        }
         var ov = document.createElement('div');
         ov.className = 'ml-modal-ov';
         ov.innerHTML = '<div class="ml-modal pick-modal"><h3>' + esc(title || '配图') + '</h3>' +
           '<p class="hint dim">点图片选中，可以多选，张数不设上限；第一张贴在段落里，其余按顺序跟在段落后面。</p>' +
-          '<div class="pick-grid">' + (grid || '<p class="muted">这本档案还没有照片，先用「传」上传几张</p>') + '</div>' +
+          '<div class="pick-grid">' + (grid || '<p class="muted">这本档案还没有照片，可以选下面的 AI 生成图，或先用「传」上传几张</p>') + '</div>' +
+          (aiGrid ? '<h4 class="pick-sec">AI 生成的图</h4><div class="pick-grid">' + aiGrid + '</div>' : '') +
           '<div class="ml-modal-acts">' +
           '<button class="btn primary" data-mpick-ok="1" disabled>配到这一段</button>' +
           '<button class="btn" data-mpick-cancel="1">取消</button></div></div>';
@@ -1550,14 +1570,31 @@
             return;
           }
           if (ev.target.closest && ev.target.closest('[data-mpick-ok]')) {
-            var ids = [];
-            for (var k in picked) if (picked.hasOwnProperty(k)) ids.push(Number(k));
-            if (!ids.length) return;
-            ids.sort(function (x, y) { return x - y; });
+            var keys = [], k;
+            for (k in picked) if (picked.hasOwnProperty(k)) keys.push(k);
+            if (!keys.length) return;
             ov.parentNode.removeChild(ov);
-            onPick(ids);
+            // AI 图先收进照片库换 photoId，再和普通照片一起按 id 排序交给 onPick
+            var photoIds = [], jobs = [], j;
+            for (j = 0; j < keys.length; j++) {
+              if (keys[j].slice(0, 3) === 'ai:') {
+                (function (key) {
+                  jobs.push(new Promise(function (res) {
+                    adoptAiImage(aid, Number(key.slice(3)), res);
+                  }));
+                })(keys[j]);
+              } else {
+                photoIds.push(Number(keys[j]));
+              }
+            }
+            Promise.all(jobs).then(function (aiIds) {
+              var ids = photoIds.concat(aiIds);
+              ids.sort(function (x, y) { return x - y; });
+              onPick(ids);
+            });
           }
         });
+        }).catch(fail);
       }).catch(fail);
   }
 
@@ -1659,12 +1696,55 @@
     });
   }
 
+  /** AI 画的图（ai_assets）里还没收进这本档案照片库的，供选图弹窗挑选 */
+  function fetchAiImages(aid) {
+    return Promise.all([
+      API.query('SELECT path FROM photos WHERE archive_id=?', [aid]),
+      API.query("SELECT id, path, prompt FROM ai_assets WHERE capability='image' ORDER BY id DESC LIMIT 60")
+    ]).then(function (rs) {
+      var have = {}, i;
+      for (i = 0; i < rs[0].length; i++) have[rs[0][i].path] = 1;
+      var out = [];
+      for (i = 0; i < rs[1].length; i++) {
+        if (!have[rs[1][i].path]) out.push(rs[1][i]);
+      }
+      return out;
+    }).catch(function () { return []; });   // 老库没有 ai_assets 表就当没有
+  }
+
+  /** 把选中的 AI 图收进这本档案的照片库（同路径去重复用），回调拿到 photoId */
+  function adoptAiImage(aid, aiId, onDone) {
+    API.query('SELECT path, prompt FROM ai_assets WHERE id=?', [aiId]).then(function (rows) {
+      if (!rows || !rows.length) { fail(new Error('这张图已经不在了')); return; }
+      var a = rows[0];
+      API.query('SELECT id FROM photos WHERE archive_id=? AND path=?', [aid, a.path]).then(function (ex) {
+        if (ex && ex.length) { onDone(ex[0].id); return; }
+        API.exec('INSERT INTO photos (archive_id, path, taken_year, place, event) VALUES (?,?,?,?,?)',
+          [aid, a.path, 0, 'AI 插图', String(a.prompt || 'AI 生成的图').slice(0, 40)])
+          .then(function (r) { onDone(r.lastId); }).catch(fail);
+      }).catch(fail);
+    }).catch(fail);
+  }
+
+  /** 选图弹窗里的 AI 图网格（空返回空串）；点选后先收进照片库再交给 onPick */
+  function aiPickGrid(ais) {
+    var g = '', i;
+    for (i = 0; i < ais.length; i++) {
+      var a = ais[i];
+      g += '<button class="pick-ph ai-ph" data-pick-ai="' + a.id + '" title="' + esc(String(a.prompt || '').slice(0, 60)) + '">' +
+        '<img src="' + esc(fsrc(a.path)) + '" alt="" loading="lazy">' +
+        '<span>AI · ' + esc(String(a.prompt || 'AI 生成的图').slice(0, 14)) + '</span></button>';
+    }
+    return g ? ('<h4 class="pick-sec">AI 生成的图</h4><div class="pick-grid">' + g + '</div>') : '';
+  }
+
   /** 插照片：列出还没放进正文的照片；没有就直接传一张新的 */
   function openInsertPhoto(aid, afterId, chapterId) {
     var sql = 'SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ' +
       'AND id NOT IN (SELECT photo_id FROM entries WHERE archive_id=? AND photo_id IS NOT NULL) ' +
       'ORDER BY taken_year, id';
     API.query(sql, [aid, aid]).then(function (photos) {
+      fetchAiImages(aid).then(function (ais) {
       var grid = '', i;
       for (i = 0; i < photos.length; i++) {
         var p = photos[i];
@@ -1675,7 +1755,8 @@
       var ov = document.createElement('div');
       ov.className = 'ml-modal-ov';
       ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选一张还没放进正文的照片</h3>' +
-        '<div class="pick-grid">' + (grid || '<p class="muted">没有待放的照片了，可以点下面上传一张新的</p>') + '</div>' +
+        '<div class="pick-grid">' + (grid || '<p class="muted">没有待放的照片了，可以点下面上传一张新的，或选下面的 AI 生成图</p>') + '</div>' +
+        aiPickGrid(ais) +
         '<div class="ml-modal-acts"><button class="btn" data-pick-upload="1">上传新照片</button>' +
         '<button class="btn" data-pick-cancel="1">取消</button></div></div>';
       document.body.appendChild(ov);
@@ -1688,6 +1769,16 @@
           uploadToEntry(aid, chapterId, route, afterId);
           return;
         }
+        var ab = ev.target.closest && ev.target.closest('[data-pick-ai]');
+        if (ab) {
+          var aiId = Number(ab.getAttribute('data-pick-ai'));
+          document.body.removeChild(ov);
+          adoptAiImage(aid, aiId, function (pid) {
+            DB.insertAfter(aid, { afterId: afterId, chapterId: chapterId, kind: 'photo', photoId: pid })
+              .then(function () { toast('插好了'); route(); }).catch(fail);
+          });
+          return;
+        }
         var pb = ev.target.closest && ev.target.closest('[data-pick-ph]');
         if (pb) {
           var pid = Number(pb.getAttribute('data-pick-ph'));
@@ -1696,6 +1787,7 @@
             .then(function () { toast('插好了'); route(); }).catch(fail);
         }
       });
+      }).catch(fail);
     }).catch(fail);
   }
 
@@ -2529,7 +2621,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.22';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.34';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -4191,6 +4283,49 @@
       go('#/login');
     });
   }
+  /* ---------- 老 WebView 兼容垫片（v0.9.32） ----------
+     小米9 等机型 WebView 停在 Chrome 83：inset/aspect-ratio 已在 style.css 处理，
+     flex 的 gap 则完全不渲染（按钮挤在一起），这里按 computed gap 给子元素补 margin。
+     仅 Chrome < 84 生效，新内核零开销。 */
+  (function () {
+    var m = navigator.userAgent.match(/Chrome\/(\d+)/);
+    if (!m || Number(m[1]) >= 84) return;
+    var tid = null;
+    function apply() {
+      var all = document.querySelectorAll('div,span,section,header,footer,nav,aside,li,p,form,label');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        var d = getComputedStyle(el).display;
+        if (d !== 'flex' && d !== 'inline-flex' && d !== '-webkit-flex') continue;
+        var cs = getComputedStyle(el);
+        var cg = parseFloat(cs.columnGap) || 0;
+        var rg = parseFloat(cs.rowGap) || 0;
+        var col = cs.flexDirection.indexOf('column') === 0;
+        if (!cg && !rg) continue;
+        var kids = el.children;
+        for (var k = 0; k < kids.length; k++) {
+          var c = kids[k];
+          if (c.nodeType !== 1) continue;
+          if (k === 0) continue;
+          if (c.hasAttribute('data-gpm')) {
+            // 之前补过的，按当前值刷新
+          } else if (col ? c.style.marginTop : c.style.marginLeft) {
+            continue; // 业务代码自己设了 margin，不动
+          }
+          c.setAttribute('data-gpm', '1');
+          if (col) { if (rg) c.style.marginTop = rg + 'px'; }
+          else {
+            if (cg) c.style.marginLeft = cg + 'px';
+            if (rg && cs.flexWrap !== 'nowrap') c.style.marginTop = rg + 'px';
+          }
+        }
+      }
+    }
+    function schedule() { if (tid) return; tid = setTimeout(function () { tid = null; try { apply(); } catch (e) {} }, 120); }
+    schedule();
+    try { new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true }); } catch (e) {}
+  })();
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
   } else {

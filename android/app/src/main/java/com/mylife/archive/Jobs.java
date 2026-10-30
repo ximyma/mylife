@@ -37,6 +37,13 @@ public final class Jobs {
             JSONObject in = Json.obj(payload);
             String type = Json.sv(in, "type");
             if (type.length() == 0) return Json.err("没有任务类型");
+            // 手机端做不了的重活，如实说明去哪做（前端会把这个 message 直接显示出来）
+            if (type.equals("aivideo") || type.equals("movie")) {
+                return Json.err("这个安装包里没有渲染引擎（ffmpeg），短片合成要用电脑版；手机上排分镜、看字幕稿不受影响");
+            }
+            if (type.equals("aimusic")) {
+                return Json.err("AI 作曲演唱要连音乐大模型，请用电脑版；手机上可以点「演奏出来」先听本地合成版");
+            }
             if (!type.equals("selftest")) return Json.err("这个版本还不支持任务 " + type);
 
             JSONArray p = new JSONArray();
