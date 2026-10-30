@@ -83,7 +83,7 @@
     }
     return '<header class="top"><div class="top-in">' +
       (opts.back ? '<a class="top-back" href="' + opts.back + '">‹</a>' : '') +
-      '<span class="logo">' + esc(opts.title || '我的人生档案') + '</span>' +
+      '<span class="logo">' + esc(opts.title || '岁月记录助手') + '</span>' +
       '<div class="top-right">' + right + '</div>' +
       '</div></header>';
   }
@@ -2009,7 +2009,7 @@
           window.__micPerm = null;
           if (String(r) === 'granted') doStartNative();
           else {
-            recState.textContent = '系统没放行麦克风（' + r + '）。到「设置 → 应用 → 我的人生档案 → 权限」' +
+            recState.textContent = '系统没放行麦克风（' + r + '）。到「设置 → 应用 → 岁月记录助手 → 权限」' +
               '把麦克风改成「仅使用期间允许」，再点一次';
           }
         };
@@ -2529,7 +2529,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.20';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.21';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2850,7 +2850,7 @@
       var myPhone = '';
       try { myPhone = localStorage.getItem('mylife.phone') || ''; } catch (e2) {}
       html += '<h2 class="set-h">关于</h2>' +
-        '<p class="hint">我的人生档案 · The Story of My Life <b>' + esc(APP_VERSION) + '</b><br>' +
+        '<p class="hint">岁月记录助手 · The Story of My Life <b>' + esc(APP_VERSION) + '</b><br>' +
         '数据全部存在这台设备上，不会上传到任何地方。<br>' +
         '只有你自己配了模型，生成时才会把章节标题发出去；照片只有在你点「看照片」时才会发。</p>' +
         (myPhone
@@ -3179,7 +3179,7 @@
       bkExport.textContent = '打包中……';
       if (bkState) bkState.textContent = '正在把照片录音读进来，档案多要等一会儿';
       DB.exportAll().then(function (pack) {
-        var fname = '我的人生档案-整库备份-' + new Date().toISOString().slice(0, 10) + '.mylife-backup.json';
+        var fname = '岁月记录助手-整库备份-' + new Date().toISOString().slice(0, 10) + '.mylife-backup.json';
         bkExport.disabled = false;
         bkExport.textContent = oldT;
         if (bkState) bkState.textContent = '共 ' + pack.packs.length + ' 本档案';
@@ -3399,7 +3399,7 @@
 
     function box(inner) {
       return topbar() + '<main class="wrap auth-wrap"><div class="auth-box">' +
-        '<h1 class="h1" style="text-align:center">我的人生档案</h1>' +
+        '<h1 class="h1" style="text-align:center">岁月记录助手</h1>' +
         '<p class="muted" style="text-align:center" id="auSub">登录后开始使用</p>' + inner +
         '<p class="muted" id="auMsg" style="text-align:center;min-height:18px;color:var(--danger)"></p>' +
         '</div></main>';
@@ -3768,7 +3768,7 @@
           // 底部小字
           ctx.font = '22px sans-serif';
           ctx.fillStyle = '#B9A688';
-          ctx.fillText('《我的人生档案》 · 数据只存在这台设备里', W / 2, H - 60);
+          ctx.fillText('《岁月记录助手》 · 数据只存在这台设备里', W / 2, H - 60);
 
           var url = cv.toDataURL('image/png');
           var fname = '分享卡片-' + (a.subject_name || '') + '.png';

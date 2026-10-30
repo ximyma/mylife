@@ -42,7 +42,7 @@
     var P = need();
     var pptx = new P();
     pptx.layout = 'LAYOUT_16x9';           // 10 × 5.625 英寸
-    pptx.author = '我的人生档案';
+    pptx.author = '岁月记录助手';
     pptx.title = m.meta.title;
 
     var chain = Promise.resolve();

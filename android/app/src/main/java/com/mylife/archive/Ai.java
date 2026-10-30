@@ -466,9 +466,187 @@ public final class Ai {
         }
     }
 
+    /* ================= 文生图（/api/image，与 Node 端 apiImage 同一套约定） ================= */
+
+    private static final int T_IMAGE = 180000;
+
+    /**
+     * 生成一张插图。供应商走 OpenAI 兼容的 /images/generations。
+     * 硅基流动返回的是临时图床 URL（会过期），必须当场下载落盘，不能只存链接。
+     *
+     * payload: { prompt, size?, steps?, cfg?, model?, profileId?, refImage?(dataURL), again? }
+     * 返回 { ok, path:'ai/img/<key>.jpg', bytes, model, ms, note? } —— 前端按 /files/<path> 展示。
+     */
+    public static String image(Context ctx, long uid, Db db, String payload) {
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject in = Json.obj(payload);
+            String prompt = Json.sv(in, "prompt").trim();
+            if (prompt.length() == 0) return msg(false, "没有画面描述");
+            if (prompt.length() > 1200) return msg(false, "画面描述太长了（最多 1200 字）");
+
+            // 优先用「图片生成」这个用途绑定的配置（slot=img，与桌面版一致）
+            if (!in.has("slot")) in.put("slot", "img");
+            JSONObject p = pick(db, in);
+            if (p == null) return msg(false,
+                    "还没配「图片生成」的模型。设置 → 模型来源里绑一条，模型填 Kwai-Kolors/Kolors（免费）。");
+
+            String model = Json.sv(in, "model");
+            if (model.length() == 0) model = modelOf(p);
+            // 与 Node 端同规则：文本默认模型（如 Qwen3-8B）拿去调 /images/generations，
+            // 硅基流动会判成非法操作（403），所以非图像模型一律回退到免费的 Kolors。
+            if (model.length() == 0 || !isImageModel(model)) model = "Kwai-Kolors/Kolors";
+
+            String size = Json.sv(in, "size");
+            if (!size.matches("\\d{3,4}x\\d{3,4}")) size = "1024x1024";
+
+            String refB64 = "";
+            String raw = Json.sv(in, "refImage");
+            if (raw.length() > 0) {
+                int comma = raw.indexOf(',');
+                refB64 = comma >= 0 ? raw.substring(comma + 1) : raw;
+            }
+
+            String key = sha1(prompt + "|" + model + "|" + size).substring(0, 20);
+            File dir = new File(new File(new File(new File(ctx.getFilesDir(), "users"),
+                    String.valueOf(uid)), "files"), "ai/img");
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+
+            String[] errors = new String[2];
+            int errN = 0;
+
+            // 带参考图失败（部分模型不认 image 字段）时自动退回纯文字再画一次
+            int attemptsN = refB64.length() > 0 ? 2 : 1;
+            for (int at = 0; at < attemptsN; at++) {
+                boolean withRef = refB64.length() > 0 && at == 0;
+                try {
+                    JSONObject pl = new JSONObject();
+                    pl.put("model", model);
+                    pl.put("prompt", prompt);
+                    pl.put("image_size", size);
+                    pl.put("batch_size", 1);
+                    pl.put("num_inference_steps", in.optInt("steps", 20));
+                    pl.put("guidance_scale", in.optDouble("cfg", 7.5));
+                    if (withRef) pl.put("image", refB64);
+
+                    JSONObject r = call(base(p) + "/images/generations", "POST",
+                            Json.sv(p, "api_key"), pl.toString(), T_IMAGE);
+                    int status = r.optInt("status", -1);
+                    if (status != 200) {
+                        errors[errN++] = Json.sv(p, "name") + (withRef ? "（带参考图）" : "")
+                                + " HTTP " + status + "：" + shorten(Json.sv(r, "text"), 160);
+                        continue;
+                    }
+                    JSONObject j = r.optJSONObject("json");
+                    JSONArray imgs = null;
+                    if (j != null) {
+                        imgs = j.optJSONArray("images");
+                        if (imgs == null) imgs = j.optJSONArray("data");
+                    }
+                    if (imgs == null || imgs.length() == 0) {
+                        errors[errN++] = Json.sv(p, "name") + " 没返回图片";
+                        continue;
+                    }
+                    JSONObject item = imgs.optJSONObject(0);
+                    byte[] buf = null;
+                    if (item != null) {
+                        String url = Json.sv(item, "url");
+                        String b64 = Json.sv(item, "b64_json");
+                        if (url.startsWith("data:")) {
+                            buf = android.util.Base64.decode(
+                                    url.substring(url.indexOf(',') + 1), android.util.Base64.DEFAULT);
+                        } else if (b64.length() > 0) {
+                            buf = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+                        } else if (url.startsWith("http")) {
+                            buf = download(url);
+                        }
+                    }
+                    if (buf == null || buf.length == 0) {
+                        errors[errN++] = Json.sv(p, "name") + " 图片是空的";
+                        continue;
+                    }
+
+                    String rel = "ai/img/" + key + ".jpg";
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(new File(dir, key + ".jpg"));
+                    fo.write(buf);
+                    fo.close();
+
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("path", rel);
+                    o.put("bytes", buf.length);
+                    o.put("model", model);
+                    o.put("ms", System.currentTimeMillis() - t0);
+                    o.put("cached", false);
+                    if (refB64.length() > 0 && !withRef) {
+                        o.put("refIgnored", true);
+                        o.put("note", "这个模型不认参考图，已按提示词重新画一张。想严格照着照片画，请在「设置 → 图片生成」里换一个支持图生图的模型。");
+                    } else {
+                        o.put("note", "图片由 AI 生成，服务商会在角落加标识");
+                    }
+                    return o.toString();
+
+                } catch (Exception e) {
+                    Log.w(TAG, "image 失败", e);
+                    if (errN < 2) errors[errN++] = Json.sv(p, "name") + (withRef ? "（带参考图）" : "")
+                            + " 连不上：" + e.getMessage();
+                }
+            }
+
+            StringBuilder sb = new StringBuilder("没画出来：");
+            for (int i = 0; i < errN; i++) {
+                if (i > 0) sb.append("；");
+                sb.append(errors[i]);
+            }
+            if (refB64.length() > 0) {
+                sb.append("（带参考图的请求被服务商拒了，已自动改成纯文字重画；要给模型参考图，得换支持图生图的模型）");
+            }
+            sb.append("。请到「设置 → 模型来源」把「图片生成」这一环选成硅基流动免费档，模型填 Kwai-Kolors/Kolors，并填好 API Key。");
+            return msg(false, sb.toString());
+
+        } catch (Exception e) {
+            Log.w(TAG, "image 失败", e);
+            return msg(false, "画不了：" + e.getMessage());
+        }
+    }
+
+    /** 是不是文生图模型：与 Node 端 isImageModel、web/db.js 的 modelKind 保持一致 */
+    private static boolean isImageModel(String model) {
+        String s = String.valueOf(model).toLowerCase();
+        return s.matches(".*(kolors|flux|cogview|qwen-image|z-image|stable-diffusion|sdxl|dall|imagen|seedream|janus|playground|ideogram|aura|sd3|dream).*");
+    }
+
+    private static String sha1(String s) throws Exception {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+        byte[] d = md.digest(s.getBytes("UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : d) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    /** GET 下载图片字节（文生图接口返回的是临时图床 URL） */
+    private static byte[] download(String url) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            int code = conn.getResponseCode();
+            if (code != 200) throw new Exception("图床取图失败 HTTP " + code);
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            InputStream is = conn.getInputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            is.close();
+            return bo.toByteArray();
+        } finally {
+            conn.disconnect();
+        }
+    }
+
     /** 状态码 → 人话。网络层失败（-1）跟服务端 4xx/5xx 是两回事，别混成一句 */
-    private static String msgForStatus(int status, String body) {
-        if (status == -1) {
+    private static String msgForStatus(int status, String body) {        if (status == -1) {
             return "连不上服务器：" + shorten(body, 160)
                     + "\n→ 检查手机网络（或用的是需要代理的接口）";
         }

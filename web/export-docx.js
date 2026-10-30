@@ -143,7 +143,7 @@
       return chain;
     }).then(function () {
       var doc = new d.Document({
-        creator: '我的人生档案',
+        creator: '岁月记录助手',
         title: m.meta.title,
         description: '由家人整理',
         styles: { default: { document: { run: { font: '宋体', size: 21 } } } },

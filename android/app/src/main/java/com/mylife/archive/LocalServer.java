@@ -29,6 +29,7 @@ import java.util.concurrent.Executors;
  *   POST /api/exec    {sql, params}  -> {changes, lastId}
  *   POST /api/ai      {messages...}  -> {text}
  *   POST /api/asr     {path}         -> {text}   语音转文字
+ *   POST /api/image   {prompt,...}   -> {ok, path}  文生图（v0.9.21 补）
  *   POST /api/ai/chat {messages}     -> NDJSON 流（逐行 {"t":"d","v":"字"}）
  *   POST /api/jobs    {id?}          -> 任务查询 / 创建 / 取消
  *   POST /api/file    {op, ...}      -> 落盘 / 读取 / 删除
@@ -412,6 +413,9 @@ public class LocalServer {
             }
             if (path.equals("/api/asr")) {
                 return Ai.asr(ctx, uid, udb, json);
+            }
+            if (path.equals("/api/image")) {
+                return Ai.image(ctx, uid, udb, json);
             }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);

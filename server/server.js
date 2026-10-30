@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.20';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.21';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -3356,7 +3356,7 @@ function startLog(line) {
       if (st.size > 200 * 1024) old = '';            // 超过 200KB 就重来，别无限长
       else old = fs.readFileSync(p, 'utf8');
     } catch (e) { old = ''; }
-    const head = old || '我的人生档案 · 启动日志（打不开的时候，把这个文件发出来就能定位）\n\n';
+    const head = old || '岁月记录助手 · 启动日志（打不开的时候，把这个文件发出来就能定位）\n\n';
     fs.writeFileSync(p, head + '[' + stamp + '] ' + line + '\n', 'utf8');
   } catch (e) { /* 日志写不了也不能影响启动 */ }
 }
@@ -3389,7 +3389,7 @@ server.listen(PORT, HOST, () => {
   const addr = 'http://' + (HOST === '0.0.0.0' ? '127.0.0.1' : HOST) + ':' + listenPort;
   const hasLegacy = fs.existsSync(path.join(DATA, 'archive.db'));
   console.log('');
-  console.log('  我的人生档案 · The Story of My Life  ' + VERSION);
+  console.log('  岁月记录助手 · The Story of My Life  ' + VERSION);
   console.log('  ' + addr);
   console.log('  数据目录：' + DATA);
   if (hasLegacy) {
