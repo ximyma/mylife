@@ -24,15 +24,23 @@ import java.util.concurrent.Executors;
  *   这样前端只认 fetch，网页端和安卓端是同一份代码、同一个地址形态。
  *   图片/视频走 /files/*，不需要转 base64，也不需要 JsBridge。
  *
- * 只提供 4 个接口：
- *   POST /api/query   {sql, params}  -> rows[]
- *   POST /api/exec    {sql, params}  -> {changes, lastId}
- *   POST /api/ai      {messages...}  -> {text}
- *   POST /api/asr     {path}         -> {text}   语音转文字
- *   POST /api/image   {prompt,...}   -> {ok, path}  文生图（v0.9.21 补）
- *   POST /api/ai/chat {messages}     -> NDJSON 流（逐行 {"t":"d","v":"字"}）
- *   POST /api/jobs    {id?}          -> 任务查询 / 创建 / 取消
- *   POST /api/file    {op, ...}      -> 落盘 / 读取 / 删除
+ * 对外接口（与 Node 端 server.js 同名同约定，缺的只有要 ffmpeg 的视频合成）：
+ *   POST /api/query     {sql, params}  -> rows[]
+ *   POST /api/exec      {sql, params}  -> {changes, lastId}
+ *   POST /api/ai        {messages...}  -> {text}
+ *   POST /api/ai/chat   {messages}     -> NDJSON 流（逐行 {"t":"d","v":"字"}）
+ *   POST /api/ai/models /api/ai/test   -> 模型列表 / 连通性测试
+ *   POST /api/ai/usage  {days?}        -> {byCapability, calls, cost}  用量统计
+ *   POST /api/asr       {path}         -> {text}   语音转文字
+ *   POST /api/image     {prompt,...}   -> {ok, path}  文生图
+ *   POST /api/tts       {text,...}     -> {ok, path}  云端朗读（系统朗读走 Tts 桥）
+ *   POST /api/song/make {lyrics,style} -> {ok, path, seconds}  演奏歌曲（纯 Java 合成）
+ *   POST /api/movie/plan {archiveId}   -> {frames, seconds}  短片分镜（合成需桌面版）
+ *   POST /api/render/probe             -> {ok:false}  安卓无 ffmpeg，如实报缺
+ *   POST /api/docx/parse {base64,name} -> Word 导入解析
+ *   POST /api/export/pdf|save          -> 如实报缺（导出走印刷版/Word）
+ *   POST /api/jobs      {id?}          -> 任务查询 / 创建 / 取消
+ *   POST /api/file      {op, ...}      -> 落盘 / 读取 / 删除
  *   GET  /files/<rel>                 -> 二进制，支持 Range
  */
 public class LocalServer {
@@ -416,6 +424,31 @@ public class LocalServer {
             }
             if (path.equals("/api/image")) {
                 return Ai.image(ctx, uid, udb, json);
+            }
+            if (path.equals("/api/tts")) {
+                return Ai.tts(ctx, uid, udb, json);
+            }
+            if (path.equals("/api/song/make")) {
+                return Ai.song(ctx, uid, udb, json);
+            }
+            if (path.equals("/api/render/probe")) {
+                // 安卓没有内置 ffmpeg：如实报缺，前端短片页会提示「排分镜可以，合成去电脑」
+                return "{\"ok\":false,\"message\":\"这个安装包里没有渲染引擎（ffmpeg），短片与混音导出用不了；排分镜、看字幕稿不受影响。\"}";
+            }
+            if (path.equals("/api/movie/plan")) {
+                return Ai.moviePlan(udb, json);
+            }
+            if (path.equals("/api/ai/usage")) {
+                return Ai.usage(udb, json);
+            }
+            if (path.equals("/api/docx/parse")) {
+                return Docx.parse(json);
+            }
+            if (path.equals("/api/export/pdf")) {
+                return "{\"ok\":false,\"message\":\"安卓版暂不支持一键 PDF（需要桌面版的 Chrome 引擎）。可以选「印刷版」或 Word 导出。\"}";
+            }
+            if (path.equals("/api/export/save")) {
+                return "{\"ok\":false,\"message\":\"安卓版导出直接落到档案目录（导出页里能看到），不需要另存。\"}";
             }
             if (path.equals("/api/file")) {
                 return Files.op(ctx, uid, json);

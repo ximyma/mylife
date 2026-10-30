@@ -5,6 +5,16 @@
 里程碑：**v0.2 = 里程碑 1**（档案管理与单文件分发）、**v0.4 = 里程碑 2**（账号体系 + 手机端全链路打通）、
 **v0.5–v0.7 = 里程碑 3**（单机版功能扩展：封面、时间轴、导出、AI 助手、语音音乐、影像化）。
 
+## v0.9.22 · 2026-10-30 —— 安卓端功能补齐：朗读/歌曲/分镜/用量/Word 导入
+
+- **云端朗读 `/api/tts`**：新增 `Ai.tts()`，走用户配置的 OpenAI 兼容 `/audio/speech`，mp3 缓存落盘 `ai/tts/`。硅基流动 CosyVoice2 音色自动写成「模型名:音色」格式（只给 anna 会报 20047）。失败时前端自动退回系统离线朗读，不卡流程。
+- **演奏歌曲 `/api/song/make`**：新增 `Ai.song()`。安卓没有 ffmpeg，全程纯 Java：人声走云端 TTS → MediaCodec 解码 PCM；伴奏按曲风和弦逐小节合成（与桌面 synthBgm 同参数）；混音输出 44.1kHz/16bit 立体声 WAV，`<audio>` 直接播。
+- **短片分镜 `/api/movie/plan`**：新增 `Ai.moviePlan()`，与桌面同规则（封面卡 + 字幕 50 字拆格 + 照片就近垫图 + 160 格/15 分钟封顶）。合成仍需桌面版（`/api/render/probe` 如实报缺，前端短片页会提示「排分镜可以，合成去电脑」）。
+- **用量统计 `/api/ai/usage`**：新增 `Ai.usage()` 聚合 `ai_usage` 表；并给 chat/asr/image/tts/song 全部补上记账（原来安卓端从不记账，设置页用量永远是空）。
+- **Word 导入 `/api/docx/parse`**：新增 `Docx.java`，平移桌面 parseDocx 全套规则（章节识别/档案信息页/图注/引语）。图片自动压到长边 1600px JPEG q82 再转 base64——安卓内存装不下桌面那种 40×8MB 原图。
+- **如实报缺**：`/api/export/pdf`、`/api/export/save` 返回友好提示（导出走印刷版/Word，前端已兜底）。
+- 版本号三处同步 0.9.22（versionCode 37）。
+
 ## v0.9.21 · 2026-10-30 —— 安卓端补齐文生图接口
 
 - **修复**：APK 上文生图报「未知接口 /api/image」——安卓 LocalServer 从未实现该接口（聊天/转写有，画图没有）。新增 `Ai.image()`：调 OpenAI 兼容 `/images/generations`，slot=img，非图像模型自动回退 `Kwai-Kolors/Kolors`（免费），临时图床 URL 当场下载落盘到 `users/<uid>/files/ai/img/`，带参考图失败自动退纯文字重画（与桌面版同一套约定）。

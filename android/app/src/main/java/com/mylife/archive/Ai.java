@@ -354,6 +354,14 @@ public final class Ai {
             o.put("profile", Json.sv(p, "name"));
             o.put("text", text);
             if (usage != null) o.put("usage", usage);
+            // 用量记账：tokens 总数（没有就按字数估），供设置页用量统计用
+            double units = 0;
+            if (usage != null) {
+                units = usage.optDouble("total_tokens",
+                        usage.optDouble("prompt_tokens", 0) + usage.optDouble("completion_tokens", 0));
+            }
+            if (units <= 0) units = text.length();
+            usageAdd(db, "text", model, units, "token");
             return o.toString();
 
         } catch (Exception e) {
@@ -450,6 +458,7 @@ public final class Ai {
                 if (j.has("usage")) o.put("usage", j.get("usage"));
                 if (j.has("language")) o.put("language", j.get("language"));
             }
+            usageAdd(db, "asr", model, text.trim().length(), "char");
             return o.toString();
 
         } catch (Exception e) {
@@ -571,6 +580,8 @@ public final class Ai {
                     java.io.FileOutputStream fo = new java.io.FileOutputStream(new File(dir, key + ".jpg"));
                     fo.write(buf);
                     fo.close();
+
+                    usageAdd(db, "image", model, 1, "call");
 
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
@@ -891,5 +902,650 @@ public final class Ai {
             out.flush();
         } catch (Exception ignored) {
         }
+    }
+
+    /* ================= 公共小件 ================= */
+
+    /** users/<uid>/files/<rel> 目录，自动建 */
+    private static File filesDir(Context ctx, long uid, String rel) {
+        File d = new File(new File(new File(new File(ctx.getFilesDir(), "users"),
+                String.valueOf(uid)), "files"), rel);
+        //noinspection ResultOfMethodCallIgnored
+        d.mkdirs();
+        return d;
+    }
+
+    /** 用量记账：与 Node 端 usageAdd 同约定，失败不影响主流程 */
+    private static void usageAdd(Db db, String cap, String model, double units, String unit) {
+        try {
+            JSONArray a = new JSONArray();
+            a.put(cap == null ? "text" : cap);
+            a.put(model == null || model.length() == 0 ? JSONObject.NULL : model);
+            a.put(units);
+            a.put(unit == null || unit.length() == 0 ? JSONObject.NULL : unit);
+            a.put(0);
+            a.put(JSONObject.NULL);
+            db.exec("INSERT INTO ai_usage (capability, model, units, unit, cost, ref) VALUES (?,?,?,?,?,?)", a);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * 二进制 HTTP POST（TTS 音频用）：call() 读的是文本，这里必须收原始字节。
+     * 非 2xx 抛异常，message 里带状态码和响应摘要。
+     */
+    private static byte[] callBinary(String url, String apiKey, String body, int timeout) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(timeout);
+            conn.setRequestProperty("Content-Type", "application/json");
+            if (apiKey != null && apiKey.length() > 0) {
+                conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            }
+            conn.setDoOutput(true);
+            OutputStream os = conn.getOutputStream();
+            os.write(body.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while (is != null && (n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            if (is != null) is.close();
+            byte[] out = bo.toByteArray();
+            if (code >= 400) {
+                throw new Exception("HTTP " + code + "：" + shorten(new String(out, "UTF-8"), 160));
+            }
+            return out;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /* ================= 云端朗读（/api/tts，与 Node 端 apiTts 同约定） ================= */
+
+    private static final int T_TTS = 120000;
+
+    /**
+     * 云端音色合成。供应商走 OpenAI 兼容 /audio/speech，返回 mp3 落盘。
+     * 硅基流动的 CosyVoice2 音色必须写成「模型名:音色名」，只给 anna 会报 20047 Invalid voice（实测）。
+     *
+     * payload: { text, speed?, voice?, profileId?, model? }
+     * 返回 { ok, path:'ai/tts/<key>.mp3', cached, model } —— 前端按 /files/<path> 播放；
+     * 失败时 { ok:false, message }，前端 tts.js 会整段退回系统音色，不会卡住朗读。
+     */
+    public static String tts(Context ctx, long uid, Db db, String payload) {
+        try {
+            JSONObject in = Json.obj(payload);
+            String text = Json.sv(in, "text").trim();
+            if (text.length() == 0) return msg(false, "没有要读的文字");
+            if (text.length() > 2000) return msg(false, "一次最多 2000 字，长文请分段读");
+
+            if (!in.has("slot")) in.put("slot", "tts");
+            JSONObject p = pick(db, in);
+            if (p == null) {
+                return msg(false, "还没配「朗读」用的模型，先用系统音色读。");
+            }
+
+            String model = modelOf(p);
+            if (model.length() == 0) model = "tts-1";
+            String voice = Json.sv(in, "voice");
+            if (voice.length() == 0) {
+                if (base(p).toLowerCase().contains("siliconflow")) {
+                    voice = model.indexOf(':') >= 0 ? model : model + ":anna";
+                } else {
+                    voice = "alloy";
+                }
+            }
+            float speed;
+            try { speed = (float) in.optDouble("speed", 1.0); } catch (Exception e) { speed = 1f; }
+            if (speed <= 0) speed = 1f;
+
+            String key = sha1(text + "|" + voice + "|" + speed + "|" + model).substring(0, 20);
+            String rel = "ai/tts/" + key + ".mp3";
+            File f = new File(filesDir(ctx, uid, "ai/tts"), key + ".mp3");
+
+            JSONObject o = new JSONObject();
+            if (f.exists() && f.length() > 0) {
+                o.put("ok", true);
+                o.put("path", rel);
+                o.put("cached", true);
+                o.put("model", model);
+                return o.toString();
+            }
+
+            JSONObject pl = new JSONObject();
+            pl.put("model", model);
+            pl.put("input", text);
+            pl.put("voice", voice);
+            pl.put("speed", (double) speed);
+            pl.put("response_format", "mp3");
+
+            byte[] buf = callBinary(base(p) + "/audio/speech",
+                    Json.sv(p, "api_key"), pl.toString(), T_TTS);
+            if (buf == null || buf.length == 0) {
+                return msg(false, Json.sv(p, "name") + " 返回空音频，先用系统音色读。");
+            }
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(f);
+            fo.write(buf);
+            fo.close();
+
+            usageAdd(db, "tts", model, text.length(), "char");
+
+            o.put("ok", true);
+            o.put("path", rel);
+            o.put("cached", false);
+            o.put("model", model);
+            return o.toString();
+        } catch (Exception e) {
+            Log.w(TAG, "tts 失败", e);
+            // 失败文案给前端兜底提示用；tts.js 收到 ok:false 会自动退回系统音色
+            return msg(false, "云端朗读没成：" + e.getMessage() + "。先用系统音色读。");
+        }
+    }
+
+    /* ================= 演奏歌曲（/api/song/make，与 Node 端 apiSongMake 同约定） ================= */
+
+    /**
+     * 歌词 → 人声 + 伴奏 → 一首歌。安卓没有 ffmpeg，全程自己算：
+     *   ① 人声：云端 TTS（与 /api/tts 同链路），mp3 用系统 MediaCodec 解成 PCM
+     *   ② 伴奏：按曲风和弦进行逐小节合成（与桌面 synthBgm 同一套参数）
+     *   ③ 混音：人声垫在伴奏上，输出 44.1kHz/16bit/立体声 WAV（WebView 的 <audio> 直接播）
+     *
+     * payload: { lyrics, style?, voice?, profileId?, model?, speed? }
+     * 返回 { ok, path:'ai/song/<key>/song.wav', seconds, voice, voiceNote?, cached }
+     */
+    public static String song(Context ctx, long uid, Db db, String payload) {
+        final int SR = 44100;
+        try {
+            JSONObject in = Json.obj(payload);
+            String lyrics = Json.sv(in, "lyrics").trim();
+            if (lyrics.length() == 0) return msg(false, "没有歌词");
+            if (lyrics.length() > 2000) return msg(false, "歌词一次最多 2000 字");
+
+            String style = Json.sv(in, "style");
+            if (style.length() == 0) style = "calm";
+            BgmProg prog = BgmProg.byName(style);
+            if (prog == null) return msg(false, "没有这种曲风");
+            boolean wantVoice = !"false".equals(Json.sv(in, "voice"));
+
+            String key = sha1(lyrics + "|" + style + "|" + (wantVoice ? "v" : "i")).substring(0, 16);
+            String relDir = "ai/song/" + key;
+            File dir = filesDir(ctx, uid, relDir);
+            File out = new File(dir, "song.wav");
+            JSONObject o = new JSONObject();
+            if (out.exists() && out.length() > 0) {
+                o.put("ok", true);
+                o.put("path", relDir + "/song.wav");
+                o.put("cached", true);
+                o.put("voice", wantVoice);
+                o.put("seconds", wavSeconds(out, SR));
+                return o.toString();
+            }
+
+            /* ① 人声：直接走云端 TTS 链路 */
+            float[] voice = null;
+            String voiceNote = "";
+            if (wantVoice) {
+                String r = tts(ctx, uid, db, new JSONObject()
+                        .put("text", lyrics).put("slot", "tts")
+                        .put("profileId", in.opt("profileId")).put("model", in.opt("model"))
+                        .put("speed", in.optDouble("speed", 1.0)).toString());
+                JSONObject rj = new JSONObject(r);
+                if (rj.optBoolean("ok")) {
+                    File vf = new File(filesDir(ctx, uid, "ai/tts"),
+                            new File(Json.sv(rj, "path")).getName());
+                    try {
+                        voice = decodeMp3Mono(vf, SR);
+                    } catch (Exception de) {
+                        Log.w(TAG, "人声解码失败", de);
+                        voiceNote = "人声解码失败，这版只有伴奏";
+                    }
+                } else {
+                    voiceNote = Json.sv(rj, "message").length() > 0
+                            ? Json.sv(rj, "message") : "没配朗读模型，这版只有伴奏";
+                }
+            }
+
+            /* ② 时长：有人声跟人声同长；没有就按字数估（约 6 字/秒，唱总比念慢） */
+            double voiceSec = voice != null ? voice.length / (double) SR : 0;
+            double estSec = voiceSec > 0 ? voiceSec : Math.max(6, lyrics.replaceAll("\\s", "").length() / 6.0);
+            double total = estSec + 2.0;
+            int totalN = (int) Math.round(total * SR);
+
+            /* ③ 混音写 WAV：逐小节合成伴奏，叠上人声，落盘 */
+            boolean withVoice = voice != null && voice.length > 0;
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(out);
+            fo.write(wavHeader(totalN * 4, SR, 2));
+            int barSamples = (int) Math.round(prog.bar * SR);
+            float bgmVol = withVoice ? 0.5f : 0.9f;
+            float voiceVol = withVoice ? 1.35f : 0f;
+            for (int b = 0; b * barSamples < totalN; b++) {
+                int len = Math.min(barSamples, totalN - b * barSamples);
+                float[] L = new float[len];
+                float[] R = new float[len];
+                int[] ch = prog.chords[b % prog.chords.length];
+                // 低音铺底：根音与三音各低一个八度
+                addNote(L, R, SR, midiHz(ch[0] - 12), 0, prog.bar, 0.16f, true);
+                addNote(L, R, SR, midiHz(ch[1] - 12), 0, prog.bar, 0.10f, true);
+                // 八分音符琶音：上行四音再下行，后半小节抬八度
+                int[] seq = {0, 1, 2, 3, 2, 1, 0, 1};
+                double step = prog.bar / 8.0;
+                for (int k = 0; k < 8 && k * step < prog.bar; k++) {
+                    int note = ch[seq[k]] + (k >= 4 ? 12 : 0);
+                    double dur = Math.min(2.0, prog.bar - k * step);
+                    addNote(L, R, SR, midiHz(note), k * step, dur, 0.085f, false);
+                }
+                byte[] pcm = new byte[len * 4];
+                int vOff = b * barSamples;
+                for (int i = 0; i < len; i++) {
+                    double sec = (vOff + i) / (double) SR;
+                    // 全曲淡入淡出（与桌面 afade 同意图：入 1.2s，尾 2.6s）
+                    double fade = 1.0;
+                    if (sec < 1.2) fade = sec / 1.2;
+                    else if (sec > total - 2.6) fade = Math.max(0, (total - sec) / 2.6);
+                    double vL = L[i] * bgmVol * fade;
+                    double vR = R[i] * bgmVol * fade;
+                    if (withVoice && vOff + i < voice.length) {
+                        vL += voice[vOff + i] * voiceVol;
+                        vR += voice[vOff + i] * voiceVol;
+                    }
+                    int li = Math.round(Math.max(-1f, Math.min(1f, (float) vL)) * 32767f);
+                    int ri = Math.round(Math.max(-1f, Math.min(1f, (float) vR)) * 32767f);
+                    pcm[i * 4] = (byte) li;
+                    pcm[i * 4 + 1] = (byte) (li >> 8);
+                    pcm[i * 4 + 2] = (byte) ri;
+                    pcm[i * 4 + 3] = (byte) (ri >> 8);
+                }
+                fo.write(pcm);
+            }
+            fo.close();
+
+            if (withVoice) usageAdd(db, "tts", "", lyrics.length(), "char");
+
+            o.put("ok", true);
+            o.put("path", relDir + "/song.wav");
+            o.put("seconds", Math.round(total * 10) / 10.0);
+            o.put("voice", withVoice);
+            if (voiceNote.length() > 0) o.put("voiceNote", voiceNote);
+            return o.toString();
+        } catch (Exception e) {
+            Log.w(TAG, "song 失败", e);
+            return msg(false, "演奏失败：" + e.getMessage());
+        }
+    }
+
+    /* ---- 伴奏合成：与桌面 synthBgm/addNote 同参数 ---- */
+
+    private static double midiHz(int m) {
+        return 440.0 * Math.pow(2.0, (m - 69) / 12.0);
+    }
+
+    private static class BgmProg {
+        double bar;
+        int[][] chords;
+
+        BgmProg(double bar, int[][] chords) {
+            this.bar = bar;
+            this.chords = chords;
+        }
+
+        static BgmProg byName(String s) {
+            if ("warm".equals(s)) return new BgmProg(4.4, new int[][]{{53, 57, 60, 65}, {50, 53, 57, 62}, {46, 50, 53, 58}, {48, 52, 55, 60}});
+            if ("bright".equals(s)) return new BgmProg(3.6, new int[][]{{57, 61, 64, 69}, {54, 57, 61, 66}, {50, 54, 57, 62}, {52, 56, 59, 64}});
+            if ("old".equals(s)) return new BgmProg(5.0, new int[][]{{50, 53, 57, 62}, {46, 50, 53, 58}, {43, 46, 50, 55}, {45, 49, 52, 57}});
+            if ("calm".equals(s)) return new BgmProg(4.0, new int[][]{{60, 64, 67, 72}, {57, 60, 64, 69}, {53, 57, 60, 65}, {55, 59, 62, 67}});
+            return null;
+        }
+    }
+
+    /** 一个音符写进左右声道。pad=低音铺底（慢起慢落），pluck=琶音（快起快落） */
+    private static void addNote(float[] L, float[] R, int sr, double hz,
+                                double startSec, double durSec, double amp, boolean pad) {
+        int n0 = (int) Math.round(startSec * sr);
+        int n = (int) Math.min(Math.round(durSec * sr), (long) L.length - n0);
+        if (n <= 0) return;
+        double atk = pad ? 0.45 : 0.008;
+        double dec = pad ? 0.22 : 2.2;
+        double[][] harm = pad
+                ? new double[][]{{1, 1}, {2, 0.22}, {3, 0.08}}
+                : new double[][]{{1, 1}, {2, 0.46}, {3, 0.22}, {4, 0.11}};
+        double detune = 1.0009;   // 右声道差一点点，听上去更宽
+        double fadeFrom = durSec - 0.3;
+        for (int i = 0; i < n; i++) {
+            double t = i / (double) sr;
+            double env = Math.min(1, t / atk) * Math.exp(-t * dec);
+            if (t > fadeFrom) env *= Math.max(0, (durSec - t) / 0.3);
+            if (env < 2e-4) continue;
+            double sL = 0, sR = 0;
+            for (int h = 0; h < harm.length; h++) {
+                double k = harm[h][0], a = harm[h][1];
+                double ph = 6.283185307 * hz * k * t;
+                sL += a * Math.sin(ph);
+                sR += a * Math.sin(ph * detune + 0.35);
+            }
+            double g = env * amp;
+            L[n0 + i] += (float) (sL * g);
+            R[n0 + i] += (float) (sR * g);
+        }
+    }
+
+    /* ---- 音频解码：mp3 → 44.1kHz 单声道 float[]（系统 MediaCodec，不引第三方） ---- */
+
+    private static float[] decodeMp3Mono(File f, int targetSr) throws Exception {
+        android.media.MediaExtractor ex = new android.media.MediaExtractor();
+        try {
+            ex.setDataSource(f.getAbsolutePath());
+            int ti = -1;
+            android.media.MediaFormat fmt = null;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                android.media.MediaFormat x = ex.getTrackFormat(i);
+                String mime = x.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) { ti = i; fmt = x; break; }
+            }
+            if (ti < 0 || fmt == null) throw new Exception("音频里没有音轨");
+            int srcSr = fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
+            int srcCh = fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
+            ex.selectTrack(ti);
+            android.media.MediaCodec dec = android.media.MediaCodec.createDecoderByType(
+                    fmt.getString(android.media.MediaFormat.KEY_MIME));
+            dec.configure(fmt, null, null, 0);
+            dec.start();
+
+            ByteArrayOutputStream pcmBytes = new ByteArrayOutputStream();
+            android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+            boolean eosIn = false, eosOut = false;
+            while (!eosOut) {
+                if (!eosIn) {
+                    int ib = dec.dequeueInputBuffer(10000);
+                    if (ib >= 0) {
+                        java.nio.ByteBuffer bb = dec.getInputBuffer(ib);
+                        int sz = ex.readSampleData(bb, 0);
+                        if (sz < 0) {
+                            dec.queueInputBuffer(ib, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            eosIn = true;
+                        } else {
+                            dec.queueInputBuffer(ib, 0, sz, ex.getSampleTime(), 0);
+                            ex.advance();
+                        }
+                    }
+                }
+                int ob = dec.dequeueOutputBuffer(info, 10000);
+                if (ob >= 0) {
+                    java.nio.ByteBuffer bb = dec.getOutputBuffer(ob);
+                    if (bb != null && info.size > 0) {
+                        byte[] chunk = new byte[info.size];
+                        bb.position(info.offset);
+                        bb.get(chunk);
+                        pcmBytes.write(chunk);
+                    }
+                    dec.releaseOutputBuffer(ob, false);
+                    if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) eosOut = true;
+                }
+            }
+            dec.stop();
+            dec.release();
+
+            /* 解出来的 PCM 是 16bit 交织多声道 → 折成单声道 float */
+            byte[] raw = pcmBytes.toByteArray();
+            int frames = raw.length / (2 * srcCh);
+            float[] mono = new float[frames];
+            for (int i = 0; i < frames; i++) {
+                int acc = 0;
+                for (int c = 0; c < srcCh; c++) {
+                    int off = i * 2 * srcCh + c * 2;
+                    short s = (short) ((raw[off] & 0xff) | (raw[off + 1] << 8));
+                    acc += s;
+                }
+                mono[i] = acc / (float) srcCh / 32767f;
+            }
+            if (srcSr == targetSr) return mono;
+            /* 线性重采样到目标采样率 */
+            int outN = (int) ((long) frames * targetSr / srcSr);
+            float[] out = new float[outN];
+            double ratio = (frames - 1) / (double) Math.max(1, outN - 1);
+            for (int i = 0; i < outN; i++) {
+                double p = i * ratio;
+                int i0 = (int) p;
+                double fr = p - i0;
+                float a = mono[i0];
+                float b2 = i0 + 1 < frames ? mono[i0 + 1] : a;
+                out[i] = (float) (a + (b2 - a) * fr);
+            }
+            return out;
+        } finally {
+            try { ex.release(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static byte[] wavHeader(int dataBytes, int sr, int ch) {
+        byte[] h = new byte[44];
+        put(h, 0, "RIFF");
+        putInt(h, 4, 36 + dataBytes);
+        put(h, 8, "WAVE");
+        put(h, 12, "fmt ");
+        putInt(h, 16, 16);
+        h[20] = 1;
+        h[22] = (byte) ch;
+        putInt(h, 24, sr);
+        putInt(h, 28, sr * ch * 2);
+        h[32] = (byte) (ch * 2);
+        h[34] = 16;
+        put(h, 36, "data");
+        putInt(h, 40, dataBytes);
+        return h;
+    }
+
+    private static void put(byte[] b, int off, String s) {
+        for (int i = 0; i < s.length(); i++) b[off + i] = (byte) s.charAt(i);
+    }
+
+    private static void putInt(byte[] b, int off, int v) {
+        b[off] = (byte) v;
+        b[off + 1] = (byte) (v >> 8);
+        b[off + 2] = (byte) (v >> 16);
+        b[off + 3] = (byte) (v >> 24);
+    }
+
+    private static double wavSeconds(File f, int sr) {
+        long bytes = f.length() - 44;
+        return Math.round(bytes / 4.0 / sr * 10) / 10.0;
+    }
+
+    /* ================= 用量统计（/api/ai/usage，与 Node 端 usageSummary 同约定） ================= */
+
+    public static String usage(Db db, String payload) {
+        try {
+            JSONObject in = Json.obj(payload);
+            int days = in.optInt("days", 30);
+            if (days < 1) days = 1;
+            JSONArray rows = new JSONArray(db.query(
+                    "SELECT capability, COUNT(*) AS calls, COALESCE(SUM(units),0) AS units, " +
+                            "COALESCE(SUM(cost),0) AS cost FROM ai_usage " +
+                            "WHERE at >= datetime('now', ?) GROUP BY capability ORDER BY capability",
+                    new JSONArray().put("-" + days + " days")));
+            long calls = 0;
+            double cost = 0;
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject r = rows.getJSONObject(i);
+                calls += r.optLong("calls", 0);
+                cost += r.optDouble("cost", 0);
+            }
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("days", days);
+            o.put("byCapability", rows);
+            o.put("calls", calls);
+            o.put("cost", Math.round(cost * 100) / 100.0);
+            return o.toString();
+        } catch (Exception e) {
+            return msg(false, "读用量失败：" + e.getMessage());
+        }
+    }
+
+    /* ================= 短片分镜（/api/movie/plan，与 Node 端 apiMoviePlan 同约定） ================= */
+
+    /**
+     * 纯规则分镜：封面卡 + 每段讲述按字幕行拆格，照片按拍摄年就近垫图。
+     * 安卓没有渲染引擎，probe 会告诉前端「只能排分镜，合成去电脑」——但分镜、
+     * 字幕稿、时长预估照样完整可用，用户可以先在这台手机上把片子「编辑」好。
+     */
+    public static String moviePlan(Db db, String payload) throws Exception {
+        JSONObject in = Json.obj(payload);
+        int aid = in.optInt("archiveId", 0);
+        int chId = in.optInt("chapterId", 0);
+        if (aid == 0) throw new Exception("要指定档案");
+
+        JSONObject a = one(db, "SELECT * FROM archives WHERE id=?", new JSONArray().put(aid));
+        if (a == null) throw new Exception("找不到这本档案");
+        JSONObject ch = chId > 0
+                ? one(db, "SELECT * FROM chapters WHERE id=?", new JSONArray().put(chId)) : null;
+
+        JSONArray rawEntries;
+        if (chId > 0) {
+            rawEntries = new JSONArray(db.query(
+                    "SELECT * FROM entries WHERE chapter_id=? ORDER BY COALESCE(sort_key,seq,0), id",
+                    new JSONArray().put(chId)));
+        } else {
+            rawEntries = new JSONArray(db.query(
+                    "SELECT e.*, c.title AS chapter_title FROM entries e " +
+                            "LEFT JOIN chapters c ON c.id=e.chapter_id " +
+                            "WHERE e.archive_id=? AND e.kind IN ('text','quote') " +
+                            "ORDER BY COALESCE(c.seq, 999999), COALESCE(e.sort_key, e.seq, 0), e.id",
+                    new JSONArray().put(String.valueOf(aid))));
+        }
+
+        JSONArray photos;
+        if (chId > 0) {
+            photos = new JSONArray(db.query(
+                    "SELECT * FROM photos WHERE chapter_id=? ORDER BY taken_year, taken_month, id",
+                    new JSONArray().put(chId)));
+        } else {
+            photos = new JSONArray(db.query(
+                    "SELECT * FROM photos WHERE archive_id=? ORDER BY taken_year, taken_month, id",
+                    new JSONArray().put(String.valueOf(aid))));
+        }
+        java.util.HashMap<String, JSONObject> byId = new java.util.HashMap<String, JSONObject>();
+        for (int i = 0; i < photos.length(); i++) {
+            JSONObject ph = photos.getJSONObject(i);
+            byId.put(String.valueOf(ph.opt("id")), ph);
+        }
+        java.util.HashMap<String, Boolean> used = new java.util.HashMap<String, Boolean>();
+        int cursor = 0;
+
+        JSONObject cover = one(db, "SELECT p.path FROM photos p WHERE p.id=?",
+                new JSONArray().put(String.valueOf(a.opt("cover_photo_id") == null ? -1 : a.opt("cover_photo_id"))));
+
+        JSONArray frames = new JSONArray();
+        if (cover != null && Json.sv(cover, "path").length() > 0) {
+            JSONObject t = new JSONObject();
+            t.put("image", Json.sv(cover, "path"));
+            t.put("text", Json.sv(a, "subject_name")
+                    + (Json.sv(a, "birth_year").length() > 0 ? " · " + Json.sv(a, "birth_year") : ""));
+            t.put("sec", 2.6);
+            t.put("kind", "title");
+            frames.put(t);
+        }
+
+        // 整本排下来可能很长：格数 160 / 总时长 900s 封顶，超了截断并在返回里说明
+        final int MAX_FRAMES = 160;
+        final double MAX_SECONDS = 900;
+        double totalSec = 0;
+        int truncated = 0;
+        int entryCount = 0;
+
+        for (int ei = 0; ei < rawEntries.length(); ei++) {
+            JSONObject en = rawEntries.getJSONObject(ei);
+            String text = Json.sv(en, "text").trim();
+            if (text.length() == 0) continue;
+            entryCount++;
+            if (frames.length() >= MAX_FRAMES || totalSec >= MAX_SECONDS) { truncated++; continue; }
+
+            JSONObject ph = null;
+            String pid = String.valueOf(en.opt("photo_id") == null ? "" : en.opt("photo_id"));
+            if (!pid.isEmpty() && !"null".equals(pid)) ph = byId.get(pid);
+            if (ph != null) {
+                used.put(String.valueOf(ph.opt("id")), Boolean.TRUE);
+            } else {
+                while (cursor < photos.length() &&
+                        used.containsKey(String.valueOf(photos.getJSONObject(cursor).opt("id")))) cursor++;
+                if (cursor < photos.length()) ph = photos.getJSONObject(cursor++);
+                if (ph != null) used.put(String.valueOf(ph.opt("id")), Boolean.TRUE);
+            }
+
+            // 文字卡顶部小标：章节名 + 年份；正文里已提这一年就不重复
+            String chName = Json.sv(ch, "title");
+            if (chName.length() == 0) chName = Json.sv(en, "chapter_title");
+            chName = chName.replaceFirst("^[^·]*·\\s*", "").trim();
+
+            java.util.List<String> parts = splitSubtitle(text, 50);
+            for (int pi = 0; pi < parts.size(); pi++) {
+                if (frames.length() >= MAX_FRAMES || totalSec >= MAX_SECONDS) { truncated++; break; }
+                String piece = parts.get(pi);
+                double sec = Math.min(12, Math.max(2.8, 2.4 + piece.length() / 9.0));
+                String yearStr = Json.sv(en, "at_year");
+                boolean yearInLine = yearStr.length() > 0 && piece.contains(yearStr);
+                String kicker = (chName.length() > 0 ? chName : "")
+                        + (yearStr.length() > 0 && !yearInLine
+                        ? (chName.length() > 0 ? " · " : "") + yearStr + " 年" : "");
+                if (kicker.length() == 0) kicker = Json.sv(a, "subject_name");
+                JSONObject f = new JSONObject();
+                if (ph != null) f.put("image", Json.sv(ph, "path"));
+                f.put("text", piece);
+                f.put("sec", Math.round(sec * 10) / 10.0);
+                if (yearStr.length() > 0) f.put("year", yearStr);
+                f.put("entryId", en.opt("id"));
+                f.put("part", pi > 0 ? pi + 1 : 0);
+                f.put("kicker", kicker);
+                frames.put(f);
+                totalSec += Math.round(sec * 10) / 10.0;
+            }
+        }
+
+        JSONObject o = new JSONObject();
+        o.put("ok", true);
+        o.put("title", ch != null ? Json.sv(ch, "title") : Json.sv(a, "subject_name"));
+        o.put("name", Json.sv(a, "subject_name"));
+        o.put("archiveNo", Json.sv(a, "archive_no"));
+        o.put("frames", frames);
+        o.put("seconds", Math.round(totalSec * 10) / 10.0);
+        int missing = 0;
+        for (int i = 0; i < frames.length(); i++) {
+            if (!frames.getJSONObject(i).has("image")) missing++;
+        }
+        o.put("missing", missing);
+        o.put("truncated", truncated);
+        o.put("entries", entryCount);
+        o.put("hasFfmpeg", false);
+        return o.toString();
+    }
+
+    /** 一段讲述切成字幕格：一行 13 字、最多四行 → 一格不超 50 字，内容一句不丢 */
+    private static java.util.List<String> splitSubtitle(String text, int limit) {
+        int max = limit > 0 ? limit : 50;
+        String s = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        if (s.length() <= max) {
+            out.add(s);
+            return out;
+        }
+        StringBuilder buf = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            buf.append(c);
+            boolean isEnd = "。！？；".indexOf(c) >= 0;
+            if ((isEnd && buf.length() >= max * 0.5) || buf.length() >= max) {
+                out.add(buf.toString().trim());
+                buf.setLength(0);
+            }
+        }
+        if (buf.toString().trim().length() > 0) out.add(buf.toString().trim());
+        return out;
     }
 }
