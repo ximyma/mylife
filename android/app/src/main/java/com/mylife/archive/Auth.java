@@ -27,7 +27,7 @@ public class Auth {
 
     private static final String TAG = "Auth";
     private static final String CODE_FIXED = "1234";
-    private static final int TOKEN_DAYS = 30;
+    private static final int TOKEN_DAYS = 180;   // v0.9.36：30 天太短，手机上老要重登
     private static final int LOGIN_MAX_FAILS = 5;
     private static final long LOGIN_LOCK_MS = 10 * 60 * 1000L;
     private static final int PBKDF2_ITERS = 65536;

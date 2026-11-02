@@ -39,7 +39,13 @@
 
   /* ================= 文档模型 ================= */
 
-  function model(archiveId) {
+  /**
+   * @param opts.chapterIds 只导出这几章（[5] 或 [5,7]）。不传 = 整本。
+   *        章节级预览/翻书/导出都靠它，照片按章分配的逻辑不受影响，
+   *        只是最后把不相干的章剪掉。
+   */
+  function model(archiveId, opts) {
+    opts = opts || {};
     return Promise.all([
       DB.getArchive(archiveId),
       API.query('SELECT * FROM media WHERE archive_id=?', [archiveId]),
@@ -164,6 +170,20 @@
         var extra = unusedFor(chapters[i].id);
         for (var ei2 = 0; ei2 < extra.length; ei2++) chapters[i].blocks.push(photoBlockOf(extra[ei2], ''));
       }
+      /* v0.9.36 只取某几章：先按章分配完照片（保证 restPhotos 计算正确），
+         再整体剪掉不要的章，最后重排序号。 */
+      var onlyIds = opts.chapterIds && opts.chapterIds.length ? opts.chapterIds : null;
+      if (onlyIds) {
+        var want = {}, wi;
+        for (wi = 0; wi < onlyIds.length; wi++) want[String(onlyIds[wi])] = 1;
+        var kept = [];
+        for (wi = 0; wi < chapters.length; wi++) {
+          if (want[String(chapters[wi].id)]) kept.push(chapters[wi]);
+        }
+        chapters = kept;
+        for (wi = 0; wi < chapters.length; wi++) chapters[wi].seq = wi + 1;
+      }
+
       var restPhotos = [];
       for (var rp = 0; rp < d.photos.length; rp++) {
         if (!usedPhoto[d.photos[rp].id]) restPhotos.push(d.photos[rp]);
@@ -171,14 +191,15 @@
       restPhotos.sort(function (x, y) {
         return (Number(x.taken_year || 0) - Number(y.taken_year || 0)) || (Number(x.id) - Number(y.id));
       });
-      if (restPhotos.length) {
+      if (restPhotos.length && !onlyIds) {
         var restBlocks = [];
         for (var rp2 = 0; rp2 < restPhotos.length; rp2++) {
           usedPhoto[restPhotos[rp2].id] = 1;
           restBlocks.push(photoBlockOf(restPhotos[rp2], ''));
         }
         chapters.push({
-          id: 0, seq: chapters.length + 1, title: '影像', fullTitle: '影像',
+          // id 用 -1：0 留给「待归档」章，否则「只看待归档」会把影像章一起带出来
+          id: -1, seq: chapters.length + 1, title: '影像', fullTitle: '影像',
           years: '', stage: '', quote: '', summary: '', blocks: restBlocks,
         });
       }

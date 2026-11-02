@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS archives (
   birth_year INTEGER,
   death_year INTEGER,
   hometown TEXT,
+  kind TEXT DEFAULT 'life',   -- v0.9.36 档案类型：life/event/travel/novel/essay/note
   intro TEXT,
   facts_json TEXT,
   cover_photo_id INTEGER,

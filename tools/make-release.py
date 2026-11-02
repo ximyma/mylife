@@ -26,8 +26,9 @@ MILE = '里程碑 2' if VER.startswith('0.4') else ('里程碑 1' if VER.startsw
 
 DESKTOP = sys.argv[1] if len(sys.argv) > 1 else r'D:\Users\ximym\Desktop'
 
-EXE = os.path.join(ROOT, 'dist', 'MyLife-v%s-windows.exe' % VER)
-APK = os.path.join(ROOT, 'dist', 'MyLife-v%s-android.apk' % VER)
+NAME = '岁月记录助手'          # 与安卓 strings.xml 的 app_name 保持一致
+EXE = os.path.join(ROOT, 'dist', '%s-v%s-windows.exe' % (NAME, VER))
+APK = os.path.join(ROOT, 'dist', '%s-v%s-android.apk' % (NAME, VER))
 README = os.path.join(ROOT, 'dist', 'win', '使用说明.txt')
 
 for p, name in ((EXE, 'EXE'), (APK, 'APK'), (README, '使用说明')):
@@ -39,16 +40,16 @@ for p, name in ((EXE, 'EXE'), (APK, 'APK'), (README, '使用说明')):
 if not os.path.isdir(DESKTOP):
     os.makedirs(DESKTOP)
 
-exe_out = os.path.join(DESKTOP, 'MyLife-v%s-windows.exe' % VER)
-apk_out = os.path.join(DESKTOP, 'MyLife-v%s-android.apk' % VER)
-readme_out = os.path.join(DESKTOP, 'MyLife-v%s-使用说明.txt' % VER)
+exe_out = os.path.join(DESKTOP, '%s-v%s-windows.exe' % (NAME, VER))
+apk_out = os.path.join(DESKTOP, '%s-v%s-android.apk' % (NAME, VER))
+readme_out = os.path.join(DESKTOP, '%s-v%s-使用说明.txt' % (NAME, VER))
 
 shutil.copyfile(EXE, exe_out)
 shutil.copyfile(APK, apk_out)
 shutil.copyfile(README, readme_out)
 
 # zip 里的使用说明用原名，打开就是「使用说明」而不是一长串文件名
-zip_out = os.path.join(DESKTOP, 'MyLife-v%s-发布包.zip' % VER)
+zip_out = os.path.join(DESKTOP, '%s-v%s-发布包.zip' % (NAME, VER))
 
 
 def human(n):
@@ -57,7 +58,7 @@ def human(n):
 
 with zipfile.ZipFile(zip_out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
     zf.writestr('发布说明.txt', (
-        '我的人生档案 · The Story of My Life\n'
+        '岁月记录助手 · The Story of My Life\n'
         '================================================================\n'
         '版本      v%s%s\n' % (VER, ('（' + MILE + '）') if MILE else '') +
         '打包时间  %s\n' % time.strftime('%Y-%m-%d %H:%M') +
@@ -65,8 +66,8 @@ with zipfile.ZipFile(zip_out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         '\n'
         '这个包里有什么\n'
         '----------------------------------------------------------------\n'
-        '  MyLife-v%s-windows.exe   Windows 单文件版，双击即用，界面已内置\n' % VER +
-        '  MyLife-v%s-android.apk   安卓版，传到手机点开安装\n' % VER +
+        '  %s-v%s-windows.exe   Windows 单文件版，双击即用，界面已内置\n' % (NAME, VER) +
+        '  %s-v%s-android.apk   安卓版，传到手机点开安装\n' % (NAME, VER) +
         '  使用说明.txt             两端的完整用法、录音排查步骤\n' +
         '\n'
         '三句话上手\n'
@@ -78,8 +79,8 @@ with zipfile.ZipFile(zip_out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         '每个账号一个独立数据库，互相看不到；备份只需备份 data 目录，或用「导出」。\n'
         '详细变更见项目里的 CHANGELOG.md，里程碑 2 的验收记录见 docs/MILESTONE-2.md。\n'
     ))
-    zf.write(exe_out, 'MyLife-v%s-windows.exe' % VER)
-    zf.write(apk_out, 'MyLife-v%s-android.apk' % VER)
+    zf.write(exe_out, '%s-v%s-windows.exe' % (NAME, VER))
+    zf.write(apk_out, '%s-v%s-android.apk' % (NAME, VER))
     zf.write(readme_out, '使用说明.txt')
 
 print('版本    v%s%s' % (VER, ('（' + MILE + '）') if MILE else ''))

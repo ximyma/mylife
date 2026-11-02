@@ -13,6 +13,12 @@
            pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
+  /** 从路径尾巴上取扩展名（.wav / .jpg …），取不到就用兜底值 */
+  function extOfPath(p, fallback) {
+    var m = /\.([a-z0-9]{2,5})$/i.exec(String(p || ''));
+    return m ? m[1] : (fallback || 'bin');
+  }
+
   /** 从一段话里找年份：19xx / 20xx，取第一个 */
   var CN_DIGIT = { '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
     '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
@@ -169,6 +175,17 @@
       kw: ['退休', '孙子', '孙女', '晚年', '现在', '这些年', '回头看', '养老', '身体', '老友'] }
   ];
 
+  /**
+   * v0.9.36 出生年只认 1900～今年。
+   * 以前把「档案年份」误填进出生年份（比如 2026），人生阶段就会算出
+   * 2026—2028、2086—2226 这种荒唐区间，目录看着像天书。
+   */
+  function safeBirth(v) {
+    var y = parseInt(v, 10) || 0;
+    var now = new Date().getFullYear();
+    return (y >= 1900 && y <= now) ? y : 0;
+  }
+
   /** 这一段属于哪个阶段：有年份按年龄，没年份按关键词打分；都不沾就返回 null */
   function stageOfText(text, year, birth) {
     var i, j;
@@ -189,6 +206,105 @@
     }
     return bestScore > 0 ? best : null;
   }
+
+  /* ---------------- v0.9.36 档案类型与目录骨架 ----------------
+     以前所有档案都用「出生 → 童年 → 求学 → 婚姻 → 晚年」这套人生骨架。
+     写一篇游记、一次团建、一段小说，目录里也冒出「出生」「童年」，
+     跟内容毫无关系，还容易让读者误会。现在按类型给不同骨架。 */
+  var KINDS = [
+    { key: 'life', name: '人生档案', short: '一生',
+      hint: '按出生、童年、求学、工作、婚姻一路排下来，适合写自己或长辈的一生',
+      askBirth: true, stages: LIFE_STAGES },
+    { key: 'event', name: '重大事件', short: '一件事',
+      hint: '把一件事从头写到尾：起因、经过、转折、结果、余波',
+      askBirth: false, stages: [
+        { key: 'cause', title: '起因', stage: '', kw: [] },
+        { key: 'course', title: '经过', stage: '', kw: [] },
+        { key: 'turn', title: '转折', stage: '', kw: [] },
+        { key: 'result', title: '结果', stage: '', kw: [] },
+        { key: 'after', title: '余波与回想', stage: '', kw: [] }
+      ] },
+    { key: 'travel', name: '游记', short: '一趟',
+      hint: '按行程走：出发、路上、第几天、回程、回味',
+      askBirth: false, stages: [
+        { key: 't0', title: '出发', stage: '', kw: [] },
+        { key: 't1', title: '第一天', stage: '', kw: [] },
+        { key: 't2', title: '第二天', stage: '', kw: [] },
+        { key: 't3', title: '第三天', stage: '', kw: [] },
+        { key: 't4', title: '回程', stage: '', kw: [] },
+        { key: 't5', title: '回味', stage: '', kw: [] }
+      ] },
+    { key: 'novel', name: '小说 / 长篇', short: '长篇',
+      hint: '按卷来分，章名自己起；适合小说、回忆长篇',
+      askBirth: false, stages: [
+        { key: 'n0', title: '第一卷', stage: '', kw: [] },
+        { key: 'n1', title: '第二卷', stage: '', kw: [] },
+        { key: 'n2', title: '第三卷', stage: '', kw: [] },
+        { key: 'n3', title: '尾声', stage: '', kw: [] }
+      ] },
+    /* v0.9.37 新增五种：公文、公众号推文、小红书、诗歌、戏剧。
+       每种都按它自己的行文结构排目录，不再硬套别的体裁。 */
+    { key: 'official', name: '公文', short: '公文',
+      hint: '标题文号、主送抄送、缘由依据、事项要求、结语落款、附件',
+      askBirth: false, stages: [
+        { key: 'o0', title: '标题与文号', stage: '', kw: [] },
+        { key: 'o1', title: '主送与抄送', stage: '', kw: [] },
+        { key: 'o2', title: '缘由与依据', stage: '', kw: [] },
+        { key: 'o3', title: '事项与要求', stage: '', kw: [] },
+        { key: 'o4', title: '结语与落款', stage: '', kw: [] },
+        { key: 'o5', title: '附件', stage: '', kw: [] }
+      ] },
+    { key: 'wechat', name: '公众号推文', short: '推文',
+      hint: '选题标题、开头钩子、正文、配图排版、结尾引导、发布复盘',
+      askBirth: false, stages: [
+        { key: 'w0', title: '选题与标题', stage: '', kw: [] },
+        { key: 'w1', title: '开头钩子', stage: '', kw: [] },
+        { key: 'w2', title: '正文', stage: '', kw: [] },
+        { key: 'w3', title: '配图与排版', stage: '', kw: [] },
+        { key: 'w4', title: '结尾与互动', stage: '', kw: [] },
+        { key: 'w5', title: '发布与复盘', stage: '', kw: [] }
+      ] },
+    { key: 'xhs', name: '小红书', short: '笔记',
+      hint: '选题、标题、封面首图、短句正文、话题标签、互动复盘',
+      askBirth: false, stages: [
+        { key: 'x0', title: '选题', stage: '', kw: [] },
+        { key: 'x1', title: '标题', stage: '', kw: [] },
+        { key: 'x2', title: '封面与首图', stage: '', kw: [] },
+        { key: 'x3', title: '正文（短句分段）', stage: '', kw: [] },
+        { key: 'x4', title: '话题标签', stage: '', kw: [] },
+        { key: 'x5', title: '互动与复盘', stage: '', kw: [] }
+      ] },
+    { key: 'poem', name: '诗歌', short: '诗',
+      hint: '短诗、组诗、长诗、旧体诗，另留一辑创作札记',
+      askBirth: false, stages: [
+        { key: 'p0', title: '短诗', stage: '', kw: [] },
+        { key: 'p1', title: '组诗', stage: '', kw: [] },
+        { key: 'p2', title: '长诗', stage: '', kw: [] },
+        { key: 'p3', title: '旧体诗', stage: '', kw: [] },
+        { key: 'p4', title: '创作札记', stage: '', kw: [] }
+      ] },
+    { key: 'drama', name: '戏剧 / 剧本', short: '戏剧',
+      hint: '人物表与舞台提示，第一幕到尾声，按场次往下写',
+      askBirth: false, stages: [
+        { key: 'd0', title: '人物表与设定', stage: '', kw: [] },
+        { key: 'd1', title: '第一幕', stage: '', kw: [] },
+        { key: 'd2', title: '第二幕', stage: '', kw: [] },
+        { key: 'd3', title: '第三幕', stage: '', kw: [] },
+        { key: 'd4', title: '尾声', stage: '', kw: [] }
+      ] },
+    { key: 'essay', name: '散文随笔', short: '散文',
+      hint: '不预设章节，想到什么写什么，需要时再自己分章',
+      askBirth: false, stages: [] },
+    { key: 'note', name: '随手记', short: '随手',
+      hint: '只按时间记，不建章节；适合零散念头、日常记录',
+      askBirth: false, stages: [] }
+  ];
+
+  function kindOf(key) {
+    for (var i = 0; i < KINDS.length; i++) if (KINDS[i].key === key) return KINDS[i];
+    return KINDS[0];
+  }
+  function stagesFor(key) { return kindOf(key).stages || []; }
 
   /** 照片归位打分：时间 0.45 + 地点 0.30 + 事件 0.25 */
   function scorePhoto(photo, chapter, chapterText) {
@@ -265,6 +381,28 @@
     return h.toString(36);
   }
 
+  /** 按扩展名猜音频 MIME（wav/m4a/mp3/ogg/webm） */
+  function audioMime(p) {
+    var ext = String(p || '').split('.').pop().toLowerCase();
+    if (ext === 'wav') return 'audio/wav';
+    if (ext === 'm4a' || ext === 'mp4' || ext === 'aac') return 'audio/mp4';
+    if (ext === 'mp3') return 'audio/mpeg';
+    if (ext === 'ogg' || ext === 'opus') return 'audio/ogg';
+    if (ext === 'webm') return 'audio/webm';
+    return null;
+  }
+
+  /** 按扩展名猜视频 MIME（mp4/mov/webm/mkv） */
+  function videoMime(p) {
+    var ext = String(p || '').split('.').pop().toLowerCase();
+    if (ext === 'mp4' || ext === 'm4v') return 'video/mp4';
+    if (ext === 'mov') return 'video/quicktime';
+    if (ext === 'webm') return 'video/webm';
+    if (ext === 'mkv') return 'video/x-matroska';
+    if (ext === '3gp') return 'video/3gpp';
+    return null;
+  }
+
   var DB = {
 
     /* ---------------- 档案 ---------------- */
@@ -302,13 +440,43 @@
         });
     },
 
-    createArchive: function (name, birthYear, hometown) {
+    /**
+     * v0.9.36：查 archives 有没有 kind 列；没有就补上。
+     * 不能拿「ALTER 是否成功」当判断——新库本来就有这列，ALTER 必然报重复列，
+     * 那样会被误判成「没有列」，导致 INSERT 不带 kind、类型永远退回人生档案。
+     */
+    ensureArchiveKind: function () {
+      var self = this;
+      if (self._kindReady) return Promise.resolve(true);
+      return API.query('PRAGMA table_info(archives)', []).then(function (cols) {
+        var has = false, i;
+        for (i = 0; i < (cols || []).length; i++) {
+          if (String(cols[i].name) === 'kind') { has = true; break; }
+        }
+        if (has) { self._kindReady = true; return true; }
+        return API.exec("ALTER TABLE archives ADD COLUMN kind TEXT DEFAULT 'life'")
+          .then(function () { self._kindReady = true; return true; },
+                function () { self._kindReady = true; return true; });
+      }).catch(function () { return false; });
+    },
+
+    createArchive: function (name, birthYear, hometown, kind) {
       var self = this;
       if (!name || !name.trim()) return Promise.reject(new Error('先写下这部档案是谁的'));
-      return self.nextNo().then(function (no) {
-        return API.exec(
-          'INSERT INTO archives (user_id, archive_no, subject_name, birth_year, hometown) VALUES (1,?,?,?,?)',
-          [no, name.trim(), birthYear || null, (hometown || '').trim() || null]);
+      var k = kind || 'life';
+      var by = safeBirth(birthYear) || null;   // 误填的年份不落库，免得算出荒唐时段
+      return self.ensureArchiveKind().then(function (hasCol) {
+        return self.nextNo().then(function (no) {
+          if (!hasCol) {
+            return API.exec(
+              'INSERT INTO archives (user_id, archive_no, subject_name, birth_year, hometown) VALUES (1,?,?,?,?)',
+              [no, name.trim(), by, (hometown || '').trim() || null]);
+          }
+          return API.exec(
+            'INSERT INTO archives (user_id, archive_no, subject_name, birth_year, hometown, kind) ' +
+            'VALUES (1,?,?,?,?,?)',
+            [no, name.trim(), by, (hometown || '').trim() || null, k]);
+        });
       }).then(function (r) {
         return r.lastId;
       });
@@ -617,6 +785,8 @@
       opts = opts || {};
       var self = this;
       var a = pack.archive;
+      // v0.9.36 老库没有 kind 列时先补，导入的游记才不会退化成人生档案
+      self.ensureArchiveKind();
       var replaceId = opts.mode === 'replace' ? (Number(opts.intoId) || 0) : 0;
       var stamp = Date.now();
       var seq = 0;
@@ -664,6 +834,11 @@
 
       return head.then(function (ar) {
         var newAid = ar.lastId;
+        // 导入包里的类型照搬（老包没有 kind 就当人生档案），失败了也不影响导入
+        try {
+          API.exec('UPDATE archives SET kind=? WHERE id=?', [a.kind || 'life', newAid])
+            .catch(function () {});
+        } catch (e) {}
         var chapterMap = {}, photoMap = {}, mediaMap = {}, segmentMap = {};
 
         // 章
@@ -1029,22 +1204,69 @@
       });
     },
 
+    /**
+     * 改章名 / 章引言。
+     * - title 空着（或只有空格）＝不改名。v0.9.37 之前直接写空串，
+     *   于是「点开改章名、啥也不改、点确定」会把章名变成一片空白——这里兜住。
+     * - summary 不传（undefined）＝不动原来的引言，别顺手抹掉。
+     */
     updateChapter: function (id, title, summary) {
-      return API.exec('UPDATE chapters SET title=?, summary=? WHERE id=?',
-        [String(title || '').trim(), String(summary || '').trim(), id]);
+      var sets = [], vals = [];
+      var t = (typeof title === 'undefined' || title === null) ? '' : String(title).trim();
+      if (t) { sets.push('title=?'); vals.push(t); }
+      if (typeof summary !== 'undefined' && summary !== null) {
+        sets.push('summary=?'); vals.push(String(summary).trim());
+      }
+      if (!sets.length) return Promise.resolve({ changes: 0 });
+      vals.push(id);
+      return API.exec('UPDATE chapters SET ' + sets.join(',') + ' WHERE id=?', vals);
     },
 
     /** 新增一章：默认排在最后。返回新章 id，便于建完直接跳进去写 */
     addChapter: function (archiveId, title, yearFrom, yearTo, stage) {
       var t = String(title || '').trim() || '新的一章';
+      var seq = 10;                       // 提到外层：原来声明在 then 里，最后一句话读不到，加完章会抛错
       return API.query('SELECT COALESCE(MAX(seq),0) m FROM chapters WHERE archive_id=?', [archiveId])
         .then(function (rows) {
-          var seq = (Number(rows[0] && rows[0].m) || 0) + 10;
+          seq = (Number(rows[0] && rows[0].m) || 0) + 10;
           return API.exec(
             'INSERT INTO chapters (archive_id,seq,title,year_from,year_to,stage) VALUES (?,?,?,?,?,?)',
             [archiveId, seq, t, yearFrom || null, yearTo || null, stage || null]);
         })
         .then(function (r) { return { id: r.lastId, title: t, seq: seq }; });
+    },
+
+    /**
+     * 在某一章后面插一章（v0.9.37）。
+     * 顺序靠 seq 排，插进去之后按 10、20、30 统一重排一遍——
+     * seq 是整数，两章之间只剩 1 的空隙时用中点会撞号，重排最省心。
+     */
+    insertChapter: function (archiveId, afterChapterId, title, yearFrom, yearTo) {
+      var t = String(title || '').trim() || '新的一章';
+      var after = String(afterChapterId);
+      return API.query('SELECT id FROM chapters WHERE archive_id=? ORDER BY seq, id', [archiveId])
+        .then(function (rows) {
+          var at = -1, i;
+          for (i = 0; i < rows.length; i++) if (String(rows[i].id) === after) at = i;
+          if (at < 0) at = rows.length - 1;        // 找不到就当作排在最后
+          return API.exec(
+            'INSERT INTO chapters (archive_id,seq,title,year_from,year_to,stage) VALUES (?,?,?,?,?,NULL)',
+            [archiveId, 0, t, yearFrom || null, yearTo || null]
+          ).then(function (r) { return { newId: r.lastId, at: at, ids: rows.map(function (x) { return x.id; }) }; });
+        })
+        .then(function (o) {
+          var order = o.ids.slice();
+          order.splice(o.at + 1, 0, o.newId);
+          var chain = Promise.resolve();
+          for (var k = 0; k < order.length; k++) {
+            (function (cid, seq) {
+              chain = chain.then(function () {
+                return API.exec('UPDATE chapters SET seq=? WHERE id=?', [seq, cid]);
+              });
+            })(order[k], (k + 1) * 10);
+          }
+          return chain.then(function () { return { id: o.newId, title: t, at: o.at + 1 }; });
+        });
     },
 
     /**
@@ -1109,8 +1331,10 @@
     buildOutline: function (archiveId, opts) {
       opts = opts || {};
       var self = this;
+      var STAGES = LIFE_STAGES;   // v0.9.36：按档案类型换成对应的骨架
       return self.getArchive(archiveId).then(function (d) {
-        var birth = parseInt(d.archive && d.archive.birth_year, 10) || 0;
+        var birth = safeBirth(d.archive && d.archive.birth_year);
+        STAGES = stagesFor(d.archive && d.archive.kind);
         // 录音（讲述材料）先转成段落；已经转过的按内容前缀跳过，不会重复
         if (d.segments.length && (opts.force || !d.chapters.length)) {
           return self.segmentsToEntries(archiveId, d).then(function () {
@@ -1119,13 +1343,18 @@
         }
         return d;
       }).then(function (d) {
-        var birth = parseInt(d.archive && d.archive.birth_year, 10) || 0;
+        var birth = safeBirth(d.archive && d.archive.birth_year);
         var hasCh = d.chapters.length > 0;
 
         if (hasCh && !opts.force) {
           return self.homeOrphans(archiveId, d, birth).then(function (n) {
             return { created: 0, homed: n, kept: true, total: d.chapters.length };
           });
+        }
+
+        /* 散文 / 随手记这类不预设章节：只把已有的录音转成段落，不建骨架 */
+        if (!STAGES.length) {
+          return { created: 0, homed: 0, orphan: 0, kept: false, noOutline: true };
         }
 
         var units = [], u;
@@ -1150,8 +1379,8 @@
 
         var createAll = units.length === 0 || !Object.keys(byStage).length;
         var used = [];
-        for (var s1 = 0; s1 < LIFE_STAGES.length; s1++) {
-          if (createAll || byStage[LIFE_STAGES[s1].key]) used.push(LIFE_STAGES[s1]);
+        for (var s1 = 0; s1 < STAGES.length; s1++) {
+          if (createAll || byStage[STAGES[s1].key]) used.push(STAGES[s1]);
         }
 
         var chain = Promise.resolve();
@@ -1172,7 +1401,8 @@
             ys.sort(function (a, b) { return a - b; });
             var yf = ys.length ? ys[0] : null;
             var yt = ys.length ? ys[ys.length - 1] : null;
-            if (!ys.length && birth) {
+            // 只有人生档案的阶段带年龄区间；游记/事件/小说没有，别算出 NaN
+            if (!ys.length && birth && st.ageFrom != null && st.ageTo != null) {
               yf = birth + (st.ageFrom > 0 ? st.ageFrom : 0);
               yt = birth + st.ageTo;
             }
@@ -1187,7 +1417,7 @@
         /* 段落归位：同一章内按年份先后排，年份不详的排后面 */
         chain = chain.then(function () {
           var sub = Promise.resolve();
-          LIFE_STAGES.forEach(function (st) {
+          STAGES.forEach(function (st) {
             var box = byStage[st.key], cid = made[st.key];
             if (!box || !cid) return;
             box.list.sort(function (a, b) {
@@ -1446,9 +1676,12 @@
       ).then(function (r) { return r.lastId; });
     },
 
-    /** 待整理的素材，新的在前 */
+    /** 素材箱里的素材：待整理的在上面，已经收进档案但还留着的排在后面 */
     listQuick: function () {
-      return API.query("SELECT * FROM quick_notes WHERE status='open' ORDER BY id DESC");
+      return API.query(
+        'SELECT q.*, a.subject_name FROM quick_notes q ' +
+        'LEFT JOIN archives a ON a.id=q.archive_id ' +
+        "WHERE q.status IN ('open','kept') ORDER BY (q.status='kept'), q.id DESC");
     },
 
     /** 收进档案的记录（素材箱页顶部可回顾最近收录） */
@@ -1482,26 +1715,447 @@
     },
 
     /**
-     * 收进档案：建一条 kind='text' 的正式条目（照片/录音本体不搬，
-     * 素材里留着路径，条目文字里说明来源），素材标记 adopted。
+     * 把素材里的录音（或视频）登记成媒体（v0.9.38；v0.9.39 起也认视频）。
+     * 直接复用同一份文件、不复制（省一半空间）；登记完把 quick_notes.media_path 清空，
+     * 表示文件所有权移交给条目——以后删素材不会把条目正在用的录音一起删掉。
      */
-    adoptQuick: function (id, archiveId, year, text) {
+    attachQuickAudio: function (q, archiveId) {
+      var p = String(q.media_path || '').trim();
+      if (!p) return Promise.resolve(null);
+      var isVideo = q.kind === 'video';
+      var mime = isVideo ? videoMime(p) : audioMime(p);
+      var sec = Number(q.media_seconds) || 0;
+      return API.exec(
+        'INSERT INTO media (archive_id,kind,path,mime,duration_ms,caption) VALUES (?,?,?,?,?,?)',
+        [archiveId || q.archive_id || null, isVideo ? 'video' : 'audio', p, mime,
+         sec ? sec * 1000 : null, String(q.text || '').slice(0, 60) || null]
+      ).then(function (mr) {
+        return API.exec("UPDATE quick_notes SET media_path='' WHERE id=?", [q.id])
+          .then(function () { return mr.lastId; });
+      });
+    },
+
+    /**
+     * 收进档案（v0.9.39 改法）。
+     * 默认：只把文字放进档案选定的那一章，录音和文字都留在素材库——
+     * 用户想删自己删，别一收就"到处都找不到"。
+     * opts.chapterId   归到哪一章（不传 = 先进待归档）
+     * opts.bringAudio  true 才把录音也登记进档案（老行为：文件所有权移交）
+     * 收过的素材 status='kept'，仍在素材箱列表里看得见、删得掉。
+     */
+    adoptQuick: function (id, archiveId, year, text, opts) {
+      opts = opts || {};
       text = String(text || '').trim();
       if (!text) return Promise.reject(new Error('这条素材还没有文字，先转写或写一句'));
       var self = this;
+      var chId = Number(opts.chapterId) || null;
+      var bringAudio = !!opts.bringAudio;
       return self.getQuick(id).then(function (q) {
-        return API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE archive_id=? AND chapter_id IS NULL', [archiveId])
-          .then(function (r) {
+        var canAudio = bringAudio && (q.kind === 'audio' || q.kind === 'video') &&
+          String(q.media_path || '').trim();
+        var pre = canAudio ? self.attachQuickAudio(q, archiveId) : Promise.resolve(null);
+        return pre.then(function (mid) {
+          var ins = mid
+            ? DB.insertAfter(archiveId, { chapterId: chId, kind: 'media', mediaId: mid, text: text, atYear: year || null })
+            : DB.insertAfter(archiveId, { chapterId: chId, kind: 'text', text: text, atYear: year || null });
+          return ins.then(function (er) {
             return API.exec(
-              "INSERT INTO entries (archive_id,chapter_id,seq,kind,text,origin,edited,at_year) VALUES (?,NULL,?,'text',?,'user',1,?)",
-              [archiveId, r[0].s, text, year || null]);
-          }).then(function (er) {
-            return API.exec("UPDATE quick_notes SET status='adopted', archive_id=?, entry_id=? WHERE id=?",
+              "UPDATE quick_notes SET status='kept', archive_id=?, entry_id=? WHERE id=?",
               [archiveId, er.lastId, id]).then(function () {
-              return { entryId: er.lastId, quick: q };
+              return { entryId: er.lastId, quick: q, mediaId: mid || null,
+                       keptAudio: !mid && !!String(q.media_path || '').trim() };
             });
           });
+        });
       });
+    },
+
+    /**
+     * 退回素材箱（v0.9.39）：档案里的一条（文字 / 照片 / 录音 / 视频）原样搬回素材箱。
+     * 收错了章、插错了地方，不用删——内容和文件都还在，只是换个地方放。
+     * 文件能「移交」就不复制（省空间）；还被别的条目引用、或正在当封面/头像时才复制一份，
+     * 原件留在原处不动。
+     */
+    entryToQuick: function (entryId) {
+      function dropEntry() { return API.exec('DELETE FROM entries WHERE id=?', [entryId]); }
+
+      /* 落一条素材：shared=true 时先复制文件再记，否则直接把路径交给素材 */
+      function putQuick(kind, text, path, seconds, shared, drop) {
+        var save = (shared && path)
+          ? API.file({ op: 'read', path: path }).then(function (f) {
+              if (!f || !f.base64) throw new Error('这个文件读不出来，先别退回');
+              return API.file({
+                op: 'save',
+                kind: kind === 'photo' ? 'photo' : (kind === 'video' ? 'video' : 'audio'),
+                name: 'back-' + Date.now() + '.' + extOfPath(path, 'bin'),
+                base64: f.base64
+              }).then(function (r) { return r.path; });
+            })
+          : Promise.resolve(path || null);
+        return save.then(function (np) {
+          return API.exec(
+            'INSERT INTO quick_notes (kind,text,media_path,media_seconds) VALUES (?,?,?,?)',
+            [kind, text || null, np || null, seconds || null]
+          ).then(function (qr) {
+            return drop().then(function () {
+              return { kind: kind, copied: !!shared, quickId: qr.lastId };
+            });
+          });
+        });
+      }
+
+      function asText(txt, drop) {
+        var t = String(txt || '').trim();
+        if (!t) return drop().then(function () { return { kind: 'text', empty: true }; });
+        return API.exec("INSERT INTO quick_notes (kind,text) VALUES ('text',?)", [t])
+          .then(function (qr) { return drop().then(function () { return { kind: 'text', quickId: qr.lastId }; }); });
+      }
+
+      /**
+       * 这条本来就是从素材箱收进来的（素材还在，status='kept'）：
+       * 把那条素材放回 open 就行，别再复制出第二份。
+       */
+      function restoreOriginal(e) {
+        return API.query(
+          "SELECT * FROM quick_notes WHERE entry_id=? AND status='kept' ORDER BY id LIMIT 1", [entryId])
+          .then(function (qs) {
+            if (!qs.length) return null;
+            var q = qs[0];
+            if (q.kind === 'photo') return null;          // 照片走通用路径（原文件在照片库里）
+            if (e.kind !== 'media' || !e.media_id) {
+              return API.exec("UPDATE quick_notes SET status='open', entry_id=NULL WHERE id=?", [q.id])
+                .then(dropEntry)
+                .then(function () { return { kind: q.kind, restored: true, quickId: q.id }; });
+            }
+            return API.query('SELECT count(*) n FROM entries WHERE media_id=? AND id<>?', [e.media_id, entryId])
+              .then(function (c) {
+                if (Number(c[0].n) > 0) return null;      // 录音还被别处用着，走复制那条路
+                return API.query('SELECT * FROM media WHERE id=?', [e.media_id]).then(function (mr) {
+                  if (!mr.length) return null;
+                  var m = mr[0];
+                  return API.exec(
+                    "UPDATE quick_notes SET status='open', entry_id=NULL, media_path=?, media_seconds=? WHERE id=?",
+                    [m.path, m.duration_ms ? Math.round(Number(m.duration_ms) / 1000) : null, q.id])
+                    .then(dropEntry)
+                    .then(function () { return API.exec('DELETE FROM media WHERE id=?', [m.id]); })
+                    .then(function () { return { kind: q.kind, restored: true, quickId: q.id }; });
+                });
+              });
+          });
+      }
+
+      return API.query('SELECT * FROM entries WHERE id=?', [entryId]).then(function (rows) {
+        if (!rows.length) throw new Error('这一条已经不在了');
+        var e = rows[0];
+
+        return restoreOriginal(e).then(function (done) {
+          if (done) return done;
+
+          /* 文字 / 引用：文字搬过去，条目删掉 */
+          if (e.kind !== 'photo' && e.kind !== 'media') return asText(e.text, dropEntry);
+
+          /* 照片 */
+          if (e.kind === 'photo') {
+            if (!e.photo_id) return asText(e.text, dropEntry);
+            return API.query('SELECT * FROM photos WHERE id=?', [e.photo_id]).then(function (pr) {
+              if (!pr.length) return asText(e.text, dropEntry);
+              var p = pr[0];
+              return Promise.all([
+                API.query('SELECT count(*) n FROM entries WHERE photo_id=? AND id<>?', [p.id, entryId]),
+                API.query('SELECT count(*) n FROM archives WHERE cover_photo_id=? OR portrait_photo_id=?',
+                  [p.id, p.id])
+              ]).then(function (rs) {
+                var shared = (Number(rs[0][0].n) + Number(rs[1][0].n)) > 0;
+                return putQuick('photo', String(e.text || p.event || ''), p.path, null, shared, function () {
+                  return dropEntry().then(function () {
+                    if (shared) return;
+                    return API.exec('DELETE FROM photos WHERE id=?', [p.id]);
+                  });
+                });
+              });
+            });
+          }
+
+          /* 录音 / 视频 */
+          if (!e.media_id) return asText(e.text, dropEntry);
+          return API.query('SELECT * FROM media WHERE id=?', [e.media_id]).then(function (mr) {
+            if (!mr.length) return asText(e.text, dropEntry);
+            var m = mr[0];
+            return API.query('SELECT count(*) n FROM entries WHERE media_id=? AND id<>?', [m.id, entryId])
+              .then(function (r) {
+                var shared = Number(r[0].n) > 0;
+                var kind = m.kind === 'video' ? 'video' : (m.kind === 'audio' ? 'audio' : 'photo');
+                var sec = m.duration_ms ? Math.round(Number(m.duration_ms) / 1000) : null;
+                return putQuick(kind, String(e.text || m.caption || ''), m.path, sec, shared, function () {
+                  return dropEntry().then(function () {
+                    if (shared) return;
+                    return API.exec('DELETE FROM media WHERE id=?', [m.id]).then(function () {
+                      if (m.poster) return API.file({ op: 'del', path: m.poster }).catch(function () {});
+                    });
+                  });
+                });
+              });
+          });
+        });
+      });
+    },
+
+    /**
+     * 导出素材（v0.9.39）：把选中的素材（文字 + 录音/视频/照片本体）打成一个 JSON。
+     * ids 为空 = 素材箱里全部。读不出来的文件如实标 media_missing，不拦整包。
+     */
+    exportMaterials: function (ids) {
+      var where = '', params = [], i;
+      if (ids && ids.length) {
+        var ph = [];
+        for (i = 0; i < ids.length; i++) { ph.push('?'); params.push(ids[i]); }
+        where = ' WHERE id IN (' + ph.join(',') + ')';
+      }
+      return API.query('SELECT * FROM quick_notes' + where + ' ORDER BY id', params).then(function (rows) {
+        var reads = [];
+        for (i = 0; i < rows.length; i++) {
+          (function (q) {
+            if (!q.media_path) return;
+            reads.push(API.file({ op: 'read', path: q.media_path }).then(function (f) {
+              q.b64 = f && f.base64 ? f.base64 : null;
+              q.media_missing = !q.b64;
+            }, function () { q.b64 = null; q.media_missing = true; }));
+          })(rows[i]);
+        }
+        return Promise.all(reads).then(function () {
+          var bytes = 0, missing = 0;
+          for (var j = 0; j < rows.length; j++) {
+            if (rows[j].b64) bytes += Math.round(rows[j].b64.length * 0.75);
+            if (rows[j].media_missing) missing++;
+          }
+          return {
+            format: 'mylife-materials', version: 1,
+            exported_at: new Date().toISOString(),
+            count: rows.length, bytes: bytes, missing: missing,
+            items: rows
+          };
+        });
+      });
+    },
+
+    /**
+     * 分卷导出素材（v0.9.41）—— 手机上的正确姿势。
+     *
+     * 老写法 exportMaterials() 是「全部读进内存 → 一个 JSON.stringify」：
+     * 实测小米 9 选满 30 条（171MB）导出，WebView 内存直接爆掉，**App 进程闪退**，
+     * Download 里一个文件都没有（用户以为没反应，其实程序已经死了）。
+     *
+     * 这里改成「读一卷 → 交出去 → 再读下一卷」：任何时刻内存里只有一卷（默认 16MB 原始字节）。
+     * onPart(pack, 卷号) 返回 Promise；返回 false 表示用户中途不要了。
+     */
+    exportMaterialsByVolume: function (ids, maxBytes, onPart) {
+      maxBytes = maxBytes || 16 * 1024 * 1024;
+      var where = '', params = [], i;
+      if (ids && ids.length) {
+        var ph = [];
+        for (i = 0; i < ids.length; i++) { ph.push('?'); params.push(ids[i]); }
+        where = ' WHERE id IN (' + ph.join(',') + ')';
+      }
+      return API.query('SELECT * FROM quick_notes' + where + ' ORDER BY id', params).then(function (rows) {
+        var idx = 0, parts = 0, totalMissing = 0, total = rows.length;
+
+        // 往这一卷里塞一条，塞到超过 maxBytes 就收卷
+        function takeOne(items, st) {
+          if (idx >= rows.length) return Promise.resolve();
+          if (items.length && st.bytes >= maxBytes) return Promise.resolve();
+          var q = rows[idx++];
+          var read = q.media_path
+            ? API.file({ op: 'read', path: q.media_path }).then(function (f) {
+                return (f && f.base64) ? f.base64 : null;
+              }, function () { return null; })
+            : Promise.resolve(null);
+          return read.then(function (b64) {
+            var it = {}, k;
+            for (k in q) if (q.hasOwnProperty(k)) it[k] = q[k];
+            if (q.media_path) {
+              if (b64) { it.b64 = b64; st.bytes += Math.round(b64.length * 0.75); }
+              else { it.b64 = null; it.media_missing = true; st.missing++; }
+            }
+            items.push(it);
+            return takeOne(items, st);
+          });
+        }
+
+        function nextPart() {
+          if (idx >= rows.length) {
+            return Promise.resolve({ parts: parts, count: total, missing: totalMissing });
+          }
+          var items = [], st = { bytes: 0, missing: 0 };
+          return takeOne(items, st).then(function () {
+            if (!items.length) return { parts: parts, count: total, missing: totalMissing };
+            parts++;
+            totalMissing += st.missing;
+            var pack = {
+              format: 'mylife-materials', version: 1,
+              exported_at: new Date().toISOString(),
+              count: items.length, bytes: st.bytes, missing: st.missing,
+              part: parts, items: items
+            };
+            return Promise.resolve(onPart(pack, parts)).then(function (keepGoing) {
+              if (keepGoing === false) {
+                return { parts: parts, count: total, missing: totalMissing, cancelled: true };
+              }
+              return nextPart();
+            });
+          });
+        }
+
+        return nextPart();
+      });
+    },
+
+    /**
+     * 逐条读素材、逐条交出去（v0.9.41）。
+     * onItem(单条 JSON 文本, {index,count,first})：调用方可以直接追加写文件。
+     * 内存里任何时刻只有**一条**素材的 base64 —— 不像 exportMaterials 一次性全读。
+     */
+    exportMaterialsStream: function (ids, onItem) {
+      var where = '', params = [], i;
+      if (ids && ids.length) {
+        var ph = [];
+        for (i = 0; i < ids.length; i++) { ph.push('?'); params.push(ids[i]); }
+        where = ' WHERE id IN (' + ph.join(',') + ')';
+      }
+      return API.query('SELECT * FROM quick_notes' + where + ' ORDER BY id', params).then(function (rows) {
+        var done = 0, missing = 0, bytes = 0;
+        var chain = Promise.resolve();
+        rows.forEach(function (q) {
+          chain = chain.then(function () {
+            var read = q.media_path
+              ? API.file({ op: 'read', path: q.media_path }).then(function (f) {
+                  return (f && f.base64) ? f.base64 : null;
+                }, function () { return null; })
+              : Promise.resolve(null);
+            return read.then(function (b64) {
+              var it = {}, k;
+              for (k in q) if (q.hasOwnProperty(k)) it[k] = q[k];
+              if (q.media_path) {
+                if (b64) { bytes += Math.round(b64.length * 0.75); it.b64 = b64; }
+                else { it.b64 = null; it.media_missing = true; missing++; }
+              }
+              b64 = null;
+              done++;
+              var txt = JSON.stringify(it);
+              it = null;
+              return Promise.resolve(onItem(txt, { index: done, count: rows.length, first: done === 1 }));
+            });
+          });
+        });
+        return chain.then(function () {
+          return { count: rows.length, missing: missing, bytes: bytes, done: done };
+        });
+      });
+    },
+
+    /** 导回素材：全部按「新素材」进素材箱（不覆盖不合并，重复导就多一份，用户自己删） */
+    importMaterials: function (pack, onProg) {
+      if (!pack || pack.format !== 'mylife-materials' || !Array.isArray(pack.items)) {
+        return Promise.reject(new Error('这不是本程序导出的素材文件'));
+      }
+      var items = pack.items, done = 0, missing = 0;
+      var chain = Promise.resolve();
+      items.forEach(function (q, i) {
+        chain = chain.then(function () {
+          var put = (q.b64 && q.media_path)
+            ? API.file({ op: 'save', kind: q.kind === 'photo' ? 'photo' : 'audio',
+                name: 'mat-' + Date.now() + '-' + i + '.' + extOfPath(q.media_path, 'bin'),
+                base64: q.b64 })
+                .then(function (r) { return r.path; }, function () { return null; })
+            : Promise.resolve(null);
+          return put.then(function (np) {
+            if (q.media_path && !np) missing++;
+            return API.exec(
+              'INSERT INTO quick_notes (kind,text,media_path,media_seconds,status,created_at) VALUES (?,?,?,?,?,?)',
+              [q.kind || 'text', q.text || null, np, q.media_seconds || null, 'open',
+               q.created_at || nowSql()]
+            ).then(function () {
+              done++;
+              if (onProg) onProg(done, items.length);
+            });
+          });
+        });
+      });
+      return chain.then(function () { return { done: done, missing: missing }; });
+    },
+
+    /**
+     * 补历史（幂等）：老版本收进档案的录音，条目只有文字、音频还挂在素材上。
+     * 把这类素材的音频补挂回它对应的条目，老录音就能在档案里听了。
+     */
+    repairQuickAudio: function () {
+      return API.query(
+        "SELECT id,archive_id,entry_id,media_path,media_seconds,text FROM quick_notes " +
+        "WHERE status='adopted' AND kind='audio' AND entry_id IS NOT NULL " +
+        "AND ifnull(media_path,'')<>'' ORDER BY id").then(function (rows) {
+        if (!rows || !rows.length) return { fixed: 0, kept: 0 };
+        var fixed = 0, kept = 0, chain = Promise.resolve();
+        function step(q) {
+          chain = chain.then(function () {
+            return API.query('SELECT kind, media_id FROM entries WHERE id=?', [q.entry_id])
+              .then(function (er) {
+                if (!er.length) { kept++; return; }        // 条目被删过，音频留在原处不动
+                if (er[0].media_id) { kept++; return; }    // 已经挂过
+                return DB.attachQuickAudio(q, q.archive_id).then(function (mid) {
+                  if (!mid) { kept++; return; }
+                  return API.exec(
+                    "UPDATE entries SET kind='media', media_id=?, edited=1 WHERE id=?",
+                    [mid, q.entry_id]).then(function () { fixed++; });
+                });
+              });
+          });
+        }
+        for (var i = 0; i < rows.length; i++) step(rows[i]);
+        return chain.then(function () { return { fixed: fixed, kept: kept }; });
+      });
+    },
+
+    /**
+     * 磁盘上没有归处的录音（v0.9.38）。
+     * 老版本的录音素材收进档案后没人引用，档案里也看不到——这里把 audio 目录翻一遍，
+     * 减去媒体、素材、访谈分段已经在用的，剩下的就是"到处都找不到"的那些。
+     */
+    listOrphanAudio: function () {
+      return API.file({ op: 'list', kind: 'audio' }).then(function (r) {
+        var items = (r && r.items) || [];
+        if (!items.length) return [];
+        return API.query(
+          "SELECT path p FROM media WHERE ifnull(path,'')<>'' " +
+          "UNION SELECT media_path FROM quick_notes WHERE ifnull(media_path,'')<>'' " +
+          "UNION SELECT audio_path FROM segments WHERE ifnull(audio_path,'')<>''"
+        ).then(function (rows) {
+          var used = {};
+          for (var i = 0; i < rows.length; i++) if (rows[i]) used[String(rows[i].p)] = 1;
+          var out = [];
+          for (var j = 0; j < items.length; j++) {
+            var p = 'audio/' + items[j].name;
+            if (used[p]) continue;
+            out.push({ path: p, name: items[j].name, bytes: items[j].bytes || 0 });
+          }
+          return out;
+        });
+      });
+    },
+
+    /** 把磁盘上一段没有归处的录音直接补成条目（先进待归档，再归章） */
+    attachAudioFile: function (archiveId, audioPath, caption) {
+      var p = String(audioPath || '').trim();
+      if (!p) return Promise.reject(new Error('没有指定录音'));
+      return API.exec('INSERT INTO media (archive_id,kind,path,mime,caption) VALUES (?,?,?,?,?)',
+        [archiveId, 'audio', p, audioMime(p), String(caption || '').slice(0, 60) || null])
+        .then(function (mr) {
+          return API.query('SELECT coalesce(max(seq),0)+10 s FROM entries WHERE archive_id=? AND chapter_id IS NULL', [archiveId])
+            .then(function (r) {
+              return API.exec(
+                "INSERT INTO entries (archive_id,chapter_id,seq,kind,text,media_id,origin,edited) " +
+                "VALUES (?,NULL,?,'media',?,?,'user',1)",
+                [archiveId, r[0].s, String(caption || ''), mr.lastId]);
+            });
+        });
     },
 
     /** 收录完成后的落账（照片收录走 addPhoto 时没有 entry_id，可只传 archiveId） */
@@ -2043,8 +2697,9 @@
       }
       return loc().then(function (L) {
         return API.exec(
-          'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,photo_id,media_id,origin,edited,sort_key) VALUES (?,?,?,?,?,?,?,?,?,?)',
-          [archiveId, L.ch, Math.round(L.k), kind, o.text || '', o.photoId || null, o.mediaId || null, 'user', 1, L.k]
+          'INSERT INTO entries (archive_id,chapter_id,seq,kind,text,photo_id,media_id,origin,edited,sort_key,at_year) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+          [archiveId, L.ch, Math.round(L.k), kind, o.text || '', o.photoId || null, o.mediaId || null, 'user', 1, L.k,
+           o.atYear || null]
         ).then(function (r) {
           if (kind === 'photo' && o.photoId) {
             return API.exec('UPDATE photos SET chapter_id=? WHERE id=?', [L.ch, o.photoId]).then(function () { return r; });
@@ -2534,7 +3189,12 @@
 
     findYear: findYear,
     nowSql: nowSql,
-    clean: clean
+    clean: clean,
+
+    /* v0.9.36 档案类型 */
+    KINDS: KINDS,
+    kindOf: kindOf,
+    stagesFor: stagesFor
   };
 
   window.DB = DB;

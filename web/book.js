@@ -228,6 +228,7 @@
 
     function layout() {
       if (spread) {
+        book.classList.remove('bk-single-mode');
         book.style.width = (pageW * 2) + 'px';
         book.style.height = pageH + 'px';
         for (var k2 = 0; k2 < leaves; k2++) {
@@ -248,6 +249,7 @@
         ind.textContent = (leftNo && rightNo ? (leftNo + ' - ' + rightNo) : (rightNo || leftNo) || '') +
           ' / ' + N;
       } else {
+        book.classList.add('bk-single-mode');
         book.style.width = pageW + 'px';
         book.style.height = pageH + 'px';
         for (var k3 = 0; k3 < leaves; k3++) {

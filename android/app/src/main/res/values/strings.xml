@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">我的人生档案</string>
+    <!-- 安装后在桌面/应用列表显示的名字。必须和登录页、网页 title 一致（岁月记录助手）。 -->
+    <string name="app_name">岁月记录助手</string>
 </resources>

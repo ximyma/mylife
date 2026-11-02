@@ -14,15 +14,55 @@
 
   var TOKEN_KEY = 'mylife.token';
   var onUnauthorized = null;   // app.js 注入：收到 401 时跳登录页
+  var tokenCache = null;       // 只在本页内存里缓存，首次从 localStorage/原生读
+
+  function nativeToken() {
+    try {
+      if (window.NativeIO && window.NativeIO.getToken) {
+        return String(window.NativeIO.getToken() || '');
+      }
+    } catch (e) {}
+    return '';
+  }
 
   function token() {
-    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+    if (tokenCache !== null) return tokenCache;
+    var t = '';
+    try { t = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+    // v0.9.36：安卓本地服务端口一旦不是固定的 34567，origin 变了，
+    // localStorage 里的 token 就读不到——原生 SharedPreferences 里那份兜底。
+    if (!t) {
+      t = nativeToken();
+      if (t) { try { localStorage.setItem(TOKEN_KEY, t); } catch (e2) {} }
+    }
+    tokenCache = t;
+    return t;
   }
-  function setToken(t) {
+
+  /**
+   * persist=false 表示「这次不记住我」：只放 sessionStorage，
+   * 关掉 APP / 关掉页面就失效，下次还得重新登录。
+   */
+  function setToken(t, persist) {
+    tokenCache = t || '';
+    var keep = (persist !== false);
     try {
-      if (t) localStorage.setItem(TOKEN_KEY, t);
-      else localStorage.removeItem(TOKEN_KEY);
+      if (!t) {
+        localStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(TOKEN_KEY);
+      } else if (keep) {
+        localStorage.setItem(TOKEN_KEY, t);
+        sessionStorage.removeItem(TOKEN_KEY);
+      } else {
+        sessionStorage.setItem(TOKEN_KEY, t);
+        localStorage.removeItem(TOKEN_KEY);
+      }
     } catch (e) {}
+    try {
+      if (window.NativeIO && window.NativeIO.setToken) {
+        window.NativeIO.setToken(keep && t ? t : '');
+      }
+    } catch (e2) {}
   }
 
   function post(path, body, timeoutMs) {

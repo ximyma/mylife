@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { DatabaseSync } = require('node:sqlite');
 
-const VERSION = 'v0.9.34';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
+const VERSION = 'v0.9.42';   // 与 CHANGELOG.md、web/app.js、安卓 versionName 保持一致
 
 /*
  * 两种跑法：
@@ -141,7 +141,7 @@ function userCount() {
 
 function issueToken(uid) {
   const token = crypto.randomBytes(32).toString('hex');
-  adb.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))")
+  adb.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+180 days'))")
     .run(token, uid);
   return token;
 }

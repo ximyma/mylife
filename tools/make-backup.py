@@ -37,9 +37,10 @@ OUT = os.path.join(ROOT, 'dist', 'mylife-v%s-backup-%s.zip' % (VER, DATE))
 INCLUDE_DIRS = ['server', 'web', 'tools', 'test', 'docs']
 INCLUDE_FILES = ['README.md', 'CHANGELOG.md', 'build-apk.bat', 'package.json']
 ANDROID = os.path.join(ROOT, 'android')
-EXE = os.path.join(ROOT, 'dist', 'MyLife-v%s-windows.exe' % VER)
-EXE_FALLBACK = os.path.join(ROOT, 'dist', 'win', 'MyLife.exe')
-APK = os.path.join(ROOT, 'dist', 'MyLife-v%s-android.apk' % VER)
+NAME = '岁月记录助手'          # 与安卓 strings.xml 的 app_name 保持一致
+EXE = os.path.join(ROOT, 'dist', '%s-v%s-windows.exe' % (NAME, VER))
+EXE_FALLBACK = os.path.join(ROOT, 'dist', 'win', NAME + '.exe')
+APK = os.path.join(ROOT, 'dist', '%s-v%s-android.apk' % (NAME, VER))
 APK_FALLBACK = os.path.join(ROOT, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk')
 
 SKIP_DIRS = {'node_modules', '.gradle', 'build', '.git', '__pycache__', 'dist', 'tmp', 'data'}
@@ -74,7 +75,7 @@ if not exe_path or not apk_path:
 n = 0
 with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
     info = (
-        '我的人生档案 · The Story of My Life\n'
+        '岁月记录助手 · The Story of My Life\n'
         '================================================================\n'
         '版本      v%s%s\n' % (VER, ('（' + MILE + '）') if MILE else '') +
         '打包时间  %s\n' % STAMP +
@@ -91,8 +92,8 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         '    tools/                sync / build-exe / make-backup\n'
         '    test/                 8 个审计脚本，197 项\n'
         '    docs/                 升级方案与里程碑存档\n'
-        '  MyLife-v%s.exe   Windows 单文件版（界面已内置）\n' % VER +
-        '  MyLife-v%s.apk   安卓版（versionCode %s）\n' % (VER, VCODE) +
+        '  %s-v%s-windows.exe   Windows 单文件版（界面已内置）\n' % (NAME, VER) +
+        '  %s-v%s-android.apk   安卓版（versionCode %s）\n' % (NAME, VER, VCODE) +
         '\n'
         '不含\n'
         '----------------------------------------------------------------\n'
@@ -153,9 +154,9 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             n += 1
 
     # 产物（顶层，拿到就能用）
-    zf.write(exe_path, 'MyLife-v%s.exe' % VER)
+    zf.write(exe_path, '%s-v%s-windows.exe' % (NAME, VER))
     n += 1
-    zf.write(apk_path, 'MyLife-v%s.apk' % VER)
+    zf.write(apk_path, '%s-v%s-android.apk' % (NAME, VER))
     n += 1
 
 print('版本    v%s%s' % (VER, ('（' + MILE + '）') if MILE else ''))

@@ -69,6 +69,45 @@
     if (window.console) console.error(e);
   }
 
+  /**
+   * 数一数导出的档案包里到底装了什么（v0.9.39）。
+   * 以前只说一句「已导出」，用户看不出录音进没进去——现在把张数、段数、体积讲清楚。
+   */
+  /**
+   * 数一数包里有什么。bytes 传 JSON.stringify 后的字符数：
+   * 以前按 b64 解码后的原始字节算，报「约 56 MB」而文件其实 78 MB —— 用户按这个数字
+   * 判断能不能发微信会误判。b64 在 JSON 里是 1 字符 1 字节，body.length 就是文件大小。
+   */
+  function packSummary(pack, bytes) {
+    var imgs = 0, audios = 0, videos = 0, missing = 0, chars = 0, i;
+    var photos = pack.photos || [], segs = pack.segments || [], media = pack.media || [];
+    for (i = 0; i < photos.length; i++) {
+      if (photos[i].b64) { imgs++; chars += photos[i].b64.length; } else missing++;
+    }
+    for (i = 0; i < segs.length; i++) {
+      if (!segs[i].audio_path) continue;
+      if (segs[i].b64) { audios++; chars += segs[i].b64.length; } else missing++;
+    }
+    for (i = 0; i < media.length; i++) {
+      var m = media[i];
+      if (!m.b64) { missing++; continue; }
+      chars += m.b64.length;
+      if (m.kind === 'video') videos++;
+      else if (m.kind === 'audio') audios++;
+      else imgs++;
+    }
+    return { imgs: imgs, audios: audios, videos: videos, missing: missing,
+             mb: Math.round(((bytes || chars) / 1048576) * 10) / 10 };
+  }
+
+  function packText(s) {
+    var bits = [s.imgs + ' 张图'];
+    if (s.audios) bits.push(s.audios + ' 段录音');
+    if (s.videos) bits.push(s.videos + ' 段视频');
+    bits.push('约 ' + s.mb + ' MB');
+    return bits.join(' · ');
+  }
+
   function go(hash) {
     if (location.hash === hash) route(); else location.hash = hash;
   }
@@ -405,11 +444,19 @@
               new Date().toISOString().slice(0, 10) + '.mylife.json';
             b.disabled = false;
             b.textContent = old;
+            var body = JSON.stringify(pack);
+            var s = packSummary(pack, body.length);
+            var extra = s.missing ? ('；有 ' + s.missing + ' 个文件读不到，包里缺这几个') : '';
+            if (s.mb > 180 && !confirm('这本带录音和视频，一共约 ' + s.mb + ' MB。\n\n' +
+                '手机上一次存这么大的文件容易失败。\n建议：先在设置里「导出整库备份」，或分几批处理。\n\n还是要试一下吗？')) {
+              return;
+            }
             if (window.NativeIO && window.NativeIO.saveExport) {
-              var ok = window.NativeIO.saveExport(JSON.stringify(pack), fname);
-              toast(ok ? '已存到手机 Download 目录' : '保存失败');
+              var ok = window.NativeIO.saveExport(body, fname);
+              toast(ok ? ('整本存进 Download 了：' + packText(s) + extra)
+                       : ('这本太大（' + packText(s) + '），手机一次存不下。到「设置 → 整库备份」分开导'));
             } else {
-              var blob = new Blob([JSON.stringify(pack)], { type: 'application/json' });
+              var blob = new Blob([body], { type: 'application/json' });
               var a2 = document.createElement('a');
               a2.href = URL.createObjectURL(blob);
               a2.download = fname;
@@ -417,7 +464,7 @@
               a2.click();
               document.body.removeChild(a2);
               setTimeout(function () { URL.revokeObjectURL(a2.href); }, 2000);
-              toast('已导出 ' + fname);
+              toast('已导出 ' + fname + '：' + packText(s) + extra);
             }
           }).catch(function (e) {
             b.disabled = false;
@@ -529,16 +576,139 @@
     };
   }
 
+  /**
+   * v0.9.36 新建档案：先选类型。
+   * 以前一律套人生骨架，写游记也会冒出「出生、童年、求学」，
+   * 跟内容毫无关系还容易让人误会。
+   */
   function askNew() {
-    var name = prompt('这部档案是谁的？（写名字就行）');
-    if (!name || !name.trim()) return;
-    var birth = prompt('出生年份？（可以留空，填了目录会带上具体年份）');
-    DB.createArchive(name, parseInt(birth, 10) || null, '').then(function (id) {
-      // 建完先把人生阶段目录搭好——一进来看到的是「目录」，不是一个空白页
-      return DB.buildOutline(id).then(function () { return id; }, function () { return id; });
-    }).then(function (id) {
-      toast('建好了，目录已按人生阶段排好，点一章就能开始写');
-      go('#/a/' + id);
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    var cards = '';
+    DB.KINDS.forEach(function (k, i) {
+      cards += '<button class="kind-card' + (i === 0 ? ' on' : '') + '" data-kind="' + k.key + '">' +
+        '<b>' + esc(k.name) + '</b><small>' + esc(k.hint) + '</small></button>';
+    });
+    ov.innerHTML = '<div class="ml-modal book-modal"><h3>新建档案</h3>' +
+      '<p class="hint dim">先选类型——目录骨架跟着类型走，不会再给游记排「出生、童年」。</p>' +
+      '<div class="kind-grid">' + cards + '</div>' +
+      '<div class="fld"><label>这部档案叫什么</label>' +
+      '<input class="fi" id="nkName" placeholder="例如：武夷山团建 / 我爸的一生"></div>' +
+      '<div class="fld" id="nkBirthRow"><label>出生年份（选填，填了能按年龄排）</label>' +
+      '<input class="fi" id="nkBirth" inputmode="numeric" placeholder="1949"></div>' +
+      '<div class="ml-modal-acts"><button class="btn" data-nk="cancel">取消</button>' +
+      '<button class="btn primary" data-nk="ok">建好，开始写</button></div>' +
+      '<div class="ml-modal-msg" id="nkMsg"></div></div>';
+    document.body.appendChild(ov);
+
+    var kind = DB.KINDS[0].key;
+    var msg = ov.querySelector('#nkMsg');
+    var busy = false;
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+
+    ov.addEventListener('click', function (ev) {
+      var kc = ev.target.closest && ev.target.closest('[data-kind]');
+      if (kc) {
+        kind = kc.getAttribute('data-kind');
+        var all = ov.querySelectorAll('.kind-card');
+        for (var i = 0; i < all.length; i++) all[i].classList.toggle('on', all[i] === kc);
+        var br = ov.querySelector('#nkBirthRow');
+        if (br) br.hidden = !DB.kindOf(kind).askBirth;
+        return;
+      }
+      var nb = ev.target.closest && ev.target.closest('[data-nk]');
+      if (!nb || busy) {
+        if (ev.target === ov) close();
+        return;
+      }
+      if (nb.getAttribute('data-nk') === 'cancel') { close(); return; }
+
+      var nameEl = ov.querySelector('#nkName');
+      var name = nameEl ? nameEl.value.trim() : '';
+      if (!name) { msg.textContent = '先给档案起个名'; return; }
+
+      var askBirth = DB.kindOf(kind).askBirth;
+      var birthEl = ov.querySelector('#nkBirth');
+      var byRaw = birthEl ? birthEl.value.trim() : '';
+      var by = parseInt(byRaw, 10) || 0;
+      var thisYear = new Date().getFullYear();
+      if (byRaw && (by < 1900 || by > thisYear)) {
+        msg.textContent = '出生年份不对：应该是 1900～' + thisYear + '，也可以留空';
+        return;
+      }
+      var birth = (askBirth && by) ? by : null;
+
+      busy = true;
+      nb.disabled = true;
+      msg.textContent = '正在建档……';
+      DB.createArchive(name, birth, '', kind).then(function (id) {
+        return DB.buildOutline(id).then(function () { return id; }, function () { return id; });
+      }).then(function (id) {
+        close();
+        toast(askBirth ? '建好了，目录已按人生阶段排好' : '建好了，可以开始写');
+        go('#/a/' + id);
+      }).catch(function (e) {
+        busy = false;
+        nb.disabled = false;
+        msg.textContent = e.message || '建不下来';
+      });
+    });
+  }
+
+  /** 改档案类型：已经建好的档案也能从「人生档案」改成「游记」这类 */
+  function openKindSwitch(archiveId) {
+    DB.getArchive(archiveId).then(function (d) {
+      var cur = DB.kindOf(d.archive && d.archive.kind).key;
+      var cards = '';
+      DB.KINDS.forEach(function (k) {
+        cards += '<button class="kind-card' + (k.key === cur ? ' on' : '') + '" data-kind="' + k.key + '">' +
+          '<b>' + esc(k.name) + '</b><small>' + esc(k.hint) + '</small></button>';
+      });
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal book-modal"><h3>改档案类型</h3>' +
+        '<p class="hint dim">只改类型不会动内容；想按新类型重排目录，改完会问你。</p>' +
+        '<div class="kind-grid">' + cards + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn" data-ks="cancel">取消</button>' +
+        '<button class="btn primary" data-ks="ok">就这样</button></div></div>';
+      document.body.appendChild(ov);
+
+      var pick = cur, busy = false;
+      function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+
+      ov.addEventListener('click', function (ev) {
+        if (ev.target === ov) { close(); return; }
+        var kc = ev.target.closest && ev.target.closest('[data-kind]');
+        if (kc) {
+          pick = kc.getAttribute('data-kind');
+          var all = ov.querySelectorAll('.kind-card');
+          for (var i = 0; i < all.length; i++) all[i].classList.toggle('on', all[i] === kc);
+          return;
+        }
+        var b2 = ev.target.closest && ev.target.closest('[data-ks]');
+        if (!b2 || busy) return;
+        if (b2.getAttribute('data-ks') === 'cancel' || pick === cur) { close(); return; }
+
+        busy = true;
+        DB.ensureArchiveKind().then(function () {
+          return API.exec("UPDATE archives SET kind=?, updated_at=datetime('now') WHERE id=?", [pick, archiveId]);
+        })
+          .then(function () {
+            close();
+            var km = DB.kindOf(pick);
+            if (km.stages && km.stages.length &&
+                confirm('类型改成「' + km.name + '」了。\n\n要按新类型重排目录吗？\n\n' +
+                  '确定 = 重排（现有章节拆掉，内容一条不丢，全部退回待归档）\n' +
+                  '取消 = 只改类型，目录保持原样')) {
+              return DB.buildOutline(archiveId, { force: true }).then(function () {
+                toast('目录已按「' + km.name + '」重排');
+                route();
+              });
+            }
+            toast('类型改好了');
+            route();
+          }).catch(fail);
+      });
     }).catch(fail);
   }
 
@@ -670,6 +840,9 @@
 
   var entrySel = {};          // 勾选了哪些条目（换页保留，切档案清空）
   var entrySelArchive = null;
+  /* 章名缓存：改章名时用它回填原名。
+     不能只靠 DOM 找——目录页、整本阅读、章节页三处结构不同，找空了就把名字写没。 */
+  var chTitleCache = {};
 
   function renderArchive(id) {
     if (entrySelArchive !== String(id)) { entrySel = {}; entrySelArchive = String(id); }
@@ -741,13 +914,18 @@
       }
 
       if (!d.chapters.length) {
+        var kd = DB.kindOf(a.kind);
+        var skeleton = kd.stages && kd.stages.length
+          ? '按「' + kd.stages.map(function (s) { return s.title; }).join(' → ') + '」把内容排成目录。'
+          : '这类档案不预设章节，直接写就行；需要时点「自己加一章」。';
         html += '<section class="outline-empty">' +
           '<h2 class="sec-label">还 没 有 目 录</h2>' +
           '<p class="muted">' + ((d.entries.length || d.segments.length)
-            ? '材料已经有了。点一下，按「出生与家世 → 童年 → 求学 → 工作 → 婚姻 → 子女 → 事业 → 晚年」把内容排成目录。'
+            ? '材料已经有了。点一下，' + esc(skeleton)
             : '先把目录搭起来，一章一章往里写。以后录的音、打的字会自动归到对应的章。') + '</p>' +
           '<div class="row">' +
-          '<button class="btn primary" data-outline="1">按人生阶段生成目录</button>' +
+          (kd.stages && kd.stages.length
+            ? '<button class="btn primary" data-outline="1">按「' + esc(kd.name) + '」排目录</button>' : '') +
           '<button class="btn" data-ch-add="1">自己加一章</button>' +
           '<a class="btn ghost" href="#/a/' + id + '/collect">先去说一段</a>' +
           '</div></section>';
@@ -759,14 +937,17 @@
           '<span class="toc-hint">点一章进去，读、写、听、改都在那一页</span></div>';
         for (var t = 0; t < d.chapters.length; t++) {
           var ch = d.chapters[t];
-          var title = String(ch.title || '').replace(/^[^·]*·\s*/, '');
+          var title = String(ch.title || '').replace(/^[^·]*·\s*/, '').trim();
+          chTitleCache[ch.id] = title;
+          /* 万一有历史数据章名被清空过，目录里也要看得见一行字，不能留白 */
+          var titleShow = title || ('第 ' + (t + 1) + ' 章');
           var cEnt = byChapter[ch.id] || [];
           var cWords = 0;
           for (var cw = 0; cw < cEnt.length; cw++) cWords += String(cEnt[cw].text || '').length;
           html += '<div class="toc-item">' +
             '<a class="toc-row" href="#/a/' + id + '/ch/' + ch.id + '">' +
             '<span class="toc-idx">' + (t + 1) + '</span>' +
-            '<span class="toc-title">' + esc(title) +
+            '<span class="toc-title"><span class="toc-name" data-ch-title="' + ch.id + '">' + esc(titleShow) + '</span>' +
             (ch.stage ? '<em class="toc-stage">' + esc(ch.stage) + '</em>' : '') + '</span>' +
             '<span class="toc-year">' + esc(ch.year_from ? DB.yearLabel(ch.year_from, ch.year_to) : '') + '</span>' +
             '<span class="toc-n">' + (cEnt.length ? cEnt.length + ' 段' +
@@ -775,6 +956,7 @@
             '<div class="toc-tools">' +
             '<button class="linkbtn" data-move-chapter="' + ch.id + '" data-dir="-1" title="这一章上移">↑</button>' +
             '<button class="linkbtn" data-move-chapter="' + ch.id + '" data-dir="1" title="这一章下移">↓</button>' +
+            '<button class="linkbtn" data-ch-ins="' + ch.id + '" title="在「' + esc(titleShow) + '」后面插一章">＋</button>' +
             '<button class="linkbtn" data-ch-edit="' + ch.id + '" title="改章名">改</button>' +
             '<button class="linkbtn danger-t" data-ch-del="' + ch.id + '" title="删这一章（内容退回待归档）">删</button>' +
             '</div></div>';
@@ -788,9 +970,11 @@
             '<span class="toc-go">›</span></a>';
         }
         html += '<div class="toc-add">' +
-          '<button class="btn tiny" data-ch-add="1">＋ 新增一章</button>' +
+          '<button class="btn tiny" data-ch-add="1">＋ 末尾加一章</button>' +
+          '<span class="toc-tip">想插在中间，点那一行后面的「＋」</span>' +
           (d.entries.length ? '<button class="btn tiny ghost" data-outline="force">' +
-            '按年份重排目录</button>' : '') +
+            '按「' + esc(DB.kindOf(a.kind).name) + '」重排目录</button>' : '') +
+          '<button class="btn tiny ghost" data-ch-kind="1">改类型</button>' +
           '<button class="btn tiny ghost" data-toggle-full="1">整本阅读</button>' +
           '<button class="btn tiny" data-whole-book="1">看整本</button>' +
           '</div>';
@@ -883,10 +1067,11 @@
       /* 章节 */
       for (var ci = 0; ci < d.chapters.length; ci++) {
         var c = d.chapters[ci];
+        var cTitle = String(c.title || '').replace(/^[^·]*·\s*/, '').trim() || ('第 ' + (ci + 1) + ' 章');
         var entries = byChapter[c.id] || [];
         html += '<section class="chapter" id="ch-' + c.id + '">';
         html += '<h2 class="ch-title"><span class="ch-idx">' + (ci + 1) + '</span>' +
-          '<span class="ch-name">' + esc(String(c.title || '').replace(/^[^·]*·\s*/, '')) + '</span>' +
+          '<span class="ch-name" data-ch-title="' + c.id + '">' + esc(cTitle) + '</span>' +
           '<span class="ch-year">' + esc(c.year_from ? DB.yearLabel(c.year_from, c.year_to) : '') + '</span>' +
           '<button class="ch-read" data-read-ch="' + c.id + '" title="从这一章开头朗读">读</button>' +
           '<button class="ch-mv" data-move-chapter="' + c.id + '" data-dir="-1" title="本章上移">↑</button>' +
@@ -986,7 +1171,9 @@
         }
       }
 
-      var titleTxt = String(ch.title || '').replace(/^[^·]*·\s*/, '');
+      var titleTxt = String(ch.title || '').replace(/^[^·]*·\s*/, '').trim();
+      chTitleCache[ch.id] = titleTxt;          // 缓存真实的，空就是空（改章名要按它回填）
+      if (!titleTxt && String(chId) !== '0') titleTxt = '第 ' + (idx + 1) + ' 章';   // 页面上不留白
       var html = topbar({
         back: '#/a/' + id,
         title: String(chId) === '0' ? '待归档' : ('第 ' + (idx + 1) + ' 章'),
@@ -1000,18 +1187,20 @@
         '<a href="#/a/' + id + '">目录</a>' +
         '<span>' + (String(chId) === '0' ? '待归档' : '第 ' + (idx + 1) + ' / ' + d.chapters.length + ' 章') + '</span>' +
         '</div>' +
-        '<h1 class="ch-page-title">' + esc(titleTxt) + '</h1>' +
+        '<h1 class="ch-page-title" data-ch-title="' + ch.id + '">' + esc(titleTxt) + '</h1>' +
         '<div class="ch-page-meta">' +
         (ch.year_from ? esc(DB.yearLabel(ch.year_from, ch.year_to)) : '') +
         (ch.stage ? ' · ' + esc(ch.stage) : '') +
         ' · ' + entries.length + ' 段' + (words ? ' · 约 ' + words + ' 字' : '') +
         '</div>' +
         '<div class="ch-page-tools">' +
+        (entries.length ? '<button class="btn tiny primary" data-ch-book="' + ch.id + '">看这一章</button>' : '') +
         (entries.length ? '<button class="btn tiny" data-read-ch="' + ch.id + '">朗读这一章</button>' : '') +
-        '<button class="btn tiny" data-ch-edit="' + ch.id + '">改章名</button>' +
+        (String(chId) === '0' ? '' : '<button class="btn tiny" data-ch-edit="' + ch.id + '">改章名</button>') +
         (String(chId) === '0' ? '' :
           '<button class="btn tiny" data-move-chapter="' + ch.id + '" data-dir="-1">上移</button>' +
           '<button class="btn tiny" data-move-chapter="' + ch.id + '" data-dir="1">下移</button>' +
+          '<button class="btn tiny" data-ch-ins="' + ch.id + '">在这后面插一章</button>' +
           '<button class="btn tiny danger-t" data-ch-del="' + ch.id + '">删这一章</button>') +
         '<a class="btn tiny" href="#/a/' + id + '/art' + (ch.id ? '?ch=' + ch.id : '') + '">配插图</a>' +
         '<a class="btn tiny" href="#/a/' + id + '/comic' + (ch.id ? '?ch=' + ch.id : '') + '">做漫画</a>' +
@@ -1122,6 +1311,21 @@
         }).catch(fail);
         return;
       }
+      /* 退：收错章 / 插错地方，不必删——内容和文件都搬回素材箱 */
+      if ((b = t.closest('[data-to-quick]'))) {
+        var tqId = Number(b.getAttribute('data-to-quick'));
+        if (!confirm('把这一条退回素材箱？\n\n档案里这一条会移走，文字、照片、录音、视频都搬到素材箱，不会丢。\n' +
+            '想再放回来，到素材箱点「收进档案」就行。')) return;
+        b.disabled = true;
+        DB.entryToQuick(tqId).then(function (r) {
+          toast(r && r.copied ? '退回素材箱了（文件另存了一份，原件还在原处）' : '退回素材箱了，去素材箱就能看到');
+          route();
+        }).catch(function (e) {
+          b.disabled = false;
+          fail(e);
+        });
+        return;
+      }
       if ((b = t.closest('[data-entry-upload]'))) {
         var ch = b.getAttribute('data-ch');
         uploadToEntry(id, ch ? Number(ch) : null, route, Number(b.getAttribute('data-entry-upload')));
@@ -1161,6 +1365,28 @@
             : (r && r.homed ? '把 ' + r.homed + ' 段补进了对应的章' : '目录没有变化'));
           route();
         }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-ch-kind]'))) {
+        openKindSwitch(id);
+        return;
+      }
+      if ((b = t.closest('[data-ch-ins]'))) {
+        /* 在某一章后面插一章：章名一问、年份一问（都能留空），插完停在这一章不动 */
+        var insAfter = Number(b.getAttribute('data-ch-ins'));
+        var anchor = chTitleCache[insAfter] || '这一章';
+        var newTitle = prompt('在「' + anchor + '」后面插一章，章名叫什么？（比如「第二天 · 下山」）');
+        if (newTitle === null) return;
+        newTitle = String(newTitle).trim();
+        if (!newTitle) { toast('没写章名，先不插'); return; }
+        var insYr = prompt('大概哪一年？（可留空）');
+        if (insYr === null) insYr = '';
+        DB.insertChapter(id, insAfter, newTitle, parseInt(insYr, 10) || null, parseInt(insYr, 10) || null)
+          .then(function (r) {
+            chTitleCache[r.id] = newTitle;
+            toast('插在「' + anchor + '」后面了');
+            go('#/a/' + id + '/ch/' + r.id);
+          }).catch(fail);
         return;
       }
       if ((b = t.closest('[data-ch-add]'))) {
@@ -1212,6 +1438,7 @@
             return chain;
           }).then(function () {
             toast(pids.length > 1 ? ('配好了 ' + pids.length + ' 张') : '配好了');
+            focusEntry(pe);
             route();
           }).catch(fail);
         });
@@ -1310,6 +1537,25 @@
         DB.deletePhotoSafe(dph).then(function () { toast('删了'); route(); }).catch(fail);
         return;
       }
+      /* 照片条目 / 媒体条目：以前只给了文字条目「删」，图片一旦成了条目就删不掉 */
+      if ((b = t.closest('[data-phentry-del]'))) {
+        var peEnt = Number(b.getAttribute('data-phentry-del'));
+        var pePhoto = Number(b.getAttribute('data-photo-id')) || 0;
+        if (!confirm('删掉这张照片？图也会从磁盘删掉，删了就找不回来了。')) return;
+        (pePhoto ? DB.deletePhotoSafe(pePhoto) : Promise.resolve())
+          .then(function () { return DB.deleteEntry(peEnt); })
+          .then(function () { toast('删了'); route(); }).catch(fail);
+        return;
+      }
+      if ((b = t.closest('[data-mdentry-del]'))) {
+        var mdEnt = Number(b.getAttribute('data-mdentry-del'));
+        var mdMedia = Number(b.getAttribute('data-media-id')) || 0;
+        if (!confirm('删掉这条媒体？视频/录音文件也会一起删。')) return;
+        (mdMedia ? DB.deleteMedia(mdMedia) : Promise.resolve())
+          .then(function () { return DB.deleteEntry(mdEnt); })
+          .then(function () { toast('删了'); route(); }).catch(fail);
+        return;
+      }
       if ((b = t.closest('[data-mv-del]'))) {
         var dmv = Number(b.getAttribute('data-mv-del'));
         if (!confirm('删掉这条片子？视频文件也会一起删，删了就找不回来了。')) return;
@@ -1318,11 +1564,20 @@
       }
       if ((b = t.closest('[data-ch-edit]'))) {
         var chid = Number(b.getAttribute('data-ch-edit'));
+        if (!chid) return;                       // 待归档没有章，改不了
         var el = document.querySelector('[data-ch-title="' + chid + '"]');
-        var cur = el ? el.textContent : '';
-        var v = prompt('章名改成什么？（留空就不改）', cur);
-        if (v === null) return;
-        DB.updateChapter(chid, v, '').then(function () {
+        var cur = (chTitleCache[chid] !== undefined && chTitleCache[chid] !== null)
+          ? String(chTitleCache[chid])
+          : (el ? String(el.textContent || '').trim() : '');
+        var v = prompt('章名改成什么？原来的名字已经填好，直接点确定就是不改。', cur);
+        if (v === null) return;                  // 点了取消
+        v = String(v).trim();
+        /* v0.9.37：原来这里没拦住空值，清空后点确定章名就变成一片空白。
+           名字空着等于没改——留住原来的，别让目录里出现无名章。 */
+        if (!v) { toast('没写名字，章名还是「' + (cur || '原来那一个') + '」'); return; }
+        if (v === cur) { toast('没改，章名还是原来的'); return; }
+        DB.updateChapter(chid, v).then(function () {
+          chTitleCache[chid] = v;
           toast('改好了');
           route();
         }).catch(fail);
@@ -1335,34 +1590,67 @@
   /**
    * 「传」的公共流程：选图片/视频/录音 → 存盘 → 记 media → 插一条媒体条目。
    * 图片压到 1600px 再存，视频录音原样收（上限 80MB）。
+   * v0.9.42：multiple —— 相册里能一次勾好几张，按勾选先后依次排在锚点后面。
+   * 必须一张一张串行处理：二十张大图同时压进 canvas，WebView 会直接 OOM。
    */
   function uploadToEntry(aid, chapterId, done, afterId) {
     var inp = document.createElement('input');
     inp.type = 'file';
+    inp.multiple = true;
     inp.accept = 'image/*,video/*,audio/*';
     inp.onchange = function () {
-      var f = inp.files && inp.files[0];
-      if (!f) return;
-      var kind = /^image/.test(f.type) ? 'photo'
-        : /^video/.test(f.type) ? 'video'
-        : /^audio/.test(f.type) ? 'audio' : null;
-      if (!kind) return toast('只能传图片、视频或录音');
+      var files = inp.files ? Array.prototype.slice.call(inp.files) : [];
+      if (!files.length) return;
 
-      if (kind === 'photo') {
-        compress(f, function (dataUrl) {
-          DB.addMediaEntry(aid, chapterId, 'photo', dataUrl, 'image/jpeg', f.name, 'jpg', afterId)
-            .then(function () { toast('传好了'); done(); }).catch(fail);
-        });
-        return;
+      var last = afterId || null, first = 0, ok = 0, bad = 0;
+
+      function put(kind, payload, mime, name, ext) {
+        return DB.addMediaEntry(aid, chapterId, kind, payload, mime, name, ext, last)
+          .then(function (r) {
+            if (r && r.lastId) { last = r.lastId; if (!first) first = r.lastId; }
+            ok++;
+          })
+          .catch(function () { bad++; });
       }
-      if (f.size > 80 * 1024 * 1024) return toast('超过 80MB，传不动，换小一点的');
-      var reader = new FileReader();
-      reader.onload = function () {
-        var ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'bin';
-        DB.addMediaEntry(aid, chapterId, kind, String(reader.result), f.type, f.name, ext, afterId)
-          .then(function () { toast('传好了，正在排进档案'); done(); }).catch(fail);
-      };
-      reader.readAsDataURL(f);
+
+      function step(f) {
+        var kind = /^image/.test(f.type) ? 'photo'
+          : /^video/.test(f.type) ? 'video'
+          : /^audio/.test(f.type) ? 'audio' : null;
+        if (!kind) { bad++; return Promise.resolve(); }
+        if (kind !== 'photo' && f.size > 80 * 1024 * 1024) { bad++; return Promise.resolve(); }
+
+        return new Promise(function (res) {
+          if (kind === 'photo') {
+            compress(f, function (dataUrl) {
+              put('photo', dataUrl, 'image/jpeg', f.name || 'photo.jpg', 'jpg').then(res);
+            });
+            return;
+          }
+          var reader = new FileReader();
+          reader.onload = function () {
+            var ext = (f.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'bin';
+            put(kind, String(reader.result), f.type, f.name, ext).then(res);
+          };
+          reader.onerror = function () { bad++; res(); };
+          reader.readAsDataURL(f);
+        });
+      }
+
+      var chain = Promise.resolve(), i;
+      for (i = 0; i < files.length; i++) {
+        (function (f) { chain = chain.then(function () { return step(f); }); })(files[i]);
+      }
+      if (files.length > 1) toast('正在放 ' + files.length + ' 个，稍等一下…');
+
+      chain.then(function () {
+        if (ok && bad) toast('放好 ' + ok + ' 个，' + bad + ' 个没放进去（太大或打不开）');
+        else if (ok > 1) toast('放好 ' + ok + ' 个');
+        else if (ok === 1) toast(files.length > 1 ? '只放进去 1 个' : '传好了');
+        else toast(files.length > 1 ? '一个也没放进去' : '没放进去，换一个试试');
+        if (first) focusEntry(first);
+        done();
+      }).catch(fail);
     };
     inp.click();
   }
@@ -1388,14 +1676,17 @@
 
   function renderEntry(e) {
     if (e.kind === 'photo') {
-      return '<figure class="ph">' +
+      return '<figure class="ph" data-eid="' + e.id + '">' +
         (e.photo_path ? '<img src="' + esc(fsrc(e.photo_path)) + '" alt="" loading="lazy">' : '') +
         '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
         (e.place ? ' · ' + esc(e.place) : '') + '</span>' +
         '<span class="ph-event">' + esc(e.text || '') + '</span>' +
         (e.match_reason ? '<span class="ph-why">归位理由：' + esc(e.match_reason) + '</span>' : '') +
         '</figcaption>' +
-        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) + '</div></figure>';
+        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) +
+        '<button class="linkbtn" data-to-quick="' + e.id + '" title="退回素材箱（内容和文件都留着）">退</button>' +
+        '<button class="linkbtn danger-t" data-phentry-del="' + e.id + '" data-photo-id="' +
+        (e.photo_id || '') + '" title="删掉这张照片（文件一起删）">删</button></div></figure>';
     }
     if (e.kind === 'media') {
       var url = fsrc(e.media_path || '');
@@ -1408,9 +1699,12 @@
       } else {
         inner = '<img src="' + url + '" alt="" loading="lazy">';
       }
-      return '<div class="md">' + inner +
+      return '<div class="md" data-eid="' + e.id + '">' + inner +
         (e.text ? '<div class="md-cap">' + esc(e.text) + '</div>' : '') +
-        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) + '</div></div>';
+        '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) +
+        '<button class="linkbtn" data-to-quick="' + e.id + '" title="退回素材箱（内容和文件都留着）">退</button>' +
+        '<button class="linkbtn danger-t" data-mdentry-del="' + e.id + '" data-media-id="' +
+        (e.media_id || '') + '" title="删掉这条媒体（文件一起删）">删</button></div></div>';
     }
     // 文字条目：可就地改，可删，可配图，还能往后面传图片/视频/录音
     if (isEdit('entry', e.id)) {
@@ -1427,7 +1721,7 @@
         '<figcaption><span class="ph-meta">' + esc(e.taken_year || '') +
         (e.place ? ' · ' + esc(e.place) : '') + '</span></figcaption></figure>';
     }
-    return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '"><p>' + esc(e.text) + '</p>' +
+    return '<div class="en' + (e.kind === 'quote' ? ' quote' : '') + '" data-eid="' + e.id + '"><p>' + esc(e.text) + '</p>' +
       paired +
       '<div class="en-acts">' + selCheck(e) + moveActs(e) + assignAct(e) +
       '<button class="linkbtn" data-polish="' + e.id + '" title="AI 润色，原文不动">润</button>' +
@@ -1436,6 +1730,7 @@
       (e.photo_path ? '<button class="linkbtn" data-unpair-entry="' + e.id + '" title="拿掉这一段的配图">去图</button>' : '') +
       '<button class="linkbtn" data-entry-upload="' + e.id + '" data-ch="' +
         (e.chapter_id || '') + '">传</button>' +
+      '<button class="linkbtn" data-to-quick="' + e.id + '" title="退回素材箱（内容和文件都留着）">退</button>' +
       '<button class="linkbtn danger-t" data-entry-del="' + e.id + '">删</button>' +
       '</div></div>';
   }
@@ -1666,14 +1961,17 @@
       '" data-ins-ch="' + (chapterId || '') + '">＋ 在这里插入</button></div>';
   }
 
-  /** 插入菜单：插照片 / 写一段 */
+  /** 插入菜单：写一段话 / 用档案里的照片 / 拍一张 / 拍一段 / 录一段 */
   function openInsertMenu(aid, afterId, chapterId) {
     var ov = document.createElement('div');
     ov.className = 'ml-modal-ov';
     ov.innerHTML = '<div class="ml-modal"><h3>在这里插入</h3>' +
       '<div class="ins-menu">' +
-      '<button class="ins-choice" data-ins-kind="photo">🖼 插一张照片</button>' +
       '<button class="ins-choice" data-ins-kind="text">✍ 写一段话</button>' +
+      '<button class="ins-choice" data-ins-kind="photo">🖼 用档案里的照片</button>' +
+      '<button class="ins-choice" data-ins-kind="camera">📷 拍一张照片</button>' +
+      '<button class="ins-choice" data-ins-kind="video">🎬 拍一段视频</button>' +
+      '<button class="ins-choice" data-ins-kind="audio">🎙 录一段音</button>' +
       '</div>' +
       '<div class="ml-modal-acts"><button class="btn" data-ins-cancel="1">取消</button></div></div>';
     document.body.appendChild(ov);
@@ -1687,13 +1985,266 @@
       document.body.removeChild(ov);
       if (kind === 'photo') {
         openInsertPhoto(aid, afterId || null, chapterId || null);
+      } else if (kind === 'camera') {
+        captureIntoEntry(aid, chapterId || null, afterId || null, 'photo');
+      } else if (kind === 'video') {
+        captureIntoEntry(aid, chapterId || null, afterId || null, 'video');
+      } else if (kind === 'audio') {
+        openInsertRecorder(aid, chapterId || null, afterId || null);
       } else {
         openTextPrompt('写一段话', '想到什么写什么，写错了随时能改', function (text) {
           DB.insertAfter(aid, { afterId: afterId || null, chapterId: chapterId || null, kind: 'text', text: text })
-            .then(function () { toast('写好了'); route(); }).catch(fail);
+            .then(function (r) {
+              toast('写好了');
+              focusEntry(r && r.lastId);
+              route();
+            }).catch(fail);
         });
       }
     });
+  }
+
+  /**
+   * v0.9.37 拍一张照片 / 拍一段视频。
+   * 用 <input type=file capture> 调系统相机（capture 让它默认开相机，而不是先跳相册）。
+   * 照片压到 1600px 再存；视频原样收，超过 80MB 提醒拍短一点。
+   */
+  function captureIntoEntry(aid, chapterId, afterId, mode) {
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = mode === 'photo' ? 'image/*' : 'video/*';
+    inp.setAttribute('capture', mode === 'photo' ? 'environment' : 'camcorder');
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+    inp.onchange = function () {
+      var f = inp.files && inp.files[0];
+      if (inp.parentNode) inp.parentNode.removeChild(inp);
+      if (!f) return;                       // 取消了拍摄
+      if (mode === 'photo') {
+        compress(f, function (dataUrl) {
+          DB.addMediaEntry(aid, chapterId, 'photo', dataUrl, 'image/jpeg', '', 'jpg', afterId)
+            .then(function (r) { toast('照片插好了'); focusEntry(r && r.lastId); route(); }).catch(fail);
+        });
+        return;
+      }
+      if (f.size > 80 * 1024 * 1024) { toast('视频超过 80MB，传不动，拍短一点再试'); return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var ext = (f.name && f.name.match(/\.([a-z0-9]{2,5})$/i) || [])[1] || 'mp4';
+        DB.addMediaEntry(aid, chapterId, 'video', String(reader.result), f.type || 'video/mp4', '', ext, afterId)
+          .then(function (r) { toast('视频插好了'); focusEntry(r && r.lastId); route(); }).catch(fail);
+      };
+      reader.onerror = function () { toast('这个视频读不出来，换一个试试'); };
+      reader.readAsDataURL(f);
+    };
+    inp.click();
+  }
+
+  /** 读本地文件成 base64（安卓壳里原生录音是落在 /files 下的，得取回来才能入库） */
+  function pathToBase64(path) {
+    return new Promise(function (res, rej) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', fsrc(path), true);
+      xhr.responseType = 'blob';
+      xhr.onload = function () {
+        if (xhr.status !== 200 || !xhr.response) { rej(new Error('读不到录音文件')); return; }
+        var fr = new FileReader();
+        fr.onload = function () { res(String(fr.result)); };
+        fr.onerror = function () { rej(new Error('读录音失败')); };
+        fr.readAsDataURL(xhr.response);
+      };
+      xhr.onerror = function () { rej(new Error('读录音文件出错')); };
+      xhr.send();
+    });
+  }
+
+  /**
+   * v0.9.37 段落之间「录一段音」。
+   * 安卓壳走 NativeRec（原生 AudioRecord，最稳）；
+   * 电脑 / 浏览器走 getUserMedia + ScriptProcessor 手搓 WAV（同素材箱那条兜底路）。
+   * 录完直接插在点的那一段后面，不当讲述、也不自动转写。
+   */
+  function openInsertRecorder(aid, chapterId, afterId) {
+    var NATIVE = window.NativeRec || null;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var canWeb = !!(AC && typeof MediaRecorder !== 'undefined' && navigator.mediaDevices &&
+      navigator.mediaDevices.getUserMedia);
+    var canUse = !!NATIVE || canWeb;
+
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal"><h3>录一段音</h3>' +
+      '<p class="hint dim" id="irState">' +
+      (canUse ? '点「开始录音」，说完点「停下」，这段声音会插在这段话后面。'
+        : '这台设备不支持录音，可以直接写一段话。') + '</p>' +
+      '<div class="ml-modal-acts">' +
+      '<button class="btn primary" id="irBtn"' + (canUse ? '' : ' disabled') + '>开始录音</button>' +
+      '<button class="btn" data-ir-cancel="1">取消</button></div>' +
+      '<div class="ml-modal-msg" id="irMsg"></div></div>';
+    document.body.appendChild(ov);
+
+    var stateEl = ov.querySelector('#irState');
+    var msgEl = ov.querySelector('#irMsg');
+    var btn = ov.querySelector('#irBtn');
+    var on = false, native = false, started = 0, peak = 0, tick = 0;
+    var chunks = [], ctx = null, src = null, proc = null, mute = null, stream = null;
+
+    function close() {
+      try { stopTracks(); } catch (e) {}
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+    }
+    function stopTracks() {
+      try { if (proc) proc.disconnect(); } catch (e) {}
+      try { if (src) src.disconnect(); } catch (e) {}
+      try { if (mute) mute.disconnect(); } catch (e) {}
+      try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      try { if (ctx) ctx.close(); } catch (e) {}
+      proc = src = mute = stream = ctx = null;
+    }
+    function setBtn(rec) {
+      btn.className = 'btn ' + (rec ? '' : 'primary');
+      btn.textContent = rec ? '停下' : '开始录音';
+    }
+
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-ir-cancel]'))) {
+        if (on) { try { NATIVE && NATIVE.cancel(); } catch (e) {} on = false; }
+        close(); return;
+      }
+      if (!ev.target.closest || !ev.target.closest('#irBtn')) return;
+      if (!canUse) return;
+      if (on) stop(); else start();
+    });
+
+    function start() {
+      if (NATIVE) return startNative('');
+      startWeb('');
+    }
+
+    /* ---- 原生 ---- */
+    function startNative(nativeErr) {
+      var st = '';
+      try { st = String(NATIVE.state() || ''); } catch (e) { st = ''; }
+      if (st.indexOf('granted') < 0) {
+        stateEl.textContent = '正在请求麦克风权限……';
+        window.__micPerm = function (r) {
+          window.__micPerm = null;
+          if (String(r) === 'granted') doStartNative(nativeErr);
+          else stateEl.textContent = '系统没放行麦克风（' + r + '）。到「设置 → 应用 → 岁月记录助手 → 权限」打开麦克风再试';
+        };
+        try { NATIVE.ask(); } catch (e) { window.__micPerm = null; stateEl.textContent = '要不了麦克风权限：' + e.message; }
+        return;
+      }
+      doStartNative(nativeErr);
+    }
+    function doStartNative(nativeErr) {
+      var r = '';
+      try { r = String(NATIVE.start(API.auth.token(), 'ins-' + Date.now() + '.wav') || ''); } catch (e) { r = 'err:' + e.message; }
+      if (r.indexOf('ok') !== 0) {
+        var why = r.replace(/^err:/, '');
+        stateEl.textContent = '原生录音开不了（' + why + '），换浏览器那条路试试……';
+        startWeb(why);
+        return;
+      }
+      on = true; native = true; started = Date.now(); peak = 0;
+      setBtn(true);
+      tick = setInterval(function () {
+        if (!on) return;
+        var sec = 0, pk = 0;
+        try { sec = Number(NATIVE.seconds()) || 0; } catch (e) {}
+        try { pk = Number(NATIVE.level()) || 0; } catch (e) {}
+        if (pk > peak) peak = pk;
+        stateEl.textContent = '正在录…… ' + sec + ' 秒' + (pk < 0.01 ? '（几乎没有声音，对着手机底部的小孔说）' : '');
+        if (sec >= 600) stop();
+      }, 500);
+    }
+
+    /* ---- 浏览器 / 电脑 ---- */
+    function startWeb(nativeErr) {
+      if (!canWeb) {
+        stateEl.textContent = '这台设备录不了音' + (nativeErr ? '（' + nativeErr + '）' : '') + '，可以先写一段话';
+        return;
+      }
+      var c;
+      try { c = new AC(); } catch (e) { stateEl.textContent = '音频通道打不开（' + e.name + '）'; return; }
+      var kick = (c.state === 'suspended') ? c.resume() : Promise.resolve();
+      kick.then(function () {
+        var cons = { audio: true };
+        var savedMic = localStorage.getItem('mylife.mic');
+        if (savedMic) cons.audio = { deviceId: { exact: savedMic } };
+        return navigator.mediaDevices.getUserMedia(cons);
+      }).then(function (s) {
+        chunks = []; ctx = c; stream = s; started = Date.now(); peak = 0;
+        src = c.createMediaStreamSource(s);
+        proc = c.createScriptProcessor(4096, 1, 1);
+        mute = c.createGain();
+        mute.gain.value = 0;
+        proc.onaudioprocess = function (e) {
+          if (!on) return;
+          var d = e.inputBuffer.getChannelData(0);
+          chunks.push(new Float32Array(d));
+          var pk = 0;
+          for (var i = 0; i < d.length; i++) { var v = d[i] < 0 ? -d[i] : d[i]; if (v > pk) pk = v; }
+          if (pk > peak) peak = pk;
+          stateEl.textContent = '正在录……' + (pk < 0.01 ? '（几乎没有声音，检查麦克风）' : '') +
+            ' 已录 ' + Math.round((Date.now() - started) / 1000) + ' 秒';
+          if (chunks.length * 4096 / c.sampleRate > 600) stop();
+        };
+        src.connect(proc);
+        proc.connect(mute);
+        mute.connect(c.destination);
+        on = true; native = false;
+        setBtn(true);
+        stateEl.textContent = '正在录……';
+      }).catch(function (e) {
+        stateEl.textContent = '录音打不开（' + ((e && e.name) || '未知') + '）' +
+          (nativeErr ? '；原生也失败：' + nativeErr : '') + '。可以先写一段话';
+      });
+    }
+
+    function stop() {
+      if (!on) return;
+      on = false;
+      setBtn(false);
+      if (tick) { clearInterval(tick); tick = 0; }
+      if (native) return stopNative();
+      var rate = ctx ? ctx.sampleRate : 48000;
+      var sec = Math.round((Date.now() - started) / 1000);
+      var pk = peak;
+      var buf;
+      try { buf = buildWav(chunks, rate, 16000); } catch (e) { msgEl.textContent = '这段没合出来：' + e.message; return; }
+      stopTracks();
+      if (pk < 0.01) { stateEl.textContent = '这段全是静音，没存。再录一次'; return; }
+      var bytes = new Uint8Array(buf), bin = '', CH = 0x8000;
+      for (var i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+      save(btoa(bin), 'audio/wav', 'wav', sec);
+    }
+
+    function stopNative() {
+      var out = null;
+      try { out = JSON.parse(String(NATIVE.stop() || '{}')); } catch (e) { out = null; }
+      if (!out || !out.ok) { stateEl.textContent = '这段没存下来：' + ((out && out.err) || '一个字节都没录到'); return; }
+      if (Number(out.peak) < 0.01) {
+        try { NATIVE.cancel(); } catch (e) {}
+        stateEl.textContent = '这段全是静音，没存。看看有没有挡到麦克风孔，再录一次';
+        return;
+      }
+      stateEl.textContent = '录好了 ' + (out.seconds || 0) + ' 秒，正在插进正文……';
+      pathToBase64(out.path).then(function (dataUrl) {
+        save(dataUrl, 'audio/wav', 'wav', Number(out.seconds) || 0);
+      }).catch(function (e) { msgEl.textContent = e.message; });
+    }
+
+    function save(base64, mime, ext, sec) {
+      stateEl.textContent = '正在存这段录音……';
+      DB.addMediaEntry(aid, chapterId, 'audio', base64, mime, '', ext, afterId)
+        .then(function (r) {
+          toast('录音插好了' + (sec ? '（' + sec + ' 秒）' : ''));
+          close();
+          focusEntry(r && r.lastId);
+          route();
+        }).catch(function (e) { msgEl.textContent = '没存下来：' + e.message; });
+    }
   }
 
   /** AI 画的图（ai_assets）里还没收进这本档案照片库的，供选图弹窗挑选 */
@@ -1738,58 +2289,289 @@
     return g ? ('<h4 class="pick-sec">AI 生成的图</h4><div class="pick-grid">' + g + '</div>') : '';
   }
 
-  /** 插照片：列出还没放进正文的照片；没有就直接传一张新的 */
+  /* ---------------- 选图：能多选，能看大图（大图里左右滑着选） ---------------- */
+
+  /**
+   * v0.9.39 插完别把人扔回正文开头。
+   * 页面是整块重渲染的，滚动位置会掉回顶部；这里等新条目出现，把它滚回眼前。
+   */
+  function focusEntry(eid) {
+    var id = Number(eid) || 0;
+    if (!id) return;
+    var tries = 0;
+    (function tick() {
+      var el = document.querySelector('[data-eid="' + id + '"]');
+      if (el) {
+        var top = el.getBoundingClientRect().top + (window.pageYOffset || 0) - 84;
+        try { window.scrollTo(0, top > 0 ? top : 0); } catch (e) {}
+        el.className = String(el.className || '') + ' fresh';
+        setTimeout(function () {
+          el.className = String(el.className || '').replace(/\s*fresh\b/, '');
+        }, 2600);
+        // 图片是懒加载的，加载完布局会往下挪一截——过半秒再校一次，别让它又滑走
+        setTimeout(function () {
+          var el2 = document.querySelector('[data-eid="' + id + '"]');
+          if (!el2) return;
+          var t2 = el2.getBoundingClientRect().top + (window.pageYOffset || 0) - 84;
+          if (Math.abs(t2 - (window.pageYOffset || 0)) > 60) {
+            try { window.scrollTo(0, t2 > 0 ? t2 : 0); } catch (e2) {}
+          }
+        }, 700);
+        return;
+      }
+      if (++tries > 40) return;
+      setTimeout(tick, 100);
+    })();
+  }
+
+  /**
+   * 选中的照片依次插到锚点后面（一次可以好几张）。
+   * keys 里的 'ai:12' 先收进照片库换 photoId；顺序按用户点选的先后排。
+   */
+  function insertPickedPhotos(aid, afterId, chapterId, keys) {
+    var jobs = [], i;
+    for (i = 0; i < keys.length; i++) {
+      (function (key, idx) {
+        if (String(key).indexOf('ai:') === 0) {
+          jobs.push(new Promise(function (res) {
+            adoptAiImage(aid, Number(String(key).slice(3)), function (pid) {
+              res({ idx: idx, pid: pid });
+            });
+          }));
+        } else {
+          jobs.push(Promise.resolve({ idx: idx, pid: Number(String(key).slice(2)) }));
+        }
+      })(keys[i], i);
+    }
+    return Promise.all(jobs).then(function (rs) {
+      rs.sort(function (a, b) { return a.idx - b.idx; });
+      var ids = [], j;
+      for (j = 0; j < rs.length; j++) if (rs[j].pid) ids.push(rs[j].pid);
+      if (!ids.length) { toast('一张也没选上'); return; }
+      var chain = Promise.resolve(), last = afterId || null, first = 0;
+      ids.forEach(function (pid) {
+        chain = chain.then(function () {
+          return DB.insertAfter(aid, { afterId: last, chapterId: chapterId, kind: 'photo', photoId: pid })
+            .then(function (r) {
+              if (r && r.lastId) { last = r.lastId; if (!first) first = r.lastId; }
+            });
+        });
+      });
+      return chain.then(function () {
+        toast(ids.length > 1 ? ('插进去 ' + ids.length + ' 张照片') : '照片插好了');
+        focusEntry(first);
+        route();
+      });
+    }).catch(fail);
+  }
+
+  /** 插照片：列出还没放进正文的照片；能多选、能看大图，选好按「插进去」才动手 */
   function openInsertPhoto(aid, afterId, chapterId) {
     var sql = 'SELECT id, path, taken_year, place FROM photos WHERE archive_id=? ' +
       'AND id NOT IN (SELECT photo_id FROM entries WHERE archive_id=? AND photo_id IS NOT NULL) ' +
       'ORDER BY taken_year, id';
     API.query(sql, [aid, aid]).then(function (photos) {
       fetchAiImages(aid).then(function (ais) {
-      var grid = '', i;
-      for (i = 0; i < photos.length; i++) {
-        var p = photos[i];
-        grid += '<button class="pick-ph" data-pick-ph="' + p.id + '">' +
-          '<img src="' + esc(fsrc(p.path)) + '" alt="">' +
-          '<span>' + esc(p.taken_year || '') + (p.place ? ' · ' + esc(p.place) : '') + '</span></button>';
-      }
-      var ov = document.createElement('div');
-      ov.className = 'ml-modal-ov';
-      ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选一张还没放进正文的照片</h3>' +
-        '<div class="pick-grid">' + (grid || '<p class="muted">没有待放的照片了，可以点下面上传一张新的，或选下面的 AI 生成图</p>') + '</div>' +
-        aiPickGrid(ais) +
-        '<div class="ml-modal-acts"><button class="btn" data-pick-upload="1">上传新照片</button>' +
-        '<button class="btn" data-pick-cancel="1">取消</button></div></div>';
-      document.body.appendChild(ov);
-      ov.addEventListener('click', function (ev) {
-        if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pick-cancel]'))) {
-          document.body.removeChild(ov); return;
-        }
-        if (ev.target.closest && ev.target.closest('[data-pick-upload]')) {
-          document.body.removeChild(ov);
-          uploadToEntry(aid, chapterId, route, afterId);
-          return;
-        }
-        var ab = ev.target.closest && ev.target.closest('[data-pick-ai]');
-        if (ab) {
-          var aiId = Number(ab.getAttribute('data-pick-ai'));
-          document.body.removeChild(ov);
-          adoptAiImage(aid, aiId, function (pid) {
-            DB.insertAfter(aid, { afterId: afterId, chapterId: chapterId, kind: 'photo', photoId: pid })
-              .then(function () { toast('插好了'); route(); }).catch(fail);
+        var items = [], i;
+        for (i = 0; i < photos.length; i++) {
+          items.push({
+            key: 'p:' + photos[i].id, path: photos[i].path,
+            label: (photos[i].taken_year ? photos[i].taken_year + ' 年' : '') +
+              (photos[i].place ? ' · ' + photos[i].place : '')
           });
-          return;
         }
-        var pb = ev.target.closest && ev.target.closest('[data-pick-ph]');
-        if (pb) {
-          var pid = Number(pb.getAttribute('data-pick-ph'));
-          document.body.removeChild(ov);
-          DB.insertAfter(aid, { afterId: afterId, chapterId: chapterId, kind: 'photo', photoId: pid })
-            .then(function () { toast('插好了'); route(); }).catch(fail);
+        for (i = 0; i < ais.length; i++) {
+          items.push({
+            key: 'ai:' + ais[i].id, path: ais[i].path,
+            label: 'AI · ' + String(ais[i].prompt || '生成的图').slice(0, 14)
+          });
         }
-      });
+
+        var picked = {}, order = [];
+
+        var grid = '';
+        for (i = 0; i < items.length; i++) {
+          grid += '<div class="pick-cell" data-pv-open="' + i + '">' +
+            '<img src="' + esc(fsrc(items[i].path)) + '" alt=""' +
+            (i > 5 ? ' loading="lazy"' : '') + '>' +
+            '<span class="pick-cap">' + esc(items[i].label) + '</span>' +
+            '<button class="pick-tick" data-pv-tick="' + i + '">✓</button></div>';
+        }
+
+        var ov = document.createElement('div');
+        ov.className = 'ml-modal-ov';
+        ov.innerHTML = '<div class="ml-modal pick-modal"><h3>选照片（可以多选）</h3>' +
+          '<p class="hint dim">点图片看大图，大图里能左右滑着挑；点图片右下角的 <b>✓</b> 直接选中。</p>' +
+          '<div class="pick-grid">' + (grid ||
+            '<p class="muted">还没有待放的照片。可以点下面「上传新照片」，或直接拍一张。</p>') + '</div>' +
+          '<div class="ml-modal-acts">' +
+          '<button class="btn primary" data-pv-ok="1" disabled>插进去</button>' +
+          '<button class="btn" data-pv-cancel="1">取消</button></div>' +
+          '<div class="ml-modal-acts">' +
+          '<button class="btn tiny" data-pv-upload="1">上传新照片</button>' +
+          '<button class="btn tiny" data-pv-cam="1">现在拍一张</button></div></div>';
+        document.body.appendChild(ov);
+
+        var okb = ov.querySelector('[data-pv-ok]');
+        var cells = ov.querySelectorAll('[data-pv-open]');
+
+        function refresh() {
+          var n = order.length, j;
+          for (j = 0; j < cells.length; j++) {
+            var idx = Number(cells[j].getAttribute('data-pv-open'));
+            var on = !!picked[items[idx] && items[idx].key];
+            if (on) cells[j].className = 'pick-cell on'; else cells[j].className = 'pick-cell';
+          }
+          okb.disabled = n === 0;
+          okb.textContent = n ? ('插进去（' + n + ' 张）') : '插进去';
+        }
+
+        function toggle(key) {
+          if (picked[key]) {
+            delete picked[key];
+            for (var j = 0; j < order.length; j++) if (order[j] === key) { order.splice(j, 1); break; }
+          } else {
+            picked[key] = 1;
+            order.push(key);
+          }
+          refresh();
+        }
+
+        function closeGrid() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+
+        /* 确认插：不管是在格子上点「插进去」，还是在大图里点「选好了」，都走这一条 */
+        function submit() {
+          if (!order.length) { toast('还没选照片'); return; }
+          var keys = order.slice(0);
+          closeGrid();
+          insertPickedPhotos(aid, afterId, chapterId, keys);
+        }
+
+        ov.addEventListener('click', function (ev) {
+          if (ev.target === ov || (ev.target.closest && ev.target.closest('[data-pv-cancel]'))) {
+            closeGrid(); return;
+          }
+          var tb = ev.target.closest && ev.target.closest('[data-pv-tick]');
+          if (tb) {
+            var it = items[Number(tb.getAttribute('data-pv-tick'))];
+            if (it) toggle(it.key);
+            return;
+          }
+          if (ev.target.closest && ev.target.closest('[data-pv-upload]')) {
+            closeGrid();
+            uploadToEntry(aid, chapterId, route, afterId);
+            return;
+          }
+          if (ev.target.closest && ev.target.closest('[data-pv-cam]')) {
+            closeGrid();
+            captureIntoEntry(aid, chapterId, afterId, 'photo');
+            return;
+          }
+          if (ev.target.closest && ev.target.closest('[data-pv-ok]')) {
+            submit();
+            return;
+          }
+          var ob = ev.target.closest && ev.target.closest('[data-pv-open]');
+          if (ob) {
+            var at = Number(ob.getAttribute('data-pv-open'));
+            if (items[at]) openPhotoPreview(at, items, picked, toggle, refresh, submit);
+          }
+        });
+
+        refresh();
       }).catch(fail);
     }).catch(fail);
   }
+
+  /**
+   * 大图预览：一张占一屏，左右滑（或点箭头）换张，中间那个按钮选中/取消。
+   * 老人家看不清缩略图，就看大图再决定——选中几张贴着走，最后一起插。
+   * onDone：在大图里点「选好了」就直接插，不用退回格子再确认一次。
+   */
+  function openPhotoPreview(start, items, picked, toggle, refresh, onDone) {
+    if (!items.length) return;
+    var at = start < 0 ? 0 : (start >= items.length ? items.length - 1 : start);
+
+    var pv = document.createElement('div');
+    pv.className = 'photo-view';
+    pv.innerHTML = '<div class="pv-top">' +
+      '<button class="pv-x" data-pvx="1">✕ 关闭</button>' +
+      '<span class="pv-idx" id="pvIdx"></span>' +
+      '<button class="pv-sel" id="pvSel"></button></div>' +
+      '<div class="pv-stage" id="pvStage">' +
+      '<img class="pv-img" id="pvImg" alt="">' +
+      '<button class="pv-nav prev" data-pvnav="-1">‹</button>' +
+      '<button class="pv-nav next" data-pvnav="1">›</button></div>' +
+      '<div class="pv-cap" id="pvCap"></div>' +
+      '<div class="pv-bar"><button class="btn primary block" id="pvDone"></button></div>';
+    document.body.appendChild(pv);
+
+    var img = pv.querySelector('#pvImg');
+    var idxEl = pv.querySelector('#pvIdx');
+    var capEl = pv.querySelector('#pvCap');
+    var selb = pv.querySelector('#pvSel');
+    var doneb = pv.querySelector('#pvDone');
+
+    function paint() {
+      var it = items[at];
+      img.src = fsrc(it.path);
+      idxEl.textContent = (at + 1) + ' / ' + items.length;
+      capEl.textContent = it.label || '';
+      var on = !!picked[it.key];
+      selb.textContent = on ? '✓ 已选中' : '＋ 选中这张';
+      selb.className = 'pv-sel' + (on ? ' on' : '');
+      var n = 0, k;
+      for (k in picked) if (picked.hasOwnProperty(k)) n++;
+      doneb.textContent = n ? ('选好了，就插这 ' + n + ' 张') : '还没选，接着看';
+      doneb.disabled = n === 0;
+    }
+    function go(d) {
+      at += d;
+      if (at < 0) at = 0;
+      if (at > items.length - 1) at = items.length - 1;
+      paint();
+    }
+    function close() {
+      if (pv.parentNode) pv.parentNode.removeChild(pv);
+      if (refresh) refresh();
+    }
+
+    pv.addEventListener('click', function (ev) {
+      if (!ev.target.closest) return;
+      if (ev.target === pv || ev.target.closest('[data-pvx]')) return close();
+      var nb = ev.target.closest('[data-pvnav]');
+      if (nb) return go(Number(nb.getAttribute('data-pvnav')) || 1);
+      if (ev.target.closest('#pvSel')) {
+        toggle(items[at].key);
+        paint();
+        return;
+      }
+      if (ev.target.closest('#pvDone')) {
+        if (doneb.disabled) return;
+        if (pv.parentNode) pv.parentNode.removeChild(pv);
+        if (onDone) onDone(); else close();
+      }
+    });
+
+    /* 手机上左右滑：滑过 40px 就算换一张 */
+    var sx = 0, sy = 0, moving = false;
+    pv.querySelector('#pvStage').addEventListener('touchstart', function (e) {
+      var t = e.touches && e.touches[0];
+      if (!t) return;
+      sx = t.clientX; sy = t.clientY; moving = true;
+    }, false);
+    pv.querySelector('#pvStage').addEventListener('touchend', function (e) {
+      if (!moving) return;
+      moving = false;
+      var t = e.changedTouches && e.changedTouches[0];
+      if (!t) return;
+      var dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) go(dx < 0 ? 1 : -1);
+    }, false);
+
+    paint();
+  }
+
 
   /** 简单的多行输入弹窗 */
   function openTextPrompt(title, placeholder, onOk) {
@@ -2621,7 +3403,7 @@
     return k;
   }
 
-  var APP_VERSION = 'v0.9.34';  // 与 CHANGELOG.md、server.js 保持一致
+  var APP_VERSION = 'v0.9.42';  // 与 CHANGELOG.md、server.js 保持一致
   var editing = null;          // 正在编辑的配置；null 表示新增
   var settingsClickHandler = null;   // 反复进出设置页时不能叠加监听器
   var collectClickHandler = null;    // 同上，采集页的「转成文字」
@@ -2934,6 +3716,7 @@
         '<p class="hint">把全部档案（含照片、录音）、素材箱和阅读偏好存成一个文件。' +
         '换手机、换电脑，用同一个文件导回来就行。模型密钥不进备份，导回后要重新填。</p>' +
         '<div class="pref-row"><button class="btn tiny" id="bkExport">导出整库备份</button>' +
+        '<button class="btn tiny ghost" id="bkShare" hidden>分享备份</button>' +
         '<label class="btn tiny ghost" id="bkImportBtn">导回备份' +
         '<input type="file" id="bkImport" accept=".json,application/json" hidden></label>' +
         '<span class="muted" id="bkState"></span></div>';
@@ -3264,7 +4047,9 @@
 
     /* ---- v0.9.18 整库备份 / 导回 ---- */
     var bkExport = document.getElementById('bkExport');
+    var bkShare = document.getElementById('bkShare');
     var bkState = document.getElementById('bkState');
+    var lastBackup = null;
     if (bkExport) bkExport.onclick = function () {
       bkExport.disabled = true;
       var oldT = bkExport.textContent;
@@ -3276,8 +4061,10 @@
         bkExport.textContent = oldT;
         if (bkState) bkState.textContent = '共 ' + pack.packs.length + ' 本档案';
         var body = JSON.stringify(pack);
+        lastBackup = { body: body, fname: fname };
         if (window.NativeIO && window.NativeIO.saveExport) {
           toast(window.NativeIO.saveExport(body, fname) ? '备份已存到手机 Download 目录' : '保存失败');
+          if (bkShare && window.NativeIO.shareText) bkShare.hidden = false;
         } else {
           var blob = new Blob([body], { type: 'application/json' });
           var a2 = document.createElement('a');
@@ -3295,6 +4082,11 @@
         if (bkState) bkState.textContent = '';
         fail(e);
       });
+    };
+    if (bkShare) bkShare.onclick = function () {
+      if (!lastBackup) return toast('先点「导出整库备份」，再分享');
+      if (!(window.NativeIO && window.NativeIO.shareText)) return toast('这台设备不支持分享');
+      toast(window.NativeIO.shareText(lastBackup.body, lastBackup.fname) ? '已弹出分享' : '分享失败');
     };
     var bkImport = document.getElementById('bkImport');
     if (bkImport) bkImport.onchange = function () {
@@ -3512,6 +4304,9 @@
         inner =
           '<div class="fld"><label>手机号</label><input id="auPhone" type="tel" maxlength="11" placeholder="11 位手机号"></div>' +
           '<div class="fld"><label>密码</label><input id="auPass" type="password" placeholder="至少 6 位"></div>' +
+          '<label class="au-remember" id="auRemRow"' + (mode === 'register' ? ' hidden' : '') + '>' +
+          '<input type="checkbox" id="auRemember" checked> 记住我，下次打开直接进' +
+          '</label>' +
           '<div class="fld" id="auNickRow"' + (mode === 'register' ? '' : ' hidden') + '><label>昵称（选填）</label><input id="auNick" placeholder="怎么称呼你"></div>' +
           '<div class="fld" id="auCodeRow"' + (mode === 'register' ? '' : ' hidden') + '><label>短信验证码</label><div style="display:flex;gap:8px"><input id="auCode" maxlength="6" placeholder="演示版固定 1234" style="flex:1"><button class="btn" id="auSms" type="button">发验证码</button></div></div>' +
           '<div class="fld" id="auSecQRow"' + (mode === 'register' ? '' : ' hidden') + '><label>密保问题（选填，用于找回密码）</label><input id="auSecQ" placeholder="例如：我小学班主任姓什么"></div>' +
@@ -3584,7 +4379,8 @@
         } else {
           p = API.auth.login(phone, pass);
         }
-        p.then(done).catch(function (e) { msg(e.message); btn.disabled = false; });
+        var keep = rememberOn();
+        p.then(function (r) { done(r, keep); }).catch(function (e) { msg(e.message); btn.disabled = false; });
       };
       var passEl = document.getElementById('auPass');
       if (passEl) passEl.addEventListener('keydown', function (e) {
@@ -3603,8 +4399,13 @@
       }).catch(function (e) { msg(e.message); });
     }
 
-    function done(r) {
-      API.auth.setToken(r.token);
+    function rememberOn() {
+      var el = document.getElementById('auRemember');
+      return el ? !!el.checked : true;
+    }
+
+    function done(r, persist) {
+      API.auth.setToken(r.token, persist !== false);
       try { localStorage.setItem('mylife.phone', r.phone || ''); } catch (e) {}
       toast(r.message || '欢迎回来');
       go('#/');
@@ -3893,6 +4694,182 @@
     }).catch(fail);
   }
 
+  /** 挑几章：勾选后只处理这些章（预览 / 翻书 / 导出） */
+  function openPickChapters(archiveId) {
+    DB.getArchive(archiveId).then(function (d) {
+      var list = (d && d.chapters) || [];
+      if (!list.length) { toast('这本还没有章节'); return; }
+      var rows = '';
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        var t = String(c.title || '').replace(/^[^·]*·\s*/, '') || ('第 ' + (i + 1) + ' 章');
+        rows += '<label class="rd-row"><input type="checkbox" name="pickCh" value="' + c.id + '">' +
+          '<span class="rd-idx">' + (i + 1) + '</span>' +
+          '<span class="rd-t">' + esc(t) + '</span></label>';
+      }
+      var ov = document.createElement('div');
+      ov.className = 'ml-modal-ov';
+      ov.innerHTML = '<div class="ml-modal rd-modal"><h3>挑几章</h3>' +
+        '<p class="hint dim">勾上要看的章，点「就这样」。</p>' +
+        '<div class="rd-list">' + rows + '</div>' +
+        '<div class="ml-modal-acts"><button class="btn primary" data-pick-go="1">就这样</button>' +
+        '<button class="btn" data-pick-cancel="1">取消</button></div></div>';
+      document.body.appendChild(ov);
+
+      ov.addEventListener('click', function (ev) {
+        var t2 = ev.target;
+        if (!t2.closest) return;
+        if (t2 === ov || t2.closest('[data-pick-cancel]')) {
+          if (ov.parentNode) ov.parentNode.removeChild(ov);
+          return;
+        }
+        if (t2.closest('[data-pick-go]')) {
+          var ins = ov.querySelectorAll('input[name="pickCh"]:checked');
+          var ids = [], k;
+          for (k = 0; k < ins.length; k++) ids.push(Number(ins[k].value));
+          if (!ids.length) { toast('先勾上至少一章'); return; }
+          ov.parentNode.removeChild(ov);
+          openBookFor(archiveId, ids);
+        }
+      });
+    }).catch(fail);
+  }
+
+  /** 导出成功后那两个按钮（存到手机 Download / 分享）的公共处理，整本与单章共用 */
+  function handleExportSaveClick(t) {
+    if (!t.closest) return false;
+    var sv = t.closest('[data-ex-save]') || t.closest('[data-ex-share]');
+    if (!sv) return false;
+    var rel = sv.getAttribute('data-ex-save') || sv.getAttribute('data-ex-share');
+    var fname = sv.getAttribute('data-ex-name') || String(rel).split('/').pop();
+    var mime = sv.getAttribute('data-ex-mime') || 'application/octet-stream';
+    var tok = (window.API && API.auth && API.auth.token) ? (API.auth.token() || '') : '';
+    var isShare = !!sv.getAttribute('data-ex-share');
+    if (!(window.NativeIO && window.NativeIO.copyToDownload)) { toast('这台设备不支持'); return true; }
+    var ok = isShare ? window.NativeIO.shareFile(rel, fname, mime, tok)
+      : window.NativeIO.copyToDownload(rel, fname, mime, tok);
+    toast(ok ? (isShare ? '已弹出分享' : '已存到手机 Download') : '操作失败');
+    return true;
+  }
+
+  /**
+   * v0.9.36 只看 / 只导出某一章。
+   * 整本导出要先读全部照片（几百兆），临时想给朋友看一章不值当。
+   */
+  function openChapterBook(archiveId, chId) { openBookFor(archiveId, [Number(chId)]); }
+
+  /** 只看 / 只导出选中的这几章（一章或几章） */
+  function openBookFor(archiveId, chapterIds) {
+    var many = chapterIds.length > 1;
+    var ov = document.createElement('div');
+    ov.className = 'ml-modal-ov';
+    ov.innerHTML = '<div class="ml-modal book-modal"><h3>' +
+      (many ? '选中的 ' + chapterIds.length + ' 章' : '这一章') + '</h3>' +
+      '<p class="hint dim">只处理选中的内容：预览、翻书、导出都只含这些章。</p>' +
+      '<button class="ex-card" data-cb="preview"><b>预览成书</b><small>按成书排版看一遍，确认无误再导出</small></button>' +
+      '<button class="ex-card" data-cb="flip"><b>📖 翻书看</b><small>把这一章装订成小册子翻着看</small></button>' +
+      '<button class="ex-card" data-cb="docx"><b>导出 Word</b><small>只含这一章，方便单独发给别人</small></button>' +
+      '<button class="ex-card" data-cb="html"><b>导出网页</b><small>存成 .html，手机进 Download / 电脑直接下载</small></button>' +
+      '<div class="ml-modal-acts"><button class="btn" data-cb="cancel">取消</button></div>' +
+      '<div class="ml-modal-msg" id="cbMsg"></div></div>';
+    document.body.appendChild(ov);
+
+    var msg = ov.querySelector('#cbMsg');
+    var busy = false;
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+
+    ov.addEventListener('click', function (ev) {
+      if (ev.target === ov) { close(); return; }
+      if (handleExportSaveClick(ev.target)) return;
+      var b = ev.target.closest && ev.target.closest('[data-cb]');
+      if (!b || busy) return;
+      var kind = b.getAttribute('data-cb');
+      if (kind === 'cancel') { close(); return; }
+
+      busy = true;
+      b.classList.add('on');
+      var only = { chapterIds: chapterIds };
+      msg.textContent = '正在读这一章……';
+
+      window.Exporter.model(archiveId, only).then(function (m) {
+        if (!m.chapters.length) throw new Error('这一章还没有内容');
+
+        if (kind === 'preview') {
+          busy = false;
+          close();
+          openDocPreview(m, { archiveId: archiveId, chapterIds: only.chapterIds });
+          return null;
+        }
+        if (kind === 'flip') {
+          msg.textContent = '正在装订……';
+          return window.Exporter.inlineImages(m, 140).then(function (inl) {
+            close();
+            window.BookFlip.open(m, { theme: 'paper', images: inl.map });
+          });
+        }
+        if (kind === 'docx') {
+          msg.textContent = '正在生成 Word……';
+          return window.Exporter.docx(m, { archiveId: archiveId }).then(function (r) {
+            busy = false; b.classList.remove('on');
+            if (!r || r.ok === false) { msg.textContent = (r && r.message) || '导出失败'; return; }
+            var base = String(r.path || '').split('/').pop();
+            var dm = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+            msg.innerHTML = '好了：' + bytes(r.bytes) + '<br>' +
+              (window.NativeIO && window.NativeIO.copyToDownload
+                ? '<button class="linkbtn" data-ex-save="' + esc(r.path) + '" data-ex-name="' + esc(base) +
+                  '" data-ex-mime="' + dm + '">存到手机（Download）</button>' +
+                  '<button class="linkbtn" data-ex-share="' + esc(r.path) + '" data-ex-name="' + esc(base) +
+                  '" data-ex-mime="' + dm + '">分享</button>'
+                : '<a class="linkbtn" target="_blank" href="' + esc(fsrc(r.path)) + '">打开看看</a>');
+          });
+        }
+
+        msg.textContent = '正在把这一章装进一页……';
+        return window.Exporter.inlineImages(m, 160).then(function (inl) {
+          var full = window.Exporter.html(m, { size: 'a5', theme: 'paper', images: inl.map });
+          saveHtmlFile(full, m.meta.title + '-' + (m.chapters[0].title || '一章'), msg);
+          busy = false; b.classList.remove('on');
+        });
+      }).catch(function (e) {
+        busy = false; b.classList.remove('on');
+        msg.textContent = '没成功：' + (e.message || e);
+      });
+    });
+  }
+
+  /**
+   * v0.9.36 把网页落成文件，而不是开新窗口。
+   * 手机 WebView 一律拦 window.open，用户只看到「弹窗被拦」——
+   * 安卓存进 Download（文件管理器能找到），电脑走浏览器下载。
+   */
+  function saveHtmlFile(html, title, msgEl, tail) {
+    var fname = String(title || '整本档案').replace(/[\\/:*?"<>|]/g, '_') + '.html';
+    if (window.NativeIO && window.NativeIO.saveText) {
+      var ok = false;
+      try { ok = !!window.NativeIO.saveText(html, fname, 'text/html'); } catch (e) { ok = false; }
+      if (msgEl) msgEl.textContent = ok
+        ? ('已存到手机 Download/' + fname + '，用浏览器打开就能读、能打印' + (tail || ''))
+        : '保存失败，稍后再试';
+      return ok;
+    }
+    try {
+      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 20000);
+      if (msgEl) msgEl.textContent = '已下载 ' + fname + (tail || '');
+      return true;
+    } catch (e) {
+      if (msgEl) msgEl.textContent = '保存失败：' + (e.message || e);
+      return false;
+    }
+  }
+
   /**
    * 看整本：不再直接跳回目录。给三个真正常用的去处——
    *   ① 回目录页逐章看  ② 直接进导出（Word/PDF/PPT）  ③ 生成一份带目录的整本网页
@@ -3908,8 +4885,10 @@
       '<small>先预览成书排版，再出 Word / PDF / PPT 或打印</small></button>' +
       '<button class="ex-card" data-wb="flip"><b>📖 翻书看</b>' +
       '<small>把整本变成一本能翻的书：双页摊开、翻页有声音般的动画，适合给老人翻着看</small></button>' +
-      '<button class="ex-card" data-wb="html"><b>生成整本网页</b>' +
-      '<small>带封面、目录和全部正文，新窗口打开，可滚动通读、可打印、可另存</small></button>' +
+      '<button class="ex-card" data-wb="pick"><b>只挑几章</b>' +
+      '<small>只看 / 只导出勾中的那几章，不用等整本的图片</small></button>' +
+      '<button class="ex-card" data-wb="html"><b>导出网页文件</b>' +
+      '<small>存成 .html（手机进 Download / 电脑直接下载），用浏览器打开可滚动通读、可打印</small></button>' +
       '<div class="ml-modal-acts"><button class="btn" data-wb="cancel">取消</button></div>' +
       '<div class="ml-modal-msg" id="wbMsg"></div></div>';
     document.body.appendChild(ov);
@@ -3927,6 +4906,11 @@
       if (kind === 'toc') {
         ov.parentNode.removeChild(ov);
         go('#/a/' + archiveId);
+        return;
+      }
+      if (kind === 'pick') {
+        ov.parentNode.removeChild(ov);
+        openPickChapters(archiveId);
         return;
       }
       if (kind === 'export') {
@@ -3947,41 +4931,14 @@
         return;
       }
 
-      // 生成整本网页
+      // 导出网页文件（不再开新窗口：手机必然被拦）
       busy = true;
       msg.textContent = '正在把全文和图片装进一页……';
       window.Exporter.model(archiveId).then(function (m) {
         return window.Exporter.inlineImages(m, 160).then(function (inl) {
           var full = window.Exporter.html(m, { size: 'a5', theme: 'paper', images: inl.map });
-          var w = null;
-          try { w = window.open('', '_blank'); } catch (e) { w = null; }
-          if (w && w.document) {
-            w.document.open();
-            w.document.write(full);
-            w.document.close();
-            msg.textContent = '已在新窗口打开：' + m.meta.chapters + ' 章 · ' +
-              m.meta.words + ' 字 · ' + m.meta.photos + ' 张照片。可用 Ctrl+P 打印或另存。';
-          } else {
-            // 手机上弹窗常被拦：落一份文件 + 触发下载
-            var blob = new Blob([full], { type: 'text/html;charset=utf-8' });
-            var url = URL.createObjectURL(blob);
-            var link = document.createElement('a');
-            link.href = url;
-            link.download = (m.meta.title || '整本档案') + '.html';
-            link.click();
-            setTimeout(function () { URL.revokeObjectURL(url); }, 20000);
-            var fr = new FileReader();
-            fr.onload = function () {
-              var s = String(fr.result || '');
-              API.file({ op: 'save', dir: 'exports', name: (m.meta.title || '整本档案') + '.html',
-                base64: s.slice(s.indexOf(',') + 1) }).then(function () {
-                msg.textContent = '弹窗被拦，已导出整本网页：文件在 exports/ 里，点浏览器下载也能拿到。';
-              }, function () {
-                msg.textContent = '弹窗被拦，已触发下载（看浏览器下载列表）。';
-              });
-            };
-            fr.readAsDataURL(blob);
-          }
+          saveHtmlFile(full, m.meta.title || '整本档案', msg,
+            '（' + m.meta.chapters + ' 章 · ' + m.meta.words + ' 字 · ' + m.meta.photos + ' 张照片）');
           busy = false;
         });
       }).catch(function (e) {
@@ -4010,7 +4967,7 @@
       '<div class="pv-acts">' +
       '<button class="btn tiny" data-pv-close="1">返回</button>' +
       '<button class="btn tiny" data-pv="flip">📖 翻书看</button>' +
-      '<span class="pv-note">这里只是排版检查，还没生成文件</span>' +
+      '<span class="pv-note">这里只是排版检查，还没生成文件 · 文档只含文字和照片</span>' +
       '<button class="btn tiny" data-pv="docx">导出 Word</button>' +
       '<button class="btn tiny" data-pv="pdf">导出 PDF</button>' +
       '<button class="btn tiny primary" data-pv="print">打印 / 存 PDF</button>' +
@@ -4054,8 +5011,18 @@
         back.remove();
         return;
       }
-      if (kind === 'pdf') p = window.Exporter.pdf(m, { size: opts.size, theme: opts.theme, archiveId: opts.archiveId });
-      else p = window.Exporter.docx(m, { archiveId: opts.archiveId });
+      // 手机上没有可靠的一键 PDF（离屏打印常出白页）：改出 Word，再用 WPS 另存 PDF
+      if (kind === 'pdf' && window.NativeIO && window.NativeIO.copyToDownload) {
+        p = window.Exporter.docx(m, { archiveId: opts.archiveId });
+        p = Promise.resolve(p).then(function (r) {
+          if (r && r.ok !== false) {
+            toast('Word 好了。用 WPS 打开 → 菜单里选「另存为 PDF」');
+          }
+          return r;
+        });
+      } else if (kind === 'pdf') {
+        p = window.Exporter.pdf(m, { size: opts.size, theme: opts.theme, archiveId: opts.archiveId });
+      } else p = window.Exporter.docx(m, { archiveId: opts.archiveId });
       Promise.resolve(p).then(function (r) {
         b.disabled = false;
         if (r && r.ok === false) return toast(r.message || '导出失败');
@@ -4075,7 +5042,7 @@
       '<small>按你选的开本和纸色排一遍，看清楚了再决定导出哪种</small></button>' +
       '<div class="ex-grid">' +
       '<button class="ex-card" data-ex="print"><b>印刷版</b><small>浏览器里直接看，按 Ctrl+P 存成 PDF</small></button>' +
-      '<button class="ex-card" data-ex="pdf"><b>PDF</b><small>一键出文件，需要电脑上装了 Chrome/Edge</small></button>' +
+      '<button class="ex-card" data-ex="pdf"><b>PDF</b><small>手机：先出 Word，再用 WPS 另存为 PDF（最稳，不会白页）</small></button>' +
       '<button class="ex-card" data-ex="docx"><b>Word</b><small>能改能批注，给要动笔的人</small></button>' +
       '<button class="ex-card" data-ex="pptx"><b>PPT</b><small>家族聚会放映用，一页一章</small></button>' +
       '</div>' +
@@ -4095,6 +5062,8 @@
       var t = ev.target;
       if (!t.closest) return;
       if (t.closest('[data-ex-close]')) { back.remove(); return; }
+      /* 导出成功后：存到手机 Download / 分享 */
+      if (handleExportSaveClick(t)) return;
       var b = t.closest('[data-ex]');
       if (!b || busy) return;
       var kind = b.getAttribute('data-ex');
@@ -4120,6 +5089,17 @@
           return null;
         }
         if (kind === 'pdf') {
+          // v0.9.36：安卓用离屏 WebView 打印出来的 PDF 经常是空白页——
+          // 几十张图还没解码完 onPageFinished 就触发了打印。
+          // 手机上改成两步：先出 Word，再由 WPS/Word「另存为 PDF」，稳且不白页。
+          if (window.NativeIO && window.NativeIO.copyToDownload) {
+            tip.innerHTML = '手机上出 PDF 走两步最稳：<b>先导出 Word → 用 WPS 打开 → 另存为 PDF</b>。' +
+              '<br>正在生成 Word……';
+            return window.Exporter.docx(m, { archiveId: archiveId }).then(function (r2) {
+              if (r2 && r2.ok) r2.viaWord = true;
+              return r2;
+            });
+          }
           tip.textContent = '正在把图片打包进文档……';
           return window.Exporter.pdf(m, { size: size, theme: theme, archiveId: archiveId });
         }
@@ -4136,9 +5116,24 @@
           tip.textContent = r.message || '没导出成功';
           return;
         }
-        tip.innerHTML = '好了：' + esc(r.path) + '（' + bytes(r.bytes) + '，用了 ' +
-          Math.round((Date.now() - t0) / 1000) + ' 秒）<br>' +
-          '<a class="linkbtn" target="_blank" href="' + esc(fsrc(r.path)) + '">打开看看</a>';
+        if (r.print) { tip.textContent = '已打开系统打印，目标选「保存为 PDF」就行。'; return; }
+        var base = String(r.path || '').split('/').pop();
+        var mime = /\.docx$/i.test(r.path) ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : /\.pptx$/i.test(r.path) ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            : /\.pdf$/i.test(r.path) ? 'application/pdf' : 'application/octet-stream';
+        var nativeOk = !!(window.NativeIO && window.NativeIO.copyToDownload);
+        var head = r.viaWord
+          ? '<b>第一步好了：Word 已生成</b>（' + bytes(r.bytes) + '）<br>' +
+            '接下来点「存到手机」→ 用 WPS/Word 打开 → 菜单里选「另存为 PDF」，PDF 就成了。<br>'
+          : '好了：' + esc(r.path) + '（' + bytes(r.bytes) + '，用了 ' +
+            Math.round((Date.now() - t0) / 1000) + ' 秒）<br>';
+        tip.innerHTML = head +
+          (nativeOk
+            ? '<button class="linkbtn" data-ex-save="' + esc(r.path) + '" data-ex-name="' + esc(base) +
+              '" data-ex-mime="' + mime + '">存到手机（Download）</button>' +
+              '<button class="linkbtn" data-ex-share="' + esc(r.path) + '" data-ex-name="' + esc(base) +
+              '" data-ex-mime="' + mime + '">分享</button>'
+            : '<a class="linkbtn" target="_blank" href="' + esc(fsrc(r.path)) + '">打开看看</a>');
       }).catch(function (e) {
         busy = false; b.classList.remove('on');
         tip.textContent = '出错：' + (e.message || e);
@@ -4243,6 +5238,11 @@
         openReadSheet(Number(aidAll), null);
         return;
       }
+      if ((t = ev.target.closest('[data-ch-book]'))) {
+        var chb = Number(t.getAttribute('data-ch-book'));
+        var mhb = (location.hash || '').match(/#\/a\/(\d+)/);
+        if (mhb) { openChapterBook(Number(mhb[1]), chb); return; }
+      }
       if ((t = ev.target.closest('[data-read-ch]'))) {
         var chId2 = Number(t.getAttribute('data-read-ch'));
         var mH2 = (location.hash || '').match(/#\/a\/(\d+)/);
@@ -4277,6 +5277,12 @@
     if (!API.auth.token()) { go('#/login'); return; }
     API.auth.me().then(function (u) {
       try { if (u && u.phone) localStorage.setItem('mylife.phone', u.phone); } catch (e2) {}
+      // v0.9.38：老版本把录音素材"只搬了文字"，这里把音频补挂回条目（幂等，出错不影响使用）
+      try {
+        DB.repairQuickAudio().then(function (r) {
+          if (r && r.fixed) toast('找到 ' + r.fixed + ' 条没跟过来的录音，已补回档案');
+        }, function () {});
+      } catch (e3) {}
       route();
     }).catch(function (e) {
       API.auth.setToken('');

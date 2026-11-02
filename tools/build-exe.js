@@ -2,7 +2,7 @@
  * 把网页端打成 Windows 单文件 EXE（Node 官方 SEA，不需要第三方打包器）。
  *
  * 产出 dist/win/：
- *   MyLife.exe          单文件，双击即用（内含 Node 运行时 + server.js）
+ *   岁月记录助手.exe     单文件，双击即用（内含 Node 运行时 + server.js）
  *   resources/web/      前端
  *   resources/schema.sql
  *   data/               运行时才生成（数据库、素材）
@@ -22,6 +22,10 @@ const VERSION_NAME = ((() => {
       .match(/versionName "([^"]+)"/) || [])[1] || '0.0.0';
   } catch (e) { return '0.0.0'; }
 })());
+// 产品名：桌面上的程序名、产物文件名、说明文字统一用它。
+// ★ 必须和安卓 res/values/strings.xml 的 app_name、web/index.html 的 title 保持一致。
+const APP_NAME = '岁月记录助手';
+const EXE_FILE = APP_NAME + (process.platform === 'win32' ? '.exe' : '');
 const OUT = path.join(ROOT, 'dist', 'win');
 const TMP = path.join(ROOT, 'tmp', 'sea');
 
@@ -108,7 +112,7 @@ if (hadData) {
   rmDirRetry(dataKeep);
   console.log('  （已保留现有 data/ 数据）');
 }
-const exe = path.join(OUT, 'MyLife' + (process.platform === 'win32' ? '.exe' : ''));
+const exe = path.join(OUT, EXE_FILE);
 fs.copyFileSync(NODE_BIN, exe);
 if (process.platform !== 'win32') fs.chmodSync(exe, 0o755);   // copyfile 不保证带上执行位
 console.log('  ' + exe);
@@ -186,28 +190,28 @@ step(5, '写使用说明');
 const MILE = VERSION_NAME.indexOf('0.4') === 0 ? '里程碑 2'
   : VERSION_NAME.indexOf('0.2') === 0 ? '里程碑 1' : '';
 const readme = [
-  '我的人生档案 · The Story of My Life',
+  '岁月记录助手 · The Story of My Life',
   '版本 v' + VERSION_NAME + (MILE ? '（' + MILE + '）' : '') + '    ' + new Date().toISOString().slice(0, 10),
   '',
   '════════ 一、Windows 版怎么用 ════════',
   '',
-  '双击 MyLife.exe，会自动打开浏览器；黑窗口别关，关了就停了。',
+  '双击 ' + EXE_FILE + '，会自动打开浏览器；黑窗口别关，关了就停了。',
   '',
   '文件说明：',
-  '  MyLife.exe            主程序，界面已内置，**单文件即可分发**',
+  '  ' + EXE_FILE + '   主程序，界面已内置，**单文件即可分发**',
   '  resources/            可选覆盖层：想临时改界面时把新文件放进来，不用重打包',
   '  data/                 你的档案、照片、录音都存在这里，只有这个目录需要备份',
   '',
   '换端口（比如 4321 被占）：',
-  '  在地址框输入 cmd 回车，然后： set PORT=4401 && MyLife.exe',
+  '  在地址框输入 cmd 回车，然后： set PORT=4401 && ' + EXE_FILE,
   '',
-  '分发给别人：只拷 MyLife.exe 一个文件就能用；',
+  '分发给别人：只拷 ' + EXE_FILE + ' 一个文件就能用；',
   '整本档案可以在首页「导出」成一个文件，对方「导入」即可还原。',
   '要彻底卸载，删掉整个文件夹即可，不会在别处留东西。',
   '',
   '════════ 二、安卓版怎么装 ════════',
   '',
-  '把 MyLife-v' + VERSION_NAME + '-android.apk 传到手机 → 点开安装。',
+  '把 ' + APP_NAME + '-v' + VERSION_NAME + '-android.apk 传到手机 → 点开安装。',
   '提示"未知来源"时允许一次即可（不是应用商店的包）。',
   '认准版本号 v' + VERSION_NAME + '：装完进「设置 → 关于」能核对，别再装到 dist/archive/ 里的旧包。',
   '',
@@ -238,9 +242,9 @@ try {
   fs.writeFileSync(path.join(distRoot0, '最新版本在这里.txt'), [
     '最新安装包（每次构建后自动更新，认准文件名里的版本号）：',
     '',
-    '  MyLife-v' + VERSION_NAME + '-windows.exe    Windows 单文件版',
-    '  MyLife-v' + VERSION_NAME + '-android.apk    安卓版',
-    '  win/MyLife.exe                              Windows 工作目录（含 data/、使用说明.txt）',
+    '  ' + APP_NAME + '-v' + VERSION_NAME + '-windows.exe    Windows 单文件版',
+    '  ' + APP_NAME + '-v' + VERSION_NAME + '-android.apk    安卓版',
+    '  win/' + EXE_FILE + '   Windows 工作目录（含 data/、使用说明.txt）',
     '',
     '旧版本归档在 archive/ 子目录，别装那些。',
     '当前版本：v' + VERSION_NAME + (MILE ? '（' + MILE + '）' : ''),
@@ -254,12 +258,12 @@ step(6.5, '单文件冒烟测试');
   const smokeDir = path.join(TMP, 'smoke');
   rmDirRetry(smokeDir);
   fs.mkdirSync(smokeDir, { recursive: true });
-  fs.copyFileSync(exe, path.join(smokeDir, 'MyLife.exe'));
+  fs.copyFileSync(exe, path.join(smokeDir, EXE_FILE));
   const smokePort = String(4490 + Math.floor(Math.random() * 50));
   // 程序输出落到文件里，探活失败时打出来——不然 Linux/mac 上启动失败查不到原因
   const outLog = path.join(smokeDir, 'smoke-out.log');
   const outFd = fs.openSync(outLog, 'w');
-  const proc = spawn(path.join(smokeDir, 'MyLife.exe'), [], {
+  const proc = spawn(path.join(smokeDir, EXE_FILE), [], {
     env: Object.assign({}, process.env, { PORT: smokePort, DATA_DIR: path.join(smokeDir, 'data'), NO_OPEN: '1' }),
     stdio: ['ignore', outFd, outFd], detached: false,
   });
@@ -318,7 +322,7 @@ try {
 
   const apkSrc = path.join(ROOT, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
   if (fs.existsSync(apkSrc)) {
-    const apkOut = path.join(distRoot, 'MyLife-v' + vn + '-android.apk');
+    const apkOut = path.join(distRoot, APP_NAME + '-v' + vn + '-android.apk');
     fs.copyFileSync(apkSrc, apkOut);
     console.log('  ' + apkOut);
   }
@@ -327,12 +331,12 @@ try {
   const PLAT = process.platform === 'win32' ? 'windows'
     : process.platform === 'darwin' ? 'macos' : 'linux';
   const EXT = process.platform === 'win32' ? '.exe' : '';
-  const winOut = path.join(distRoot, 'MyLife-v' + vn + '-' + PLAT + EXT);
+  const winOut = path.join(distRoot, APP_NAME + '-v' + vn + '-' + PLAT + EXT);
   fs.copyFileSync(exe, winOut);
   console.log('  ' + winOut);
 
   for (const f of fs.readdirSync(distRoot)) {
-    if (/^MyLife-v.*-(android\.apk|windows\.exe|macos|linux)$/.test(f) &&
+    if (/^(MyLife|岁月记录助手)-v.*-(android\.apk|windows\.exe|macos|linux)$/.test(f) &&
         f.indexOf('v' + vn + '-') < 0) {
       fs.renameSync(path.join(distRoot, f), path.join(arc, f));
     }

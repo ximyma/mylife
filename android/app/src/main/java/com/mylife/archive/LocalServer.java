@@ -46,6 +46,8 @@ import java.util.concurrent.Executors;
 public class LocalServer {
 
     private static final String TAG = "LocalServer";
+    /** 固定端口：保证 origin 稳定，localStorage（登录 token）才留得住 */
+    private static final int FIXED_PORT = 34567;
     private static final int MAX_BODY = 64 * 1024 * 1024;   // 单请求 64MB 上限
 
     private final Context ctx;
@@ -63,8 +65,23 @@ public class LocalServer {
     }
 
     /** 绑 0 端口让系统分配，避免 8080 被别的 App 占 */
+    /**
+     * v0.9.36：端口必须固定。
+     * 用 ServerSocket(0) 让系统随机分配时，每次冷启动 origin 都变
+     * （http://127.0.0.1:<随机端口>），而 localStorage 是按 origin 隔离的——
+     * 上次登录写下的 token 下次就读不到，于是每次开 APP 都被踢回登录页。
+     * 固定端口后 origin 稳定，登录态才能真正留住。
+     * 端口被占用（极少见：上次实例没退干净）时退回随机端口，此时由原生侧
+     * 的 SharedPreferences 兜底把 token 带过来。
+     */
     public int start() throws Exception {
-        socket = new ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1"));
+        java.net.InetAddress lo = java.net.InetAddress.getByName("127.0.0.1");
+        try {
+            socket = new ServerSocket(FIXED_PORT, 8, lo);
+        } catch (Exception busy) {
+            Log.w(TAG, "固定端口 " + FIXED_PORT + " 被占用，改用随机端口");
+            socket = new ServerSocket(0, 8, lo);
+        }
         port = socket.getLocalPort();
         running = true;
         Thread t = new Thread(new Runnable() {

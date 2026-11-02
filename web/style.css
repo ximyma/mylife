@@ -110,6 +110,29 @@ img{max-width:100%;display:block}
 .toc-stage{font-style:normal;font-size:10.5px;background:var(--accent-soft);color:var(--accent);
   padding:1px 7px;border-radius:9px;margin-left:8px}
 
+/* v0.9.36 手机上目录只看得见年份、看不见章节名：
+   窄屏改成两行——第一行章节名（最多 2 行，可换行），第二行左边年份、右边段数。
+   章节名是主角，年份段数退成小字。 */
+@media (max-width:640px){
+  .toc-row{display:grid;grid-template-columns:20px 1fr auto;
+    grid-template-areas:"idx title go" "idx meta meta";
+    column-gap:8px;row-gap:1px;align-items:start;
+    padding:11px 0;font-size:15.5px}
+  .toc-idx{grid-area:idx;padding-top:2px}
+  .toc-title{grid-area:title;white-space:normal;line-height:1.45;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+    overflow-wrap:break-word;word-break:break-word}
+  .toc-year{grid-row:2;grid-column:2;justify-self:start;
+    font-size:11.5px;line-height:1.5;color:var(--muted)}
+  .toc-n{grid-row:2;grid-column:2;justify-self:end;min-width:0;
+    font-size:11px;line-height:1.5;text-align:right;color:var(--muted)}
+  .toc-go{grid-area:go;align-self:center;font-size:18px;padding-top:0}
+  .toc-stage{font-size:10px;padding:0 6px;margin-left:6px;vertical-align:1px}
+  /* 手机上这句提示会占两行、把目录往下挤，直接收起来 */
+  .toc-hint{display:none}
+  .toc-head{padding-bottom:4px}
+}
+
 .chapter{max-width:760px;margin:0 auto;padding:26px 16px 8px;border-top:1px solid var(--line)}
 .ch-title{display:flex;align-items:baseline;gap:10px;font-family:var(--serif);
   font-size:20px;font-weight:400;margin:0 0 4px}
@@ -192,8 +215,20 @@ img{max-width:100%;display:block}
 .ph-fields{flex:1;min-width:0}
 .ph-fields label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:8px}
 /* 卷宗里的条目操作：平时很淡，划到它才显出来，不打断阅读 */
-.en-acts{display:flex;gap:14px;margin-top:6px;opacity:.35;transition:.15s}
+.en-acts{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;opacity:.35;transition:.15s}
 .en:hover .en-acts,.en.editing .en-acts{opacity:1}
+/* 按钮不许被挤成竖排单字：不换行、不收缩。原来 9 个按钮挤 361px 宽，
+   每个只剩 24px，"换章" 竖着排成两行，手机上像一列乱码 */
+.en-acts .linkbtn,.en-acts button,.en-acts label{flex:0 0 auto;white-space:nowrap;padding:3px 2px}
+/* 触屏没有 hover，opacity:.35 等于永远看不见 —— 老人以为这些按钮不存在 */
+@media (hover:none){
+  .en-acts{opacity:1}
+  .toc-tools{opacity:.82}
+  .ch-edit{opacity:.72}
+  /* 手机上手指比鼠标粗：按钮至少 36×34，宁可换成两行也别让人点不中 */
+  .en-acts .linkbtn,.en-acts button{min-width:36px;min-height:34px;padding:6px 9px;font-size:13px}
+  .en-acts label{min-width:34px;min-height:34px}
+}
 .en.editing{border-left:3px solid var(--accent);padding-left:12px;margin:14px 0}
 .ch-edit{margin-left:6px;font-size:12.5px;color:var(--accent);background:none;
   border:none;cursor:pointer;opacity:.5}
@@ -292,6 +327,11 @@ img{max-width:100%;display:block}
 .auth-box .fld{margin-bottom:12px}
 .auth-box input{width:100%;padding:10px 12px;border:1px solid var(--line);
   border-radius:8px;background:var(--paper);color:var(--ink);font-size:15px;box-sizing:border-box}
+/* v0.9.36 记住我：勾选框不能被上面那条 width:100% 撑满 */
+.auth-box .au-remember{display:block;font-size:13px;color:var(--muted);
+  margin:0 0 14px;cursor:pointer;-webkit-user-select:none;user-select:none}
+.auth-box .au-remember input{width:16px;height:16px;padding:0;margin:0 7px 0 0;
+  vertical-align:-3px;border:0;background:none}
 .slot-pick{flex:1;min-width:140px;font-size:14px}
 .slot-model{flex:1.4;min-width:180px;font-size:13px;padding:7px 9px;
   border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink)}
@@ -532,6 +572,18 @@ body.night .tts-reading{background:#3A3020;box-shadow:0 0 0 6px #3A3020}
 .ex-tip{font-size:12px;color:var(--muted);line-height:1.7;background:var(--paper);
   border-radius:8px;padding:10px 12px;word-break:break-all}
 
+/* v0.9.36 新建档案：类型选择卡 */
+.kind-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 14px;
+  max-height:34vh;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px}   /* v0.9.37 类型到 11 种，只让这一块滚，写名字的输入框和按钮别被挤出去 */
+.kind-card{text-align:left;background:var(--paper);border:1px solid var(--line);
+  border-radius:10px;padding:10px 11px;cursor:pointer;font:inherit;color:var(--ink);
+  -webkit-appearance:none;appearance:none}
+.kind-card b{display:block;font-size:14px;margin-bottom:3px}
+.kind-card small{display:block;color:var(--muted);font-size:11.5px;line-height:1.45}
+.kind-card.on{border-color:var(--accent);background:var(--accent-soft)}
+.kind-card.on b{color:var(--accent)}
+@media (max-width:420px){.kind-grid{grid-template-columns:1fr}}
+
 /* ---------- 设置页：用量 ---------- */
 .usage-box{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px 14px}
 .usage-row{display:flex;justify-content:space-between;font-size:13px;padding:4px 0}
@@ -724,13 +776,17 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .ml-modal-ov{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(0,0,0,.42);display:flex;
   align-items:center;justify-content:center;z-index:90;padding:18px}
 .ml-modal{width:100%;max-width:380px;background:var(--card);border-radius:14px;
-  padding:20px 20px 16px;box-shadow:0 18px 50px rgba(0,0,0,.28)}
+  padding:20px 20px 16px;box-shadow:0 18px 50px rgba(0,0,0,.28);
+  max-height:88vh;overflow-y:auto;-webkit-overflow-scrolling:touch}   /* v0.9.37 类型多了(11 种)，小屏要能滚 */
 .ml-modal h3{margin:0 0 12px;font-size:17px}
 .ml-modal .fld{margin-bottom:11px}
 .ml-modal-acts{display:flex;gap:10px;margin-top:6px}
 .ml-modal-acts .btn{flex:1}
 .ml-modal-msg{font-size:12.5px;min-height:16px;color:var(--danger);margin-top:8px}
 .ml-modal .hint{font-size:12px;margin:0 0 10px}
+/* 直接挂在弹层上的小按钮（如「AI 帮我判断年份」）要独占一行，
+   否则会跟下一个 <label> 叠在同一行（实测手机上文字互相压住） */
+.ml-modal > button.btn.tiny{display:block;margin:-4px 0 12px}
 
 /* 章节排序箭头、文段配图、选图弹窗（v0.9.2） */
 .ch-mv{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;
@@ -746,6 +802,45 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .pick-ph img{width:100%;height:96px;object-fit:cover;display:block}
 .pick-ph span{display:block;font-size:11px;padding:3px 5px;color:var(--muted);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
+
+/* v0.9.39 选图：可以多选、可以看大图（大图里左右滑着挑） */
+.pick-cell{position:relative;border:1px solid var(--line);border-radius:8px;background:var(--card);
+  overflow:hidden;cursor:pointer}
+.pick-cell img{width:100%;height:96px;object-fit:cover;display:block}
+.pick-cell .pick-cap{display:block;font-size:11px;padding:3px 5px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick-cell.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.pick-tick{position:absolute;right:6px;top:6px;width:32px;height:32px;border-radius:50%;
+  border:1px solid rgba(0,0,0,.16);background:rgba(255,255,255,.92);color:#9A9086;font-size:17px;
+  line-height:1;display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer;
+  box-shadow:0 2px 6px rgba(0,0,0,.16)}
+.pick-cell.on .pick-tick{background:var(--accent);border-color:var(--accent);color:#fff}
+.pick-tick:active{transform:scale(.94)}
+
+.photo-view{position:fixed;top:0;right:0;bottom:0;left:0;z-index:120;background:#111;
+  display:flex;flex-direction:column}
+.pv-top{display:flex;align-items:center;gap:10px;padding:10px 12px;color:#fff;flex:0 0 auto}
+.pv-top .pv-x{background:none;border:none;color:#fff;font-size:15px;font-family:inherit;cursor:pointer;
+  padding:6px 2px}
+.pv-idx{margin-left:auto;font-size:13px;opacity:.82;font-variant-numeric:tabular-nums}
+.pv-sel{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.34);
+  border-radius:18px;padding:7px 14px;font-size:14px;font-family:inherit;cursor:pointer}
+.pv-sel.on{background:var(--accent);border-color:var(--accent)}
+.pv-stage{position:relative;flex:1 1 auto;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;min-height:0}
+.pv-img{width:100%;height:100%;object-fit:contain;display:block}
+.pv-nav{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:70px;
+  background:rgba(255,255,255,.16);color:#fff;border:1px solid rgba(255,255,255,.3);
+  font-size:30px;line-height:1;cursor:pointer;border-radius:12px;font-family:inherit}
+.pv-nav.prev{left:6px}
+.pv-nav.next{right:6px}
+.pv-cap{color:#e8e2da;font-size:13px;text-align:center;padding:8px 16px;min-height:20px;flex:0 0 auto}
+.pv-bar{padding:10px 14px 16px;flex:0 0 auto}
+.pv-bar .btn{width:100%}
+
+/* 刚插进去的那一条闪一下，一眼看见插在哪 */
+.en.fresh,.md.fresh,figure.ph.fresh{animation:freshFlash 2.4s ease-out}
+@keyframes freshFlash{0%{background:var(--accent-soft)}100%{background:transparent}}
 
 /* 跨章排序 + 批量移动（v0.9.3） */
 .en-check{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);
@@ -823,6 +918,8 @@ mark.d-add{background:#DFF0DC;color:#2F5D2A}
 .toc-go{flex:0 0 auto;color:var(--muted);font-size:17px;padding-left:2px}
 .toc-orphan{font-style:italic;color:var(--ink2)}
 .toc-add{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+/* v0.9.37 插一章：底部按钮说明「末尾加」和「中间插」的区别 */
+.toc-tip{font-size:11.5px;color:var(--muted);align-self:center}
 .full-wrap{max-width:760px;margin:0 auto;padding:0 16px}
 .full-wrap .row{margin:18px 0 6px}
 .full-body[hidden]{display:none !important}
@@ -960,9 +1057,25 @@ input[type=radio]{-webkit-appearance:radio;appearance:radio;border-radius:50%}
   font-size:11px;font-style:normal;padding:1px 6px;min-width:16px;text-align:center}
 .inbox-page .inbox-lead{margin:6px 0 14px}
 .inbox-acts{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.inbox-acts2{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 10px}
 .rec-state{min-height:18px;margin:2px 0 10px}
 .q-list{margin-top:8px}
-.q-card{background:#FFF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.q-card{position:relative;background:#FFF;border:1px solid #E4D5BC;border-radius:10px;padding:12px 14px;margin-bottom:12px}
+/* v0.9.39 选素材：勾选框平时藏着，进「选择」模式才出来 */
+.q-check{display:none;position:absolute;left:10px;top:12px;width:26px;height:26px;cursor:pointer}
+.q-check input{position:absolute;opacity:0;width:26px;height:26px;margin:0}
+.q-check i{display:block;width:24px;height:24px;border:1.5px solid #C8B79A;border-radius:6px;background:#FFF}
+.q-check input:checked + i{background:var(--accent);border-color:var(--accent)}
+.q-check input:checked + i::after{content:'✓';color:#fff;font-size:16px;line-height:22px;display:block;text-align:center}
+.q-list.selmode .q-check{display:block}
+.q-list.selmode .q-card{padding-left:44px}
+.q-selbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  background:#FDF8EF;border:1px solid #E4D5BC;border-radius:10px;padding:8px 10px;margin-bottom:10px}
+.q-selbar[hidden]{display:none}
+.q-selbar-n{font-size:13px;color:#7A6A56;margin-right:auto}
+.q-kept-tag{font-weight:400;font-size:11.5px;color:var(--accent);background:var(--accent-soft);
+  border-radius:10px;padding:1px 7px;margin-left:4px}
+.q-kept{border-style:dashed}
 .q-kind{font-size:13px;font-weight:600;margin-bottom:6px}
 .q-text{white-space:pre-wrap;line-height:1.6;font-size:15px}
 .q-thumb{max-width:100%;max-height:220px;border-radius:8px;display:block;margin:6px 0}
@@ -1031,10 +1144,12 @@ html.font-xl body{font-size:22px}
 .bk-stage{flex:1;display:flex;align-items:center;justify-content:center;
   perspective:2400px;min-height:0;overflow:hidden}
 .bk-book{position:relative;transform-style:preserve-3d}
-/* 书脊与摊开阴影 */
-.bk-book::before{content:'';position:absolute;left:50%;top:-6px;bottom:-6px;width:26px;
+/* 书脊与摊开阴影：只在「双页摊开」时画，单页模式不画（否则线会压在页面正中） */
+.bk-book::before{content:'';position:absolute;left:50%;top:-6px;bottom:-6px;width:20px;
   transform:translateX(-50%);pointer-events:none;z-index:9000;
-  background:linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.28) 48%, rgba(0,0,0,.34) 50%, rgba(0,0,0,0) 100%)}
+  background:linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.08) 46%, rgba(0,0,0,.11) 50%, rgba(0,0,0,.08) 54%, rgba(0,0,0,0) 100%)}
+/* 单页模式（手机）：整块都是纸，不要中间那道脊线 */
+.bk-book.bk-single-mode::before{display:none}
 .bk-leaf{position:absolute;transform-style:preserve-3d;transition:transform .62s cubic-bezier(.4,.05,.3,1);
   transform-origin:left center;cursor:pointer}
 .bk-face{position:absolute;top:0;right:0;bottom:0;left:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;

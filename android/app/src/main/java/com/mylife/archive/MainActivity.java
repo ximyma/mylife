@@ -3,6 +3,7 @@ package com.mylife.archive;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ClipData;
 import android.content.pm.PackageManager;
 import android.content.Context;
 import android.net.Uri;
@@ -84,6 +85,11 @@ public class MainActivity extends Activity {
     private Tts tts;
 
     private ValueCallback<Uri[]> fileCallback;
+
+    /* 流式导出（v0.9.41）：分多次 write 写同一个文件，JS 不用把整包一次性拼成字符串。
+       小米9 实测：素材全选 171MB 一次性 stringify → WebView 爆内存，App 进程直接闪退。 */
+    private java.io.OutputStream exportOs = null;
+    private Uri exportUri = null;
     private View splash;
     private TextView status;
     private ProgressBar bar;
@@ -220,7 +226,7 @@ public class MainActivity extends Activity {
                             && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
                     }
-                    toastIt("录音权限没给。到系统设置 → 应用 → 我的人生档案 → 权限里打开麦克风。");
+                    toastIt("录音权限没给。到系统设置 → 应用 → 岁月记录助手 → 权限里打开麦克风。");
                 } else {
                     request.grant(grant.toArray(new String[0]));
                 }
@@ -236,6 +242,12 @@ public class MainActivity extends Activity {
                 }
                 fileCallback = cb;
                 try {
+                    // v0.9.42：input 带 multiple 时算多选——相册里能勾好几张一起传。
+                    // 只开 extra 不给够没用，回调那边还得按 ClipData 把每一张都取出来。
+                    boolean multi = false;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        multi = params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE;
+                    }
                     Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                     i.addCategory(Intent.CATEGORY_OPENABLE);
                     String[] accept = params.getAcceptTypes();
@@ -249,7 +261,9 @@ public class MainActivity extends Activity {
                         }
                     }
                     i.setType(type);
-                    startActivityForResult(Intent.createChooser(i, "选择文件"), REQ_FILE);
+                    if (multi) i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    startActivityForResult(
+                            Intent.createChooser(i, multi ? "选择照片（可多选）" : "选择文件"), REQ_FILE);
                     return true;
                 } catch (Exception e) {
                     fileCallback = null;
@@ -362,6 +376,96 @@ public class MainActivity extends Activity {
     /** 档案导出：JS 把整包 JSON 递过来，落到手机的 Download 目录，文件管理器里能直接看到 */
     public class NativeIO {
 
+        /**
+         * v0.9.36：登录 token 在原生侧再存一份。
+         * localStorage 按 origin 隔离，本地服务端口一旦不是固定的 34567
+         * （被占用时退到随机端口），上次登录的 token 就读不到了。
+         * 这里用 SharedPreferences 兜底，JS 侧读不到 localStorage 时取这份。
+         */
+        private android.content.SharedPreferences prefs() {
+            return getSharedPreferences("mylife_session", MODE_PRIVATE);
+        }
+
+        @JavascriptInterface
+        public String getToken() {
+            try { return prefs().getString("token", ""); } catch (Exception e) { return ""; }
+        }
+
+        @JavascriptInterface
+        public void setToken(String t) {
+            try {
+                android.content.SharedPreferences.Editor ed = prefs().edit();
+                if (t == null || t.length() == 0) ed.remove("token");
+                else ed.putString("token", t);
+                ed.apply();
+            } catch (Exception e) { Log.w("NativeIO", "setToken 失败", e); }
+        }
+
+        /**
+         * 开始写一个导出文件。之后用 exportAppend() 一段段补，最后 exportEnd() 收尾。
+         * 这样 JS 端可以「读一条素材 → 写一条 → 释放」，内存峰值等于单条素材，
+         * 不再需要把 170MB 全部拼成一个字符串（那样必崩）。
+         */
+        @JavascriptInterface
+        public synchronized boolean exportBegin(String filename) {
+            try {
+                exportAbort();
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename);
+                    cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json");
+                    exportUri = getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (exportUri == null) return false;
+                    exportOs = getContentResolver().openOutputStream(exportUri);
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) dir.mkdirs();
+                    exportOs = new java.io.FileOutputStream(new File(dir, filename));
+                }
+                return exportOs != null;
+            } catch (Exception e) {
+                Log.w("NativeIO", "exportBegin 失败", e);
+                exportAbort();
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public synchronized boolean exportAppend(String chunk) {
+            if (exportOs == null) return false;
+            try {
+                exportOs.write(chunk.getBytes("UTF-8"));
+                return true;
+            } catch (Exception e) {
+                Log.w("NativeIO", "exportAppend 失败", e);
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public synchronized boolean exportEnd() {
+            try {
+                if (exportOs != null) { exportOs.flush(); exportOs.close(); }
+                exportOs = null;
+                exportUri = null;
+                return true;
+            } catch (Exception e) {
+                Log.w("NativeIO", "exportEnd 失败", e);
+                exportOs = null;
+                exportUri = null;
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public synchronized void exportAbort() {
+            try { if (exportOs != null) exportOs.close(); } catch (Exception ignored) {}
+            exportOs = null;
+            exportUri = null;
+        }
+
         @JavascriptInterface
         public boolean saveExport(String json, String filename) {
             try {
@@ -395,14 +499,203 @@ public class MainActivity extends Activity {
                 return false;
             }
         }
+
+        /**
+         * v0.9.36：把一段文本（整本网页 html、备份 json）写进手机 Download。
+         * 以前「生成整本网页」是 window.open 开新窗口，手机 WebView 一律拦截弹窗，
+         * 用户只看到一句「弹窗被拦」。改成落文件，文件管理器里能直接找到、用浏览器打开。
+         */
+        @JavascriptInterface
+        public boolean saveText(String text, String filename, String mime) {
+            String m = (mime == null || mime.length() == 0) ? "text/plain" : mime;
+            byte[] data;
+            try { data = (text == null ? "" : text).getBytes("UTF-8"); }
+            catch (Exception e) { data = new byte[0]; }
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename);
+                    cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, m);
+                    Uri uri = getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) return false;
+                    java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+                    os.write(data);
+                    os.flush();
+                    os.close();
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) dir.mkdirs();
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(new File(dir, filename));
+                    fos.write(data);
+                    fos.flush();
+                    fos.close();
+                }
+                toastIt("已保存到 Download/" + filename);
+                return true;
+            } catch (Exception e) {
+                Log.w("NativeIO", "saveText 失败", e);
+                toastIt("保存失败：" + e.getMessage());
+                return false;
+            }
+        }
+
+        /** 把档案目录里的导出文件（exports/xxx.docx）复制到手机 Download，文件管理器能找到 */
+        @JavascriptInterface
+        public boolean copyToDownload(String relPath, String filename, String mime, String token) {
+            File src = resolveUserFile(token, relPath);
+            if (src == null) return false;
+            if (!src.isFile()) { toastIt("找不到导出文件"); return false; }
+            return writeToDownloads(src, filename, mime) != null;
+        }
+
+        /** 复制到 Download 再弹出系统分享，发给另一台手机/电脑 */
+        @JavascriptInterface
+        public boolean shareFile(String relPath, String filename, String mime, String token) {
+            File src = resolveUserFile(token, relPath);
+            if (src == null) return false;
+            if (!src.isFile()) { toastIt("找不到导出文件"); return false; }
+            Uri uri = writeToDownloads(src, filename, mime);
+            if (uri == null) return false;
+            return shareUri(uri, mime);
+        }
+
+        /** 整库备份 JSON：写进 Download 再分享 */
+        @JavascriptInterface
+        public boolean shareText(String json, String filename) {
+            try {
+                File tmp = new File(getCacheDir(), filename);
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(tmp);
+                fos.write(json.getBytes("UTF-8"));
+                fos.flush();
+                fos.close();
+                Uri uri = writeToDownloads(tmp, filename, "application/json");
+                if (uri == null) return false;
+                return shareUri(uri, "application/json");
+            } catch (Exception e) {
+                toastIt("分享失败：" + e.getMessage());
+                return false;
+            }
+        }
+
+        /** 系统打印：手机上没有 Chrome 也能「保存为 PDF」 */
+        @JavascriptInterface
+        public void printHtml(final String html, final String jobName) {
+            final String h = html == null ? "" : html;
+            final String job = (jobName == null || jobName.length() == 0) ? "岁月记录助手" : jobName;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        final WebView pv = new WebView(MainActivity.this);
+                        pv.getSettings().setJavaScriptEnabled(false);
+                        pv.setWebViewClient(new WebViewClient() {
+                            @Override
+                            public void onPageFinished(WebView view, String url) {
+                                try {
+                                    android.print.PrintManager pm = (android.print.PrintManager)
+                                            getSystemService(Context.PRINT_SERVICE);
+                                    android.print.PrintDocumentAdapter ad =
+                                            view.createPrintDocumentAdapter(job);
+                                    android.print.PrintAttributes.Builder b =
+                                            new android.print.PrintAttributes.Builder();
+                                    b.setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4);
+                                    pm.print(job, ad, b.build());
+                                } catch (Exception e) {
+                                    toastIt("打印失败：" + e.getMessage());
+                                }
+                            }
+                        });
+                        pv.loadDataWithBaseURL("file:///android_asset/web/", h, "text/html", "utf-8", null);
+                    } catch (Exception e) {
+                        toastIt("打印失败：" + e.getMessage());
+                    }
+                }
+            });
+        }
+
+        private File resolveUserFile(String token, String relPath) {
+            Auth.User u = auth == null ? null : auth.verify(token);
+            if (u == null) { toastIt("登录已过期，重新登录再试"); return null; }
+            String rel = String.valueOf(relPath == null ? "" : relPath).replace('\\', '/');
+            while (rel.startsWith("/")) rel = rel.substring(1);
+            return new File(new File(new File(getFilesDir(), "users"), String.valueOf(u.uid)), "files/" + rel);
+        }
+
+        private Uri writeToDownloads(File src, String filename, String mime) {
+            String m = (mime == null || mime.length() == 0) ? "application/octet-stream" : mime;
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, filename);
+                    cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, m);
+                    Uri uri = getContentResolver().insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) return null;
+                    java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+                    java.io.FileInputStream in = new java.io.FileInputStream(src);
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                    in.close();
+                    os.flush();
+                    os.close();
+                    toastIt("已保存到 Download/" + filename);
+                    return uri;
+                }
+                File dir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                File f = new File(dir, filename);
+                java.io.FileInputStream in = new java.io.FileInputStream(src);
+                java.io.FileOutputStream out = new java.io.FileOutputStream(f);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+                out.close();
+                toastIt("已保存到 " + f.getAbsolutePath());
+                return Uri.fromFile(f);
+            } catch (Exception e) {
+                Log.w("NativeIO", "导出到 Download 失败", e);
+                toastIt("保存失败：" + e.getMessage());
+                return null;
+            }
+        }
+
+        private boolean shareUri(Uri uri, String mime) {
+            try {
+                Intent it = new Intent(Intent.ACTION_SEND);
+                it.setType(mime == null || mime.length() == 0 ? "*/*" : mime);
+                it.putExtra(Intent.EXTRA_STREAM, uri);
+                it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(it, "分享到"));
+                return true;
+            } catch (Exception e) {
+                toastIt("这台手机没有可用的分享方式");
+                return false;
+            }
+        }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_FILE) {
             Uri[] uris = null;
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                uris = new Uri[]{data.getData()};
+            if (resultCode == RESULT_OK && data != null) {
+                // 多选时每张都放在 ClipData 里；单选（或个别 ROM）只给 getData()
+                ClipData cd = data.getClipData();
+                if (cd != null && cd.getItemCount() > 0) {
+                    List<Uri> got = new ArrayList<>();
+                    for (int i = 0; i < cd.getItemCount(); i++) {
+                        Uri u = cd.getItemAt(i).getUri();
+                        if (u != null) got.add(u);
+                    }
+                    if (!got.isEmpty()) uris = got.toArray(new Uri[0]);
+                } else if (data.getData() != null) {
+                    uris = new Uri[]{data.getData()};
+                }
             }
             if (fileCallback != null) {
                 fileCallback.onReceiveValue(uris);
@@ -468,7 +761,7 @@ public class MainActivity extends Activity {
             Log.i(TAG, "麦克风权限结果：" + ok);
             callJsMic(ok ? "granted" : "denied");
             if (!ok) {
-                toastIt("麦克风被系统挡住了。去「设置 → 应用 → 我的人生档案 → 权限」改成「仅使用期间允许」");
+                toastIt("麦克风被系统挡住了。去「设置 → 应用 → 岁月记录助手 → 权限」改成「仅使用期间允许」");
             }
         }
     }
