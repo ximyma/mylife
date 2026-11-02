@@ -4,12 +4,13 @@
 # 自动触发：推 v* 标签（如 v0.9.14）时
 #
 # 产物在每次运行的 Artifacts 区下载：
-#   MyLife-windows / MyLife-linux / MyLife-macos / MyLife-android
+#   岁月记录助手-windows / -linux / -macos / -android
 #
 # 说明：
 #   - 单文件程序用 Node 官方 SEA（tools/build-exe.js），ffmpeg 已内置；
+#   - 产物名跟 build-exe.js 的 APP_NAME 走（岁月记录助手），不再用老的 MyLife；
 #   - macOS 包注入后做了 ad-hoc 签名（codesign --sign -），本机首次打开
-#     若被 Gatekeeper 拦，右键 → 打开，或 `xattr -cr MyLife-macos`；
+#     若被 Gatekeeper 拦，右键 → 打开，或 `xattr -cr 岁月记录助手`；
 #   - APK 是 debug 签名，装起来就能用，正式发布前再换正式签名。
 
 name: build
@@ -51,13 +52,20 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          if [ -f dist/win/MyLife.exe ]; then cp dist/win/MyLife.exe out/; fi
-          if [ -f dist/win/MyLife ];    then cp dist/win/MyLife    out/; fi
+          # 产物名跟着 tools/build-exe.js 的 APP_NAME 走：Windows 带 .exe，Linux/macOS 无后缀
+          for f in "dist/win/岁月记录助手.exe" "dist/win/岁月记录助手"; do
+            if [ -f "$f" ]; then cp "$f" out/; fi
+          done
+          if [ -z "$(ls -A out)" ]; then
+            echo "::error::dist/win 里没有找到可执行文件"
+            ls -la dist/win || true
+            exit 1
+          fi
           ls -la out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MyLife-${{ matrix.plat }}
+          name: 岁月记录助手-${{ matrix.plat }}
           path: out/*
           if-no-files-found: error
 
@@ -86,11 +94,11 @@ jobs:
         run: |
           VN=$(grep -oP 'versionName "\K[^"]+' android/app/build.gradle)
           mkdir -p out
-          cp android/app/build/outputs/apk/debug/app-debug.apk "out/MyLife-v${VN}-android.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "out/岁月记录助手-v${VN}-android.apk"
           ls -la out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MyLife-android
+          name: 岁月记录助手-android
           path: out/*
           if-no-files-found: error
